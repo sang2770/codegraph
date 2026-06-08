@@ -4,8 +4,9 @@
  * The installer now uses the multi-target architecture in
  * `./targets/`. This file is preserved so existing imports (the test
  * suite, downstream tooling) keep working unchanged. Each function
- * delegates to the Claude target. New code should import the target
- * registry from `./targets/registry` directly.
+ * delegates to the Claude target; it is not the installer surface for a
+ * single IDE/client anymore. New code should import the target registry
+ * from `./targets/registry` directly.
  *
  * @deprecated Use `targets/registry.ts` and the `AgentTarget`
  *   abstraction instead.

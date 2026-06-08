@@ -135,6 +135,9 @@ describe('Installer targets — contract', () => {
             if (target.id === 'opencode') {
               delete seed.mcpServers;
               seed.mcp = { other: { type: 'local', command: ['x'], enabled: true } };
+            } else if (target.id === 'vscode') {
+              delete seed.mcpServers;
+              seed.servers = { other: { command: 'x' } };
             }
             fs.writeFileSync(jsonPath, JSON.stringify(seed, null, 2) + '\n');
 
@@ -144,6 +147,9 @@ describe('Installer targets — contract', () => {
             if (target.id === 'opencode') {
               expect(after.mcp.other).toBeDefined();
               expect(after.mcp.codegraph).toBeDefined();
+            } else if (target.id === 'vscode') {
+              expect(after.servers.other).toBeDefined();
+              expect(after.servers.codegraph).toBeDefined();
             } else {
               expect(after.mcpServers.other).toBeDefined();
               expect(after.mcpServers.codegraph).toBeDefined();
@@ -404,6 +410,70 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(body).toContain('# My personal Gemini context');
     expect(body).toContain('Always respond concisely.');
     expect(body).not.toContain('CODEGRAPH_START');
+  });
+
+  it('vscode: local install writes .vscode/mcp.json, codegraph skill, and codegraph agent', () => {
+    const vscode = getTarget('vscode')!;
+    const result = vscode.install('local', { autoAllow: true });
+    const mcp = path.join(process.cwd(), '.vscode', 'mcp.json');
+    const skill = path.join(process.cwd(), '.github', 'skills', 'codegraph', 'SKILL.md');
+    const agent = path.join(process.cwd(), '.github', 'agents', 'codegraph.agent.md');
+
+    expect(result.files.some((f) => f.path === mcp)).toBe(true);
+    expect(result.files.some((f) => f.path === skill)).toBe(true);
+    expect(result.files.some((f) => f.path === agent)).toBe(true);
+
+    const cfg = JSON.parse(fs.readFileSync(mcp, 'utf-8'));
+    expect(cfg.mcpServers).toBeUndefined();
+    expect(cfg.servers.codegraph).toEqual({
+      type: 'stdio',
+      command: 'codegraph',
+      args: ['serve', '--mcp', '--path', '${workspaceFolder}'],
+    });
+
+    const skillBody = fs.readFileSync(skill, 'utf-8');
+    expect(skillBody).toContain('name: codegraph');
+    expect(skillBody).toContain('codegraph_explore');
+
+    const agentBody = fs.readFileSync(agent, 'utf-8');
+    expect(agentBody).toContain('name: codegraph');
+    expect(agentBody).toContain('codegraph/*');
+    expect(agentBody).toContain('codebrain_editFiles');
+    expect(agentBody).not.toContain('- gitnexus/*');
+    expect(agentBody).toContain('NEVER use retired GitNexus-only tools');
+  });
+
+  it('vscode: global install writes user mcp.json and ~/.copilot/skills/codegraph/SKILL.md only', () => {
+    const vscode = getTarget('vscode')!;
+    vscode.install('global', { autoAllow: true });
+    const paths = vscode.describePaths('global');
+    const mcp = paths.find((p) => p.endsWith(`Code${path.sep}User${path.sep}mcp.json`)) ?? paths[0];
+    const skill = path.join(tmpHome, '.copilot', 'skills', 'codegraph', 'SKILL.md');
+
+    const cfg = JSON.parse(fs.readFileSync(mcp, 'utf-8'));
+    expect(cfg.servers.codegraph.args).toEqual(['serve', '--mcp', '--path', '${workspaceFolder}']);
+    expect(fs.readFileSync(skill, 'utf-8')).toContain('name: codegraph');
+    expect(paths.some((p) => p.endsWith('codegraph.agent.md'))).toBe(false);
+  });
+
+  it('vscode: uninstall removes codegraph but preserves sibling VS Code MCP servers', () => {
+    const vscode = getTarget('vscode')!;
+    const mcp = path.join(process.cwd(), '.vscode', 'mcp.json');
+    fs.mkdirSync(path.dirname(mcp), { recursive: true });
+    fs.writeFileSync(mcp, JSON.stringify({
+      servers: {
+        other: { command: 'x' },
+      },
+    }, null, 2) + '\n');
+
+    vscode.install('local', { autoAllow: true });
+    vscode.uninstall('local');
+
+    const after = JSON.parse(fs.readFileSync(mcp, 'utf-8'));
+    expect(after.servers.other).toBeDefined();
+    expect(after.servers.codegraph).toBeUndefined();
+    expect(fs.existsSync(path.join(process.cwd(), '.github', 'skills', 'codegraph', 'SKILL.md'))).toBe(false);
+    expect(fs.existsSync(path.join(process.cwd(), '.github', 'agents', 'codegraph.agent.md'))).toBe(false);
   });
 
   it('kiro: install writes settings/mcp.json (mcpServers.codegraph) and no steering doc (#529)', () => {
