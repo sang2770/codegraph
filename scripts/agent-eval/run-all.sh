@@ -7,6 +7,8 @@
 # Usage: run-all.sh <repo-path> "<question>" [headless|tmux|all]
 # Env:   CG_BIN          codegraph binary (default: command -v codegraph)
 #        AGENT_EVAL_OUT  output dir (default: /tmp/agent-eval)
+#        MODEL / EFFORT  claude model/effort (default: sonnet / high — the
+#                        standing A/B policy; see CLAUDE.md, don't raise)
 set -uo pipefail
 
 REPO="${1:?usage: run-all.sh <repo-path> \"<question>\" [headless|tmux|all]}"
@@ -16,6 +18,12 @@ CG_BIN="${CG_BIN:-$(command -v codegraph)}"
 OUT="${AGENT_EVAL_OUT:-/tmp/agent-eval}"
 HARNESS="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$OUT"
+
+# Neutralize any ambient CodeGraph prompt-hook (~/.claude) in BOTH arms:
+# the hook injects codegraph context into every prompt, which contaminates
+# the without-arm (free structural context) and double-counts the with-arm.
+# The A/B's only variable must be the MCP server wired below.
+export CODEGRAPH_NO_PROMPT_HOOK=1
 
 [ -n "$CG_BIN" ] || { echo "no codegraph binary on PATH (set CG_BIN)"; exit 1; }
 [ -d "$REPO/.codegraph" ] || { echo "no .codegraph index at $REPO — index it first"; exit 1; }
@@ -39,7 +47,7 @@ headless() {
   ( cd "$REPO" && claude -p "$Q" \
       --output-format stream-json --verbose \
       --permission-mode bypassPermissions \
-      --model opus \
+      --model "${MODEL:-sonnet}" --effort "${EFFORT:-high}" \
       --max-budget-usd 4 \
       --strict-mcp-config --mcp-config "$cfg" \
       > "$OUT/run-$label.jsonl" 2>"$OUT/run-$label.err" )
@@ -56,11 +64,11 @@ fi
 
 if [ "$MODE" = tmux ] || [ "$MODE" = all ]; then
   echo "############################## INTERACTIVE [with] ##############################"
-  CLAUDE_EXTRA_ARGS="--model opus --strict-mcp-config --mcp-config $OUT/mcp-codegraph.json" \
+  CLAUDE_EXTRA_ARGS="--model ${MODEL:-sonnet} --effort ${EFFORT:-high} --strict-mcp-config --mcp-config $OUT/mcp-codegraph.json" \
     bash "$HARNESS/itrun.sh" "$REPO" "int-with" "$Q" 2>&1 || echo "[itrun WITH failed]"
   echo
   echo "############################## INTERACTIVE [without] ##############################"
-  CLAUDE_EXTRA_ARGS="--model opus --strict-mcp-config --mcp-config $OUT/mcp-empty.json" \
+  CLAUDE_EXTRA_ARGS="--model ${MODEL:-sonnet} --effort ${EFFORT:-high} --strict-mcp-config --mcp-config $OUT/mcp-empty.json" \
     bash "$HARNESS/itrun.sh" "$REPO" "int-without" "$Q" 2>&1 || echo "[itrun WITHOUT failed]"
   echo
 fi

@@ -68,6 +68,7 @@ export const LANGUAGES = [
   'javascript',
   'tsx',
   'jsx',
+  'arkts',
   'python',
   'go',
   'rust',
@@ -75,6 +76,7 @@ export const LANGUAGES = [
   'c',
   'cpp',
   'csharp',
+  'razor',
   'php',
   'ruby',
   'swift',
@@ -82,16 +84,27 @@ export const LANGUAGES = [
   'dart',
   'svelte',
   'vue',
+  'astro',
   'liquid',
   'pascal',
   'scala',
   'lua',
   'luau',
   'objc',
+  'r',
+  'solidity',
+  'nix',
   'yaml',
   'twig',
   'xml',
   'properties',
+  'cfml',
+  'cfscript',
+  'cfquery',
+  'cobol',
+  'vbnet',
+  'erlang',
+  'terraform',
   'unknown',
 ] as const;
 
@@ -161,6 +174,15 @@ export interface Node {
 
   /** Generic type parameters */
   typeParameters?: string[];
+
+  /**
+   * Normalized return/result type name for a function/method (the bare class
+   * name, smart-pointer pointee unwrapped). Captured for C/C++ so resolution
+   * can infer a chained receiver's type from what the inner call returns —
+   * `Foo::instance().bar()` resolves `bar` on `Foo` (issue #645). Undefined for
+   * languages/symbols where it isn't captured.
+   */
+  returnType?: string;
 
   /** When the node was last updated */
   updatedAt: number;
@@ -269,6 +291,14 @@ export interface ExtractionError {
 }
 
 /**
+ * Kinds an unresolved reference can carry. `function_ref` is internal-only —
+ * a function name used as a VALUE (callback registration, #756). It never
+ * becomes an edge kind: resolution maps it to a `references` edge targeting
+ * function/method nodes only (see `matchFunctionRef`).
+ */
+export type ReferenceKind = EdgeKind | 'function_ref';
+
+/**
  * A reference that couldn't be resolved during extraction
  */
 export interface UnresolvedReference {
@@ -279,7 +309,7 @@ export interface UnresolvedReference {
   referenceName: string;
 
   /** Type of reference (call, type, import, etc.) */
-  referenceKind: EdgeKind;
+  referenceKind: ReferenceKind;
 
   /** Location of the reference */
   line: number;
@@ -378,11 +408,35 @@ export interface SearchResult {
   /** Matching node */
   node: Node;
 
-  /** Relevance score (0-1) */
+  /**
+   * Relevance score for relative ranking only — higher is more relevant.
+   * NOT normalized and NOT a 0-1 fraction: the FTS path returns an unbounded
+   * BM25 magnitude (often in the tens or hundreds), while the fuzzy/exact
+   * paths return ~0-1. Use it to order results, not as an absolute percentage.
+   */
   score: number;
 
   /** Matched text snippets for highlighting */
   highlights?: string[];
+}
+
+/**
+ * A symbol whose name-segments match prose words from a prompt — the
+ * graph-derived signal behind the front-load hook's medium tier
+ * (CodeGraph.getSegmentMatches). Always verified to exist in `nodes` at the
+ * time it is returned.
+ */
+export interface SegmentMatch {
+  /** Symbol name as indexed (e.g. `OrderStateMachine`). */
+  name: string;
+  /** Kind of the representative definition. */
+  kind: NodeKind;
+  /** File of the representative definition. */
+  filePath: string;
+  /** 1-based start line of the representative definition. */
+  startLine: number;
+  /** The prompt words (normalized) that matched this name's segments. */
+  matchedWords: string[];
 }
 
 // =============================================================================

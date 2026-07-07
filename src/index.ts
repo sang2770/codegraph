@@ -15,6 +15,7 @@ import {
   TraversalOptions,
   SearchOptions,
   SearchResult,
+  SegmentMatch,
   Context,
   GraphStats,
   TaskInput,
@@ -22,7 +23,7 @@ import {
   BuildContextOptions,
   FindRelevantContextOptions,
 } from './types';
-import { DatabaseConnection, getDatabasePath } from './db';
+import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { QueryBuilder } from './db/queries';
 import {
   isInitialized,
@@ -47,6 +48,12 @@ import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
+import { EXTRACTION_VERSION } from './extraction/extraction-version';
+import { getCodeGraphDir } from './directory';
+import { deriveProjectNameTokens } from './search/query-utils';
+import { CodeGraphPackageVersion } from './mcp/version';
+import { segmentLookupVariants, splitIdentifierSegments } from './search/identifier-segments';
+import { createYielder } from './resolution/cooperative-yield';
 
 // Re-export types for consumers
 export * from './types';
@@ -128,11 +135,14 @@ export class CodeGraph {
   private db: DatabaseConnection;
   private queries: QueryBuilder;
   private projectRoot: string;
-  private orchestrator: ExtractionOrchestrator;
-  private resolver: ReferenceResolver;
-  private graphManager: GraphQueryManager;
-  private traverser: GraphTraverser;
-  private contextBuilder: ContextBuilder;
+  // Assigned via wireLayers() from the constructor (and again on reopen) — the
+  // `!` tells TS these are definitely set even though the assignment is one
+  // method call away from the constructor body.
+  private orchestrator!: ExtractionOrchestrator;
+  private resolver!: ReferenceResolver;
+  private graphManager!: GraphQueryManager;
+  private traverser!: GraphTraverser;
+  private contextBuilder!: ContextBuilder;
 
   // Mutex for preventing concurrent indexing operations (in-process)
   private indexMutex = new Mutex();
@@ -152,17 +162,65 @@ export class CodeGraph {
     this.queries = queries;
     this.projectRoot = projectRoot;
     this.fileLock = new FileLock(
-      path.join(projectRoot, '.codegraph', 'codegraph.lock')
+      path.join(getCodeGraphDir(projectRoot), 'codegraph.lock')
     );
-    this.orchestrator = new ExtractionOrchestrator(projectRoot, queries);
-    this.resolver = createResolver(projectRoot, queries);
-    this.graphManager = new GraphQueryManager(queries);
-    this.traverser = new GraphTraverser(queries);
+    this.wireLayers();
+  }
+
+  /**
+   * (Re)build the query/extraction/graph layers over the current `this.queries`
+   * (which wraps `this.db`). Factored out of the constructor so `reopenIfReplaced`
+   * can rebuild them against a fresh connection without duplicating the wiring.
+   * The path-based `fileLock` is independent of the DB handle, so it stays put.
+   */
+  private wireLayers(): void {
+    // Down-weight the project name as a query term in search ranking — it names
+    // the whole repo, not a symbol, so it has no discriminative value (#720).
+    try {
+      this.queries.setProjectNameTokens(deriveProjectNameTokens(this.projectRoot));
+    } catch {
+      // Best-effort: ranking still works without it.
+    }
+    this.orchestrator = new ExtractionOrchestrator(this.projectRoot, this.queries);
+    this.resolver = createResolver(this.projectRoot, this.queries);
+    this.graphManager = new GraphQueryManager(this.queries);
+    this.traverser = new GraphTraverser(this.queries);
     this.contextBuilder = createContextBuilder(
-      projectRoot,
-      queries,
+      this.projectRoot,
+      this.queries,
       this.traverser
     );
+  }
+
+  /**
+   * Heal a stale database handle in place. If `.codegraph/` was removed and
+   * recreated at the SAME path while this instance held the DB open — a git
+   * worktree removed and re-added, or `rm -rf .codegraph` + `codegraph init` —
+   * our open fd points at the now-unlinked inode and can never see the new
+   * index, so every query returns the pre-removal snapshot until the process
+   * restarts (#925). When that's detected, open the live file at the same path,
+   * rebuild the query layers, and swap them IN PLACE, so every holder of this
+   * instance (the MCP daemon's default project, cached projectPath connections)
+   * heals without a restart. Returns true iff it reopened.
+   *
+   * POSIX-only in practice: `isReplacedOnDisk` never fires on Windows (an open
+   * file can't be unlinked there, and st_ino is unreliable).
+   */
+  reopenIfReplaced(): boolean {
+    if (!this.db.isReplacedOnDisk()) return false;
+    const dbPath = this.db.getPath();
+    // Open the live file FIRST — if that throws (e.g. mid-recreate), the old
+    // handle stays in place and the caller retries on the next query, rather
+    // than leaving this instance with no connection at all.
+    const fresh = DatabaseConnection.open(dbPath);
+    const stale = this.db;
+    this.db = fresh;
+    this.queries = new QueryBuilder(fresh.getDb());
+    this.wireLayers();
+    // Releasing the dead handle also frees the leaked db/-wal/-shm fds that were
+    // pinning the unlinked inode (#925).
+    try { stale.close(); } catch { /* the old inode is gone; closing just frees fds */ }
+    return true;
   }
 
   // ===========================================================================
@@ -265,6 +323,54 @@ export class CodeGraph {
   }
 
   /**
+   * Rebuild the project's database from scratch and return a fresh, empty
+   * instance — the "same result as a fresh init" semantics that `codegraph
+   * index` documents.
+   *
+   * Unlike `open()` followed by `clear()`, this DISCARDS the existing
+   * `.codegraph/codegraph.db` (and its `-wal`/`-shm` sidecars) before
+   * re-initializing, instead of opening the old database and DELETE-ing every
+   * row. On a large or pre-fix poisoned index — e.g. an old graph that scanned
+   * an ignored gitlink corpus (#1065) into ~1.6M nodes with a multi-GB WAL —
+   * the per-row `nodes_fts` delete-trigger churn blocks the main thread long
+   * enough to trip the #850 liveness watchdog before indexing even starts, so a
+   * full re-index could never recover the bad state (#1067). Discarding the
+   * files is O(1) regardless of size, reclaims the disk, and sidesteps opening
+   * (and running migrations against) the poisoned database entirely.
+   */
+  static async recreate(projectRoot: string): Promise<CodeGraph> {
+    await initGrammars();
+    const resolvedRoot = path.resolve(projectRoot);
+
+    // Check if initialized — recreate REBUILDS an existing project; it is not a
+    // first-time `init`.
+    if (!isInitialized(resolvedRoot)) {
+      throw new Error(`CodeGraph not initialized in ${resolvedRoot}. Run init() first.`);
+    }
+
+    const dbPath = getDatabasePath(resolvedRoot);
+    try {
+      removeDatabaseFiles(dbPath);
+    } catch (err) {
+      // POSIX unlinks an open file fine; this fires mainly on Windows when a
+      // live daemon/MCP server still holds the database. Turn the raw EBUSY into
+      // an actionable instruction instead of a generic failure.
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Could not rebuild the index — the database file is in use (${reason}). ` +
+          `Stop any running CodeGraph MCP server/daemon for this project and retry, ` +
+          `or remove the ${getCodeGraphDir(resolvedRoot)} directory and run "codegraph init".`
+      );
+    }
+
+    // Re-create an empty, freshly-schema'd database at the same path.
+    const db = DatabaseConnection.initialize(dbPath);
+    const queries = new QueryBuilder(db.getDb());
+
+    return new CodeGraph(db, queries, resolvedRoot);
+  }
+
+  /**
    * Open synchronously (without sync)
    */
   static openSync(projectRoot: string): CodeGraph {
@@ -331,6 +437,15 @@ export class CodeGraph {
       }
       try {
         const before = this.queries.getNodeAndEdgeCount();
+        // Mark the index as in-flight BEFORE any writes: a run killed
+        // mid-index (OOM, SIGKILL, the #850 liveness watchdog) leaves this
+        // marker behind, so `codegraph status` can tell a truncated index
+        // from a completed one instead of silently serving partial results.
+        try { this.queries.setMetadata('index_state', 'indexing'); } catch { /* metadata is advisory */ }
+        // Segment vocabulary starts empty and is repopulated by the node write
+        // path as every file (re-)indexes below — so a full index is also the
+        // orphan-cleanup pass for names deleted since the last one.
+        try { this.queries.clearNameSegmentVocab(); } catch { /* vocab is advisory — never fail an index over it */ }
         const result = await this.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
 
         // Re-detect frameworks now that the index is populated. The resolver
@@ -365,6 +480,15 @@ export class CodeGraph {
               total,
             });
           });
+
+          // Second pass: chained calls whose method lives on a supertype the
+          // receiver conforms to (protocol-extension / inherited / default-
+          // interface). Needs the implements/extends edges the main pass just
+          // built, so it runs after resolution (#750).
+          await this.resolver.resolveChainedCallsViaConformance();
+          // Same lifecycle for `this.<member>` callback registrations whose
+          // member is inherited from a supertype (#808).
+          await this.resolver.resolveDeferredThisMemberRefs();
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -381,6 +505,49 @@ export class CodeGraph {
           result.nodesCreated = after.nodes - before.nodes;
           result.edgesCreated = after.edges - before.edges;
         }
+
+        // Stamp the index with the engine that built it, so `codegraph status`
+        // and `codegraph upgrade` can recommend a re-index when the running
+        // engine produces richer extraction than the one on disk. Only on a
+        // real full index — a sync touches a subset, so it must NOT advance the
+        // extraction stamp (the bulk would still be stale). See extraction-version.ts.
+        if (result.success && result.filesIndexed > 0) {
+          try {
+            this.queries.setMetadata('indexed_with_version', CodeGraphPackageVersion);
+            this.queries.setMetadata('indexed_with_extraction_version', String(EXTRACTION_VERSION));
+          } catch { /* metadata is advisory — never fail an index over it */ }
+        }
+
+        // Reconcile the scan's ground truth against what the pipeline
+        // accounted for. A shortfall means files were silently dropped
+        // (observed in the wild: a run under heavy load came up 37 files
+        // short with no error) — record it and tell the user, don't let the
+        // index pass as complete.
+        try {
+          if (!result.success) {
+            this.queries.setMetadata('index_state', 'failed');
+          } else {
+            const accounted = result.filesIndexed + result.filesSkipped + result.filesErrored;
+            const discovered = result.filesDiscovered;
+            const shortfall = discovered !== undefined ? discovered - accounted : 0;
+            if (discovered !== undefined && shortfall > 0) {
+              this.queries.setMetadata('index_state', 'partial');
+              this.queries.setMetadata('index_files_discovered', String(discovered));
+              this.queries.setMetadata('index_files_accounted', String(accounted));
+              result.errors.push({
+                message: `Index is missing ${shortfall} of ${discovered} discovered files (indexed ${result.filesIndexed}, skipped ${result.filesSkipped}, errored ${result.filesErrored}). The index is PARTIAL — re-run \`codegraph index\`.`,
+                severity: 'warning',
+                code: 'index_partial',
+              });
+            } else {
+              this.queries.setMetadata('index_state', 'complete');
+              if (discovered !== undefined) {
+                this.queries.setMetadata('index_files_discovered', String(discovered));
+                this.queries.setMetadata('index_files_accounted', String(accounted));
+              }
+            }
+          }
+        } catch { /* metadata is advisory — never fail an index over it */ }
 
         return result;
       } finally {
@@ -422,6 +589,14 @@ export class CodeGraph {
         return { filesChecked: 0, filesAdded: 0, filesModified: 0, filesRemoved: 0, nodesUpdated: 0, durationMs: 0 };
       }
       try {
+        // Captured BEFORE the sync runs: the sync's own incremental writes
+        // populate vocab rows for the files it touches, so an end-of-sync
+        // emptiness check would see "non-empty" and skip the backfill forever,
+        // leaving every unchanged file's names unsegmented.
+        const vocabWasEmpty = (() => {
+          try { return this.queries.isNameSegmentVocabEmpty(); } catch { return false; }
+        })();
+
         const result = await this.orchestrator.sync(options.onProgress);
 
         // Cross-file finalization (e.g. NestJS RouterModule prefixes). Run on
@@ -433,7 +608,8 @@ export class CodeGraph {
         }
 
         // Resolve references if files were updated
-        if (result.filesAdded > 0 || result.filesModified > 0) {
+        const filesChanged = result.filesAdded > 0 || result.filesModified > 0;
+        if (filesChanged) {
           if (result.changedFilePaths) {
             // Scope resolution to changed files (git fast path — bounded set)
             const unresolvedRefs = this.queries.getUnresolvedReferencesByFiles(result.changedFilePaths);
@@ -471,10 +647,61 @@ export class CodeGraph {
           }
         }
 
+        // Orphan sweep (#1187). A resolution pass that dies mid-run — the #850
+        // daemon liveness watchdog's SIGKILL (#1122), Ctrl-C, a crash — leaves
+        // the refs it never reached in unresolved_refs, and the git-scoped fast
+        // path above never revisits them (it reads only the changed files'
+        // rows). Those files' call edges were then missing PERMANENTLY, with
+        // nothing to see except a too-small blast radius, until a full
+        // re-index. A completed pass deletes every row it processed (resolved
+        // or not), so any row still present now is such an orphan — or a row
+        // parked by an older engine whose scoped pass kept unresolvable refs.
+        // Grind them down with the batched resolver; this also makes a bare
+        // `codegraph sync` the recovery command for a wedged index. On a
+        // healthy index this is one COUNT query.
+        const orphanCount = this.queries.getUnresolvedReferencesCount();
+        if (orphanCount > 0) {
+          options.onProgress?.({
+            phase: 'resolving',
+            current: 0,
+            total: orphanCount,
+          });
+
+          await this.resolveReferencesBatched((current, total) => {
+            options.onProgress?.({
+              phase: 'resolving',
+              current,
+              total,
+            });
+          });
+        }
+
+        if (filesChanged || orphanCount > 0) {
+          // Second pass: chained calls whose method lives on a supertype the
+          // receiver conforms to (protocol-extension / inherited). Needs the
+          // implements/extends edges built above (#750).
+          await this.resolver.resolveChainedCallsViaConformance();
+          // Same lifecycle for `this.<member>` callback registrations whose
+          // member is inherited from a supertype (#808).
+          await this.resolver.resolveDeferredThisMemberRefs();
+        }
+
         // Refresh planner stats + checkpoint the WAL after bulk writes.
-        if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
+        if (filesChanged || result.filesRemoved > 0 || orphanCount > 0) {
           this.db.runMaintenance();
         }
+
+        // Heal the segment vocabulary on indexes built before the table
+        // existed (upgrade path): incremental writes above only cover changed
+        // files, so a vocab that was empty when this sync STARTED means the
+        // bulk was never segmented — backfill it (INSERT OR IGNORE, so the
+        // rows the sync just wrote are fine). Batched + yielding — sync can
+        // run on the daemon's liveness-watchdog thread (#850/#1091).
+        try {
+          if (vocabWasEmpty && this.queries.getNodeAndEdgeCount().nodes > 0) {
+            await this.rebuildNameSegmentVocab();
+          }
+        } catch { /* vocab is advisory — never fail a sync over it */ }
 
         return result;
       } finally {
@@ -545,6 +772,23 @@ export class CodeGraph {
   }
 
   /**
+   * True once live watching has permanently degraded (OS watch-resource
+   * exhaustion, or a write lock held past the retry budget) and auto-sync is
+   * disabled until the next {@link watch} call. Distinct from `!isWatching()`:
+   * a stopped/never-started watcher is inactive but NOT degraded. MCP tools use
+   * this to surface a whole-index "results may be stale" notice, since
+   * `getPendingFiles()` goes empty once watching stops (#876).
+   */
+  isWatcherDegraded(): boolean {
+    return this.watcher?.isDegraded() ?? false;
+  }
+
+  /** The reason live watching degraded, or null if it is healthy (#876). */
+  getWatcherDegradedReason(): string | null {
+    return this.watcher?.getDegradedReason() ?? null;
+  }
+
+  /**
    * Files seen by the file watcher since the last successful sync —
    * the per-file "stale" signal MCP tools attach to responses so an agent
    * can fall back to {@link Read} for just the affected file without
@@ -586,6 +830,48 @@ export class CodeGraph {
   }
 
   /**
+   * Completeness of the last full index run. `'complete'` is the only good
+   * state. `'indexing'` after the fact means a run was killed mid-index (OOM,
+   * SIGKILL, liveness watchdog) and the on-disk index is truncated;
+   * `'partial'` means the run finished but silently dropped files
+   * (discovered > indexed+skipped+errored); `'failed'` means it reported
+   * failure. `null` = index predates this marker. Surfaced by
+   * `codegraph status`.
+   */
+  getIndexState(): 'indexing' | 'complete' | 'partial' | 'failed' | null {
+    const raw = this.queries.getMetadata('index_state');
+    return raw === 'indexing' || raw === 'complete' || raw === 'partial' || raw === 'failed'
+      ? raw
+      : null;
+  }
+
+  /**
+   * Which engine built the current index: the package version + extraction
+   * version stamped at the last full `indexAll`. Either field is null for an
+   * index built before stamping existed (treated as stale). See
+   * `extraction-version.ts` and `isIndexStale()`.
+   */
+  getIndexBuildInfo(): { version: string | null; extractionVersion: number | null } {
+    const version = this.queries.getMetadata('indexed_with_version');
+    const ev = this.queries.getMetadata('indexed_with_extraction_version');
+    const parsed = ev != null ? parseInt(ev, 10) : NaN;
+    return { version, extractionVersion: Number.isFinite(parsed) ? parsed : null };
+  }
+
+  /**
+   * True when the on-disk index was built by an engine whose extraction is
+   * older than the one now running — i.e. a re-index would add data a migration
+   * can't backfill. False when there's no index yet (nothing to refresh) or the
+   * stamp is current. This is the signal behind `codegraph status`'s re-index
+   * hint and `codegraph upgrade`'s reminder.
+   */
+  isIndexStale(): boolean {
+    if (this.queries.getLastIndexedAt() == null) return false;
+    const { extractionVersion } = this.getIndexBuildInfo();
+    return extractionVersion == null || extractionVersion < EXTRACTION_VERSION;
+  }
+
+  /**
    * Extract nodes and edges from source code (without storing)
    */
   extractFromSource(filePath: string, source: string): ExtractionResult {
@@ -617,6 +903,16 @@ export class CodeGraph {
    */
   async resolveReferencesBatched(onProgress?: (current: number, total: number) => void): Promise<ResolutionResult> {
     return this.resolver.resolveAndPersistBatched(onProgress);
+  }
+
+  /**
+   * References extracted but not yet resolved into edges. Zero on a healthy
+   * index — a completed resolution pass consumes every row. Non-zero at rest
+   * means a pass was interrupted mid-run (killed indexer, crash — #1187), so
+   * some files' call edges are missing; the next `sync` sweeps them.
+   */
+  getPendingReferenceCount(): number {
+    return this.queries.getUnresolvedReferencesCount();
   }
 
   /**
@@ -699,11 +995,187 @@ export class CodeGraph {
     return this.queries.getNodesByName(name);
   }
 
+  /** Nodes whose name starts with `prefix` (index range scan, capped). */
+  getNodesByNamePrefix(prefix: string, limit = 20): Node[] {
+    return this.queries.getNodesByNamePrefix(prefix, limit);
+  }
+
   /**
    * Search nodes by text
    */
   searchNodes(query: string, options?: SearchOptions): SearchResult[] {
     return this.queries.searchNodes(query, options);
+  }
+
+  /**
+   * Graph-derived prompt matching for the front-load hook's MEDIUM tier:
+   * which indexed symbols do these prose words name? "state machine des
+   * commandes" → `OrderStateMachine`, in any human language whose technical
+   * nouns are Latin script — no keyword list involved.
+   *
+   * Precision comes from the repo's own naming statistics, not vocabulary:
+   * - CO-OCCURRENCE: ≥2 words that are segments of the SAME name ("state" +
+   *   "machine" → OrderStateMachine) is strong evidence and always qualifies.
+   * - RARITY: a single matched word qualifies only when its segment is
+   *   discriminative here (≤ {@link SEGMENT_RARITY_CEILING} distinct names) —
+   *   "checkout" in a shop backend yes, "state" in a react app no.
+   * Every candidate is re-verified against `nodes` before being returned
+   * (vocab rows are proposals; deletions leave orphans by design), so a
+   * returned symbol is guaranteed to exist right now.
+   */
+  getSegmentMatches(words: string[], limit: number = 6): SegmentMatch[] {
+    if (words.length === 0) return [];
+    // Variant → original word (plural folding), for coverage accounting.
+    const variantToWord = new Map<string, string>();
+    for (const word of words) {
+      for (const variant of segmentLookupVariants(word)) {
+        if (!variantToWord.has(variant)) variantToWord.set(variant, word);
+      }
+    }
+    const variants = [...variantToWord.keys()];
+
+    // Tier A: co-occurrence. The SQL folds variants back to their original
+    // word (#1146), so minWords=2 means two distinct PROMPT WORDS — a name
+    // matching both `service` and `services` can't tie with (or crowd past
+    // the LIMIT) a genuine two-word match. The JS re-check below recomputes
+    // the fold from live segments as the honesty layer.
+    const variantPairs = [...variantToWord.entries()].map(([segment, word]) => ({ segment, word }));
+    const candidates: Array<{ name: string; matchedWords: Set<string> }> = [];
+    for (const hit of this.queries.getSegmentCoOccurrence(variantPairs, 2, 24)) {
+      const matched = this.wordsMatchingName(hit.name, variantToWord);
+      if (matched.size >= 2) candidates.push({ name: hit.name, matchedWords: matched });
+    }
+
+    // Tier B: single rare word. Only when co-occurrence found nothing — a
+    // co-occurring name is categorically stronger evidence — and under
+    // stricter rules, because one word is thin: the word must be ≥5 chars
+    // (measured FPs: "this", "typo"); the segment must appear in AT LEAST TWO
+    // names (a concept the codebase is about clusters across names —
+    // CheckoutService/CheckoutController — while a prose coincidence is a
+    // singleton: measured FP "deploy to PRODUCTION" → the one name
+    // matchesNonProductionDir); and the candidate name must have ≥2 segments
+    // (a bare common verb matching a bare function name — "write" → `write` —
+    // is prose coincidence, not the user naming a symbol).
+    if (candidates.length === 0) {
+      const singleWordVariants = variants.filter((v) => variantToWord.get(v)!.length >= 5);
+      const counts = this.queries.getSegmentNameCounts(singleWordVariants);
+      const rare = [...counts.entries()]
+        .filter(([, n]) => n >= 2 && n <= CodeGraph.SEGMENT_RARITY_CEILING)
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, 2);
+      for (const [variant] of rare) {
+        const word = variantToWord.get(variant)!;
+        for (const name of this.queries.getNamesForSegment(variant, 12)) {
+          if (splitIdentifierSegments(name).length < 2) continue;
+          candidates.push({ name, matchedWords: new Set([word]) });
+        }
+      }
+    }
+
+    // Verify against nodes (the honesty gate) and pick a representative
+    // definition per name. A name whose only nodes are file/import kind has
+    // no real definition to point at — surfacing the import statement instead
+    // reads as a matched symbol but isn't one (#1144) — so it's skipped, the
+    // same way an orphaned vocab row is. (Import names no longer enter the
+    // vocab at write time, but rows written before that exclusion persist
+    // until the next full index.)
+    const out: SegmentMatch[] = [];
+    const seen = new Set<string>();
+    candidates.sort((a, b) => b.matchedWords.size - a.matchedWords.size || a.name.length - b.name.length);
+    for (const candidate of candidates) {
+      if (out.length >= limit) break;
+      if (seen.has(candidate.name)) continue;
+      seen.add(candidate.name);
+      const nodes = this.queries.getNodesByName(candidate.name);
+      if (nodes.length === 0) continue; // orphaned vocab row — name no longer exists
+      const rep = nodes.find((n) => n.kind !== 'file' && n.kind !== 'import');
+      if (!rep) continue; // no real definition — don't surface an import/file as one
+      out.push({
+        name: candidate.name,
+        kind: rep.kind,
+        filePath: rep.filePath,
+        startLine: rep.startLine ?? 0,
+        matchedWords: [...candidate.matchedWords].sort(),
+      });
+    }
+    return out;
+  }
+
+  /** A single word ("state") can match hundreds of names in a big repo — that
+   *  is noise, not signal. Ceiling for the single-word tier; co-occurrence is
+   *  exempt because two words on one name is already discriminative. */
+  private static readonly SEGMENT_RARITY_CEILING = 25;
+
+  /** Which of the prompt's original words match `name`'s segments (via
+   *  variants). Segments are recomputed in JS — a name-keyed vocab lookup
+   *  would scan the (segment, name) primary key. */
+  private wordsMatchingName(name: string, variantToWord: Map<string, string>): Set<string> {
+    const segments = new Set(splitIdentifierSegments(name));
+    const matched = new Set<string>();
+    for (const [variant, word] of variantToWord) {
+      if (segments.has(variant)) matched.add(word);
+    }
+    return matched;
+  }
+
+  /**
+   * One-shot upgrade heal for callers that open the graph WITHOUT syncing —
+   * concretely the prompt hook, whose MEDIUM tier reads the segment
+   * vocabulary: a database migrated from before the vocab table existed
+   * starts with it empty, and the only other backfill lives inside `sync()`,
+   * which such callers never run (#1142). Returns true when the vocab is
+   * usable (already populated — the overwhelmingly common one-SELECT case —
+   * or healed here); false when it isn't (empty graph, or another process
+   * holds the index lock — that process's own sync heals it).
+   */
+  async healSegmentVocabIfEmpty(): Promise<boolean> {
+    const empty = (() => {
+      try { return this.queries.isNameSegmentVocabEmpty(); } catch { return false; }
+    })();
+    if (!empty) return true;
+    if (this.queries.getNodeAndEdgeCount().nodes === 0) return false;
+    return this.indexMutex.withLock(async () => {
+      try {
+        this.fileLock.acquire();
+      } catch {
+        return false; // an index/sync is running — it backfills the vocab itself
+      }
+      try {
+        if (!this.queries.isNameSegmentVocabEmpty()) return true; // raced: healed meanwhile
+        await this.rebuildNameSegmentVocab();
+        return true;
+      } finally {
+        this.fileLock.release();
+      }
+    });
+  }
+
+  /**
+   * Rebuild the segment vocabulary from the current graph, batched and
+   * yielding — the upgrade-heal path for indexes built before the vocab table
+   * existed. Runs inside the index mutex/lock (sync and
+   * healSegmentVocabIfEmpty hold them).
+   */
+  private async rebuildNameSegmentVocab(): Promise<void> {
+    const maybeYield = createYielder();
+    const BATCH = 2000;
+    for (let offset = 0; ; offset += BATCH) {
+      const names = this.queries.getDistinctNodeNames(BATCH, offset);
+      if (names.length === 0) break;
+      this.queries.insertNameSegmentsBatch(names);
+      await maybeYield();
+    }
+  }
+
+  /**
+   * Normalized project-name tokens (go.mod / package.json / repo dir) used to
+   * down-weight the non-discriminative project name in search ranking (#720).
+   * Exposed so explore can exclude it from the PascalCase type-disambiguation
+   * bias, which would otherwise pull overloaded tokens toward whichever stack
+   * embeds the project name.
+   */
+  getProjectNameTokens(): Set<string> {
+    return this.queries.getProjectNameTokens();
   }
 
   /**
