@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
 import {
-  codeGraphEnvironment,
+  codeBrainEnvironment,
   locateRuntime,
   RuntimeCommand,
 } from './runtime';
 import { getWorkspaceFolder } from './workspace';
 
-const PROVIDER_ID = 'codegraph.runtime';
+const PROVIDER_ID = 'codebrain.runtime';
 
 export function registerMcpProvider(
   context: vscode.ExtensionContext,
@@ -20,10 +20,10 @@ export function registerMcpProvider(
     provideMcpServerDefinitions: () => {
       const workspaceFolder = getWorkspaceFolder();
       const definition = new vscode.McpStdioServerDefinition(
-        'CodeGraph',
+        'CodeBrain',
         runtime.command,
         [...runtime.baseArgs, 'serve', '--mcp'],
-        codeGraphEnvironment(),
+        codeBrainEnvironment(),
         String(context.extension.packageJSON.version),
       );
       definition.cwd = workspaceFolder?.uri;
@@ -36,8 +36,8 @@ export function registerMcpProvider(
     vscode.lm.registerMcpServerDefinitionProvider(PROVIDER_ID, provider),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (
-        event.affectsConfiguration('codegraph.autoRefresh.enabled') ||
-        event.affectsConfiguration('codegraph.autoRefresh.debounceMs')
+        event.affectsConfiguration('codebrain.autoRefresh.enabled') ||
+        event.affectsConfiguration('codebrain.autoRefresh.debounceMs')
       ) {
         didChange.fire();
       }

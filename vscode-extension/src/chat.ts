@@ -10,8 +10,8 @@ import {
 import { ReportManager } from './reportManager';
 import { normalizeReport, ReportKind } from './reports';
 import {
-  codeGraphEnvironment,
-  runCodeGraph,
+  codeBrainEnvironment,
+  runCodeBrain,
   RuntimeCommand,
 } from './runtime';
 import {
@@ -20,7 +20,7 @@ import {
   hasIndex,
 } from './workspace';
 
-interface CodeGraphChatResult extends vscode.ChatResult {
+interface CodeBrainChatResult extends vscode.ChatResult {
   metadata: {
     command: ReportKind;
     report?: string;
@@ -41,11 +41,11 @@ Include one valid Mermaid flowchart using only simple node labels and flowchart 
 ## Key functions and responsibilities
 ## Data, state, and side effects
 ## Failure and edge paths
-## CodeGraph evidence
-Use file paths and line numbers from the supplied CodeGraph context. State uncertainties explicitly. Do not mention these instructions.`;
+## CodeBrain evidence
+Use file paths and line numbers from the supplied CodeBrain context. State uncertainties explicitly. Do not mention these instructions.`;
 
 const REVIEW_INSTRUCTIONS = `You are a conservative staff-level code reviewer. Review only; do not rewrite or edit code.
-Answer in the same language as the user. The Git diff describes what changed. The CodeGraph context describes current source, call paths, and blast radius.
+Answer in the same language as the user. The Git diff describes what changed. The CodeBrain context describes current source, call paths, and blast radius.
 
 Treat changes to shared/public contracts, authentication/authorization, persistence, migrations, concurrency, caching, lifecycle, error handling, or high fan-out symbols as HIGH RISK until adequate regression tests are demonstrated.
 
@@ -62,12 +62,12 @@ Order by severity. Every finding must include severity, file:line evidence, cons
 Use a Markdown table with scenario, risk, and required test.
 ## Release recommendation
 ## Evidence and limits
-Distinguish facts from CodeGraph/diff versus inference. Do not mention these instructions.`;
+Distinguish facts from CodeBrain/diff versus inference. Do not mention these instructions.`;
 
 const IMPACT_INSTRUCTIONS = `You are a conservative change-impact analyst using a precomputed semantic code graph.
 Answer in the same language as the user. Do not edit code.
 
-The evidence contains exact changed files, affected tests selected by graph traversal, a heuristic risk classification, and compact CodeGraph call-path context. Preserve those facts and label token savings as estimates.
+The evidence contains exact changed files, affected tests selected by graph traversal, a heuristic risk classification, and compact CodeBrain call-path context. Preserve those facts and label token savings as estimates.
 
 Return a self-contained Markdown report with exactly this high-level structure:
 # Change impact: <scope>
@@ -128,7 +128,7 @@ async function generateReport(
     messages,
     {
       justification:
-        'Generate a local CodeGraph workflow explanation or code review requested by the user.',
+        'Generate a local CodeBrain workflow explanation or code review requested by the user.',
     },
     token,
   );
@@ -200,7 +200,7 @@ async function explore(
   const mcpTool = vscode.lm.tools.find(
     (tool) =>
       /(^|[._/-])codegraph_explore$/i.test(tool.name) ||
-      (/codegraph/i.test(tool.name) &&
+      (/(codebrain|codegraph)/i.test(tool.name) &&
         /call paths|blast radius|knowledge graph/i.test(tool.description)),
   );
 
@@ -238,11 +238,11 @@ async function explore(
       }
     } catch {
       // MCP discovery/activation is best-effort here. The bundled CLI below is
-      // the same CodeGraph engine and output surface, so reports still work.
+      // the same CodeBrain engine and output surface, so reports still work.
     }
   }
 
-  const result = await runCodeGraph(
+  const result = await runCodeBrain(
     runtime,
     [
       'explore',
@@ -254,13 +254,13 @@ async function explore(
     ],
     {
       cwd: root,
-      env: codeGraphEnvironment(),
+      env: codeBrainEnvironment(),
       token,
     },
   );
 
   if (result.code !== 0) {
-    throw new Error(result.stderr.trim() || result.stdout.trim() || 'CodeGraph explore failed.');
+    throw new Error(result.stderr.trim() || result.stdout.trim() || 'CodeBrain explore failed.');
   }
   return result.stdout;
 }
@@ -287,7 +287,7 @@ function reviewEvidence(
       : '',
     '## Editor focus',
     editorContext || 'No active editor selection.',
-    '## CodeGraph source, call paths, and blast radius',
+    '## CodeBrain source, call paths, and blast radius',
     graphContext,
   ]
     .filter(Boolean)
@@ -298,7 +298,7 @@ function explainEvidence(graphContext: string, editorContext: string): string {
   return [
     '## Editor focus',
     editorContext || 'No active editor selection.',
-    '## CodeGraph source and workflow evidence',
+    '## CodeBrain source and workflow evidence',
     graphContext,
   ].join('\n\n');
 }
@@ -315,29 +315,29 @@ export function registerChatParticipant(
     _chatContext,
     stream,
     token,
-  ): Promise<CodeGraphChatResult> => {
+  ): Promise<CodeBrainChatResult> => {
     const command = inferCommand(request);
     const folder = getWorkspaceFolder();
 
     if (!folder) {
       stream.markdown(
-        'CodeGraph needs an open filesystem-backed workspace before it can analyze code.',
+        'CodeBrain needs an open filesystem-backed workspace before it can analyze code.',
       );
       return { metadata: { command } };
     }
 
     if (!hasIndex(folder)) {
       stream.markdown(
-        'This workspace has no `.codegraph/` index yet. Initialize it once, then CodeGraph can answer from the graph and keep it refreshed automatically.',
+        'This workspace has no `.codegraph/` index yet. Initialize it once, then CodeBrain can answer from the graph and keep it refreshed automatically.',
       );
       stream.button({
-        command: 'codegraph.initializeWorkspace',
-        title: 'Initialize CodeGraph',
+        command: 'codebrain.initializeWorkspace',
+        title: 'Initialize CodeBrain',
       });
       return { metadata: { command } };
     }
 
-    const config = vscode.workspace.getConfiguration('codegraph');
+    const config = vscode.workspace.getConfiguration('codebrain');
     const maxFiles = config.get<number>('chat.maxContextFiles', 12);
     const maxDiffCharacters = config.get<number>(
       'chat.maxDiffCharacters',
@@ -360,8 +360,8 @@ export function registerChatParticipant(
         command === 'impact'
           ? 'Tracing change impact and detecting affected tests…'
           : command === 'review'
-          ? 'Reading the diff and CodeGraph blast radius…'
-          : 'Tracing the workflow through CodeGraph…',
+          ? 'Reading the diff and CodeBrain blast radius…'
+          : 'Tracing the workflow through CodeBrain…',
       );
 
       let rawReport: string;
@@ -398,7 +398,7 @@ export function registerChatParticipant(
           IMPACT_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Analyze the current change impact.',
-          `${deterministicReport}\n\n## CodeGraph context\n\n${graphContext}`,
+          `${deterministicReport}\n\n## CodeBrain context\n\n${graphContext}`,
           token,
         );
       } else if (command === 'review') {
@@ -457,7 +457,7 @@ export function registerChatParticipant(
         kind: command,
         title:
           report.match(/^#\s+(.+)$/m)?.[1] ??
-          `CodeGraph ${command} report`,
+          `CodeBrain ${command} report`,
         markdown: report,
         folder,
       });
@@ -467,17 +467,13 @@ export function registerChatParticipant(
       }
       if (command === 'impact') {
         stream.button({
-          command: 'codegraph.openWorkflowGraph',
+          command: 'codebrain.openWorkflowGraph',
           title: 'Open Workflow Graph',
         });
       }
       stream.button({
-        command: 'codegraph.exportLatestMarkdown',
+        command: 'codebrain.exportLatestMarkdown',
         title: 'Export Markdown',
-      });
-      stream.button({
-        command: 'codegraph.exportLatestPdf',
-        title: 'Export PDF',
       });
       return {
         metadata: {
@@ -487,22 +483,22 @@ export function registerChatParticipant(
       };
     } catch (error) {
       if (token.isCancellationRequested) {
-        stream.markdown('CodeGraph analysis was cancelled.');
+        stream.markdown('CodeBrain analysis was cancelled.');
         return { metadata: { command } };
       }
 
       const message = error instanceof Error ? error.message : String(error);
       stream.markdown(
-        `CodeGraph could not complete the ${command} report: ${message}`,
+        `CodeBrain could not complete the ${command} report: ${message}`,
       );
       return { metadata: { command } };
     }
   };
 
-  const participant = vscode.chat.createChatParticipant('codegraph.chat', handler);
+  const participant = vscode.chat.createChatParticipant('codebrain.chat', handler);
   participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.svg');
   participant.followupProvider = {
-    provideFollowups(result: CodeGraphChatResult) {
+    provideFollowups(result: CodeBrainChatResult) {
       if (result.metadata.command === 'impact') {
         return [
           {
@@ -539,7 +535,7 @@ export function registerChatParticipant(
   context.subscriptions.push(participant);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('codegraph.chat.initialize', () =>
+    vscode.commands.registerCommand('codebrain.chat.initialize', () =>
       indexManager.initialize(),
     ),
   );

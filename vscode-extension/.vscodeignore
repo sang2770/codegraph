@@ -3,7 +3,6 @@ src/**
 test/**
 scripts/**
 tmp/**
-output/**
 tsconfig.json
 package-lock.json
 runtime/**/*.map

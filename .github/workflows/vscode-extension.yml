@@ -70,6 +70,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: codegraph-${{ matrix.target }}
-          path: vscode-extension/codegraph-${{ matrix.target }}.vsix
+          name: codebrain-${{ matrix.target }}
+          path: vscode-extension/codebrain-${{ matrix.target }}.vsix
           if-no-files-found: error

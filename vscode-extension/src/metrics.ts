@@ -21,7 +21,7 @@ export interface TokenSavingSnapshot {
   last?: TokenSavingSample;
 }
 
-const STORAGE_KEY = 'codegraph.tokenSavings.v1';
+const STORAGE_KEY = 'codebrain.tokenSavings.v1';
 
 const EMPTY: TokenSavingSnapshot = {
   analyses: 0,
@@ -36,7 +36,7 @@ export class MetricsStore {
   public constructor(private readonly context: vscode.ExtensionContext) {
     void vscode.commands.executeCommand(
       'setContext',
-      'codegraph.tokenSavings.hasData',
+      'codebrain.tokenSavings.hasData',
       this.snapshot().analyses > 0,
     );
   }
@@ -51,7 +51,7 @@ export class MetricsStore {
   public async record(sample: TokenSavingSample): Promise<void> {
     if (
       !vscode.workspace
-        .getConfiguration('codegraph')
+        .getConfiguration('codebrain')
         .get<boolean>('metrics.enabled', true)
     ) {
       return;
@@ -69,7 +69,7 @@ export class MetricsStore {
     } satisfies TokenSavingSnapshot);
     await vscode.commands.executeCommand(
       'setContext',
-      'codegraph.tokenSavings.hasData',
+      'codebrain.tokenSavings.hasData',
       true,
     );
   }
@@ -78,7 +78,7 @@ export class MetricsStore {
     await this.context.workspaceState.update(STORAGE_KEY, EMPTY);
     await vscode.commands.executeCommand(
       'setContext',
-      'codegraph.tokenSavings.hasData',
+      'codebrain.tokenSavings.hasData',
       false,
     );
   }

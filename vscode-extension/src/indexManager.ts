@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import {
-  codeGraphEnvironment,
-  runCodeGraph,
+  codeBrainEnvironment,
+  runCodeBrain,
   RuntimeCommand,
 } from './runtime';
 import {
@@ -15,28 +15,28 @@ export class IndexManager implements vscode.Disposable {
     vscode.StatusBarAlignment.Left,
     50,
   );
-  private readonly output = vscode.window.createOutputChannel('CodeGraph');
+  private readonly output = vscode.window.createOutputChannel('CodeBrain');
   private readonly disposables: vscode.Disposable[] = [];
 
   public constructor(private readonly runtime: RuntimeCommand) {
-    this.statusBar.command = 'codegraph.showStatus';
-    this.statusBar.name = 'CodeGraph Index';
+    this.statusBar.command = 'codebrain.showStatus';
+    this.statusBar.name = 'CodeBrain Index';
     this.statusBar.show();
 
     this.disposables.push(
       this.statusBar,
       this.output,
-      vscode.commands.registerCommand('codegraph.initializeWorkspace', () =>
+      vscode.commands.registerCommand('codebrain.initializeWorkspace', () =>
         this.initialize(),
       ),
-      vscode.commands.registerCommand('codegraph.syncIndex', () => this.sync()),
-      vscode.commands.registerCommand('codegraph.showStatus', () =>
+      vscode.commands.registerCommand('codebrain.syncIndex', () => this.sync()),
+      vscode.commands.registerCommand('codebrain.showStatus', () =>
         this.showStatus(),
       ),
       vscode.workspace.onDidChangeWorkspaceFolders(() => this.refreshStatusBar()),
       vscode.window.onDidChangeActiveTextEditor(() => this.refreshStatusBar()),
       vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('codegraph.autoRefresh')) {
+        if (event.affectsConfiguration('codebrain.autoRefresh')) {
           this.refreshStatusBar();
         }
       }),
@@ -54,28 +54,28 @@ export class IndexManager implements vscode.Disposable {
   public refreshStatusBar(): void {
     const folder = getWorkspaceFolder();
     if (!folder) {
-      this.statusBar.text = '$(database) CodeGraph: No workspace';
-      this.statusBar.tooltip = 'Open a filesystem-backed workspace to use CodeGraph.';
+      this.statusBar.text = '$(database) CodeBrain: No workspace';
+      this.statusBar.tooltip = 'Open a filesystem-backed workspace to use CodeBrain.';
       return;
     }
 
     if (!hasIndex(folder)) {
-      this.statusBar.text = '$(database) CodeGraph: Set up';
-      this.statusBar.tooltip = `Initialize the CodeGraph index for ${workspaceLabel(folder)}.`;
-      this.statusBar.command = 'codegraph.initializeWorkspace';
+      this.statusBar.text = '$(database) CodeBrain: Set up';
+      this.statusBar.tooltip = `Initialize the CodeBrain index for ${workspaceLabel(folder)}.`;
+      this.statusBar.command = 'codebrain.initializeWorkspace';
       return;
     }
 
     const autoRefresh = vscode.workspace
-      .getConfiguration('codegraph')
+      .getConfiguration('codebrain')
       .get<boolean>('autoRefresh.enabled', true);
     this.statusBar.text = autoRefresh
-      ? '$(database) CodeGraph: Ready'
-      : '$(warning) CodeGraph: Refresh off';
+      ? '$(database) CodeBrain: Ready'
+      : '$(warning) CodeBrain: Refresh off';
     this.statusBar.tooltip = autoRefresh
       ? 'Index is initialized. The bundled MCP runtime keeps it fresh while active.'
       : 'Index is initialized, but automatic refresh is disabled.';
-    this.statusBar.command = 'codegraph.showStatus';
+    this.statusBar.command = 'codebrain.showStatus';
   }
 
   public async initialize(
@@ -83,13 +83,13 @@ export class IndexManager implements vscode.Disposable {
   ): Promise<boolean> {
     if (!folder) {
       void vscode.window.showErrorMessage(
-        'CodeGraph needs an open filesystem-backed workspace.',
+        'CodeBrain needs an open filesystem-backed workspace.',
       );
       return false;
     }
     if (hasIndex(folder)) {
       void vscode.window.showInformationMessage(
-        `CodeGraph is already initialized for ${workspaceLabel(folder)}.`,
+        `CodeBrain is already initialized for ${workspaceLabel(folder)}.`,
       );
       this.refreshStatusBar();
       return true;
@@ -98,14 +98,14 @@ export class IndexManager implements vscode.Disposable {
     const result = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `Building CodeGraph index for ${workspaceLabel(folder)}`,
+        title: `Building CodeBrain index for ${workspaceLabel(folder)}`,
         cancellable: false,
       },
       async (progress) => {
         progress.report({ message: 'Parsing symbols and resolving dependencies…' });
-        return runCodeGraph(this.runtime, ['init', folder.uri.fsPath], {
+        return runCodeBrain(this.runtime, ['init', folder.uri.fsPath], {
           cwd: folder.uri.fsPath,
-          env: codeGraphEnvironment(),
+          env: codeBrainEnvironment(),
         });
       },
     );
@@ -114,14 +114,14 @@ export class IndexManager implements vscode.Disposable {
     this.refreshStatusBar();
     if (result.code !== 0) {
       void vscode.window.showErrorMessage(
-        `CodeGraph initialization failed. Open the CodeGraph output channel for details.`,
+        `CodeBrain initialization failed. Open the CodeBrain output channel for details.`,
       );
       this.output.show(true);
       return false;
     }
 
     void vscode.window.showInformationMessage(
-      `CodeGraph index is ready for ${workspaceLabel(folder)}.`,
+      `CodeBrain index is ready for ${workspaceLabel(folder)}.`,
     );
     return true;
   }
@@ -129,7 +129,7 @@ export class IndexManager implements vscode.Disposable {
   public async sync(folder = getWorkspaceFolder()): Promise<boolean> {
     if (!folder || !hasIndex(folder)) {
       void vscode.window.showWarningMessage(
-        'Initialize CodeGraph for this workspace before refreshing the index.',
+        'Initialize CodeBrain for this workspace before refreshing the index.',
       );
       return false;
     }
@@ -137,36 +137,36 @@ export class IndexManager implements vscode.Disposable {
     const result = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Window,
-        title: 'Refreshing CodeGraph index',
+        title: 'Refreshing CodeBrain index',
         cancellable: false,
       },
       () =>
-        runCodeGraph(this.runtime, ['sync', folder.uri.fsPath], {
+        runCodeBrain(this.runtime, ['sync', folder.uri.fsPath], {
           cwd: folder.uri.fsPath,
-          env: codeGraphEnvironment(),
+          env: codeBrainEnvironment(),
         }),
     );
 
     this.logResult('sync', result);
     if (result.code !== 0) {
       void vscode.window.showErrorMessage(
-        'CodeGraph refresh failed. Open the CodeGraph output channel for details.',
+        'CodeBrain refresh failed. Open the CodeBrain output channel for details.',
       );
       this.output.show(true);
       return false;
     }
-    void vscode.window.showInformationMessage('CodeGraph index refreshed.');
+    void vscode.window.showInformationMessage('CodeBrain index refreshed.');
     return true;
   }
 
   public async showStatus(folder = getWorkspaceFolder()): Promise<void> {
     if (!folder) {
-      void vscode.window.showInformationMessage('CodeGraph: no workspace is open.');
+      void vscode.window.showInformationMessage('CodeBrain: no workspace is open.');
       return;
     }
     if (!hasIndex(folder)) {
       const action = await vscode.window.showInformationMessage(
-        `CodeGraph is not initialized for ${workspaceLabel(folder)}.`,
+        `CodeBrain is not initialized for ${workspaceLabel(folder)}.`,
         'Initialize',
       );
       if (action === 'Initialize') {
@@ -175,19 +175,19 @@ export class IndexManager implements vscode.Disposable {
       return;
     }
 
-    const result = await runCodeGraph(
+    const result = await runCodeBrain(
       this.runtime,
       ['status', folder.uri.fsPath, '--json'],
       {
         cwd: folder.uri.fsPath,
-        env: codeGraphEnvironment(),
+        env: codeBrainEnvironment(),
       },
     );
     this.logResult('status', result);
 
     if (result.code !== 0) {
       void vscode.window.showErrorMessage(
-        'Could not read CodeGraph status. Open the output channel for details.',
+        'Could not read CodeBrain status. Open the output channel for details.',
       );
       this.output.show(true);
       return;
@@ -205,7 +205,7 @@ export class IndexManager implements vscode.Disposable {
       truncated: boolean;
     },
   ): void {
-    this.output.appendLine(`\n[${new Date().toISOString()}] codegraph ${operation}`);
+    this.output.appendLine(`\n[${new Date().toISOString()}] codebrain (${operation})`);
     if (result.stdout.trim()) {
       this.output.appendLine(result.stdout.trimEnd());
     }

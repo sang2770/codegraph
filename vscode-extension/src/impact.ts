@@ -3,8 +3,8 @@ import * as vscode from 'vscode';
 import { collectGitReviewContext } from './gitContext';
 import { estimateTokenSaving, MetricsStore, TokenSavingSample } from './metrics';
 import {
-  codeGraphEnvironment,
-  runCodeGraph,
+  codeBrainEnvironment,
+  runCodeBrain,
   RuntimeCommand,
 } from './runtime';
 import { activeEditorContext } from './workspace';
@@ -226,7 +226,7 @@ export class ImpactAnalysisService {
     graphContextOverride?: string,
   ): Promise<ImpactAnalysis> {
     const startedAt = Date.now();
-    const config = vscode.workspace.getConfiguration('codegraph');
+    const config = vscode.workspace.getConfiguration('codebrain');
     const maxDiffCharacters = config.get<number>(
       'chat.maxDiffCharacters',
       120_000,
@@ -248,7 +248,7 @@ export class ImpactAnalysisService {
       );
     }
 
-    const affectedResult = await runCodeGraph(
+    const affectedResult = await runCodeBrain(
       this.runtime,
       [
         'affected',
@@ -261,7 +261,7 @@ export class ImpactAnalysisService {
       ],
       {
         cwd: folder.uri.fsPath,
-        env: codeGraphEnvironment(),
+        env: codeBrainEnvironment(),
         token,
       },
     );
@@ -276,7 +276,7 @@ export class ImpactAnalysisService {
 
     let graphContext = graphContextOverride;
     if (!graphContext) {
-      const graphResult = await runCodeGraph(
+      const graphResult = await runCodeBrain(
         this.runtime,
         [
           'explore',
@@ -288,7 +288,7 @@ export class ImpactAnalysisService {
         ],
         {
           cwd: folder.uri.fsPath,
-          env: codeGraphEnvironment(),
+          env: codeBrainEnvironment(),
           token,
         },
       );
@@ -296,7 +296,7 @@ export class ImpactAnalysisService {
         throw new Error(
           graphResult.stderr.trim() ||
             graphResult.stdout.trim() ||
-            'CodeGraph impact exploration failed.',
+            'CodeBrain impact exploration failed.',
         );
       }
       graphContext = graphResult.stdout;
@@ -387,7 +387,7 @@ export function buildImpactMarkdown(
 
 ## Kết luận
 
-**Mức rủi ro: ${risk}.** CodeGraph đã duyệt ${analysis.totalDependentsTraversed} thành phần phụ thuộc và phát hiện ${analysis.affectedTests.length} tệp test bị ảnh hưởng.
+**Mức rủi ro: ${risk}.** CodeBrain đã duyệt ${analysis.totalDependentsTraversed} thành phần phụ thuộc và phát hiện ${analysis.affectedTests.length} tệp test bị ảnh hưởng.
 
 ${analysis.riskReasons.map((reason) => `- ${reason}`).join('\n')}
 
@@ -414,7 +414,7 @@ ${listOrNone(analysis.affectedTests, 'Không phát hiện test bị ảnh hưở
 
 | Chỉ số | Giá trị |
 |---|---:|
-| Context CodeGraph | ${analysis.metrics.contextTokens.toLocaleString()} tokens |
+| Context CodeBrain | ${analysis.metrics.contextTokens.toLocaleString()} tokens |
 | Baseline đọc tệp | ${analysis.metrics.baselineTokens.toLocaleString()} tokens |
 | Token tiết kiệm | ${analysis.metrics.tokensSaved.toLocaleString()} tokens |
 | Lượt đọc tệp tránh được | ${analysis.metrics.fileReadsAvoided} |
@@ -423,7 +423,7 @@ ${listOrNone(analysis.affectedTests, 'Không phát hiện test bị ảnh hưở
 
 ## Bằng chứng và giới hạn
 
-Kết quả test và dependency được lấy từ index CodeGraph hiện tại. Hãy refresh index nếu source vừa thay đổi. Phân loại rủi ro là heuristic bảo thủ; xác nhận lại bằng test và review của con người trước khi release.
+Kết quả test và dependency được lấy từ index CodeBrain hiện tại. Hãy refresh index nếu source vừa thay đổi. Phân loại rủi ro là heuristic bảo thủ; xác nhận lại bằng test và review của con người trước khi release.
 `;
   }
 
@@ -431,7 +431,7 @@ Kết quả test và dependency được lấy từ index CodeGraph hiện tại
 
 ## Verdict
 
-**Risk: ${risk}.** CodeGraph traversed ${analysis.totalDependentsTraversed} dependents and detected ${analysis.affectedTests.length} affected test file(s).
+**Risk: ${risk}.** CodeBrain traversed ${analysis.totalDependentsTraversed} dependents and detected ${analysis.affectedTests.length} affected test file(s).
 
 ${analysis.riskReasons.map((reason) => `- ${reason}`).join('\n')}
 
@@ -458,7 +458,7 @@ ${listOrNone(analysis.affectedTests, 'No affected tests were detected in the ind
 
 | Metric | Value |
 |---|---:|
-| CodeGraph context | ${analysis.metrics.contextTokens.toLocaleString()} tokens |
+| CodeBrain context | ${analysis.metrics.contextTokens.toLocaleString()} tokens |
 | File-reading baseline | ${analysis.metrics.baselineTokens.toLocaleString()} tokens |
 | Tokens saved | ${analysis.metrics.tokensSaved.toLocaleString()} tokens |
 | File reads avoided | ${analysis.metrics.fileReadsAvoided} |
@@ -467,6 +467,6 @@ ${listOrNone(analysis.affectedTests, 'No affected tests were detected in the ind
 
 ## Evidence and limits
 
-Test and dependency results come from the current CodeGraph index. Refresh the index after source changes. Risk classification is a conservative heuristic; validate it with tests and human review before release.
+Test and dependency results come from the current CodeBrain index. Refresh the index after source changes. Risk classification is a conservative heuristic; validate it with tests and human review before release.
 `;
 }

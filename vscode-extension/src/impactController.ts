@@ -24,16 +24,16 @@ export class ImpactController implements vscode.Disposable {
   ) {
     this.service = new ImpactAnalysisService(this.runtime, metrics);
     this.disposables.push(
-      vscode.commands.registerCommand('codegraph.analyzeImpact', () =>
+      vscode.commands.registerCommand('codebrain.analyzeImpact', () =>
         this.analyze(),
       ),
-      vscode.commands.registerCommand('codegraph.openWorkflowGraph', () =>
+      vscode.commands.registerCommand('codebrain.openWorkflowGraph', () =>
         this.openGraph(),
       ),
-      vscode.commands.registerCommand('codegraph.showTokenSavings', () =>
+      vscode.commands.registerCommand('codebrain.showTokenSavings', () =>
         this.showDashboard(),
       ),
-      vscode.commands.registerCommand('codegraph.resetTokenSavings', () =>
+      vscode.commands.registerCommand('codebrain.resetTokenSavings', () =>
         this.resetMetrics(),
       ),
     );
@@ -62,17 +62,17 @@ export class ImpactController implements vscode.Disposable {
     const folder = getWorkspaceFolder();
     if (!folder) {
       void vscode.window.showErrorMessage(
-        'CodeGraph needs an open filesystem-backed workspace.',
+        'CodeBrain needs an open filesystem-backed workspace.',
       );
       return undefined;
     }
     if (!hasIndex(folder)) {
       const action = await vscode.window.showWarningMessage(
-        'Initialize CodeGraph before analyzing change impact.',
+        'Initialize CodeBrain before analyzing change impact.',
         'Initialize',
       );
       if (action === 'Initialize') {
-        await vscode.commands.executeCommand('codegraph.initializeWorkspace');
+        await vscode.commands.executeCommand('codebrain.initializeWorkspace');
       }
       return undefined;
     }
@@ -81,7 +81,7 @@ export class ImpactController implements vscode.Disposable {
       const analysis = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: 'CodeGraph: Analyze Change Impact',
+          title: 'CodeBrain: Analyze Change Impact',
           cancellable: true,
         },
         async (progress, token) => {
@@ -116,7 +116,7 @@ export class ImpactController implements vscode.Disposable {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       void vscode.window.showErrorMessage(
-        `CodeGraph impact analysis failed: ${message}`,
+        `CodeBrain impact analysis failed: ${message}`,
       );
       return undefined;
     }
@@ -142,7 +142,7 @@ export class ImpactController implements vscode.Disposable {
 
   private async resetMetrics(): Promise<void> {
     const action = await vscode.window.showWarningMessage(
-      'Reset CodeGraph token-saving estimates for this workspace?',
+      'Reset CodeBrain token-saving estimates for this workspace?',
       { modal: true },
       'Reset',
     );

@@ -9,7 +9,7 @@ function fallbackDiagram(kind: ReportKind): string {
     return [
       '```mermaid',
       'flowchart LR',
-      '  D[Changed code] --> G[CodeGraph blast radius]',
+      '  D[Changed code] --> G[CodeBrain blast radius]',
       '  G --> C[Callers and dependents]',
       '  C --> R[Regression risks]',
       '  R --> T[Required tests]',
@@ -19,7 +19,7 @@ function fallbackDiagram(kind: ReportKind): string {
   return [
     '```mermaid',
     'flowchart LR',
-    '  Q[Question] --> G[CodeGraph symbols]',
+    '  Q[Question] --> G[CodeBrain symbols]',
     '  G --> F[Function calls]',
     '  F --> W[Workflow and side effects]',
     '```',
@@ -72,7 +72,7 @@ export async function writeAndPreviewReport(
 ): Promise<vscode.Uri> {
   const workspaceName = safeSegment(folder.name || basename(folder.uri.fsPath));
   const directory = vscode.Uri.file(
-    join(tmpdir(), 'codegraph-vscode', workspaceName || 'workspace'),
+    join(tmpdir(), 'codebrain-vscode', workspaceName || 'workspace'),
   );
   await vscode.workspace.fs.createDirectory(directory);
 
@@ -81,7 +81,7 @@ export async function writeAndPreviewReport(
   await vscode.workspace.fs.writeFile(uri, Buffer.from(report, 'utf8'));
 
   const openPreview = vscode.workspace
-    .getConfiguration('codegraph')
+    .getConfiguration('codebrain')
     .get<boolean>('reports.openPreview', true);
   if (openPreview) {
     await vscode.commands.executeCommand('markdown.showPreview', uri);

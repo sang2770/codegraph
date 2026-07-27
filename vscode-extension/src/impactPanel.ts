@@ -96,7 +96,7 @@ function panelHtml(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${scriptNonce}';">
-  <title>CodeGraph Impact</title>
+  <title>CodeBrain Impact</title>
   <style>
     :root { color-scheme: light dark; }
     body { padding: 22px; color: var(--vscode-foreground); font-family: var(--vscode-font-family); background: var(--vscode-editor-background); }
@@ -122,11 +122,10 @@ function panelHtml(
 </head>
 <body>
   <header>
-    <div><h1>CodeGraph Change Impact</h1><div class="subtitle">Workflow graph and estimated token savings from local graph queries</div></div>
+    <div><h1>CodeBrain Change Impact</h1><div class="subtitle">Workflow graph and estimated token savings from local graph queries</div></div>
     <div class="actions">
       <button data-command="analyze">Analyze Change Impact</button>
       <button class="secondary" data-command="markdown">Export Markdown</button>
-      <button class="secondary" data-command="pdf">Export PDF</button>
     </div>
   </header>
   <section class="cards">
@@ -192,8 +191,8 @@ export class WorkflowGraphPanel implements vscode.Disposable {
     this.analysis = analysis;
     this.nativeKernel = nativeKernel;
     this.panel = vscode.window.createWebviewPanel(
-      'codegraph.workflowGraph',
-      'CodeGraph Impact',
+      'codebrain.workflowGraph',
+      'CodeBrain Impact',
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true },
     );
@@ -230,15 +229,11 @@ export class WorkflowGraphPanel implements vscode.Disposable {
     line?: number;
   }): Promise<void> {
     if (message.command === 'analyze') {
-      await vscode.commands.executeCommand('codegraph.analyzeImpact');
+      await vscode.commands.executeCommand('codebrain.analyzeImpact');
       return;
     }
     if (message.command === 'markdown') {
-      await vscode.commands.executeCommand('codegraph.exportLatestMarkdown');
-      return;
-    }
-    if (message.command === 'pdf') {
-      await vscode.commands.executeCommand('codegraph.exportLatestPdf');
+      await vscode.commands.executeCommand('codebrain.exportLatestMarkdown');
       return;
     }
     if (
@@ -250,7 +245,7 @@ export class WorkflowGraphPanel implements vscode.Disposable {
       const target = resolve(root, message.path);
       if (target !== root && !target.startsWith(`${root}${sep}`)) {
         void vscode.window.showErrorMessage(
-          'CodeGraph refused to open a graph path outside the workspace.',
+          'CodeBrain refused to open a graph path outside the workspace.',
         );
         return;
       }

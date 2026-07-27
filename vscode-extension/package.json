@@ -1,9 +1,9 @@
 {
-  "name": "codegraph",
-  "displayName": "CodeGraph",
+  "name": "codebrain",
+  "displayName": "CodeBrain",
   "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
-  "version": "0.2.0",
-  "publisher": "codegraph",
+  "version": "0.3.1",
+  "publisher": "codebrain",
   "license": "MIT",
   "icon": "media/icon.png",
   "repository": {
@@ -19,6 +19,7 @@
     "Other"
   ],
   "keywords": [
+    "codebrain",
     "codegraph",
     "mcp",
     "copilot",
@@ -32,49 +33,48 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onStartupFinished",
-    "onChatParticipant:codegraph.chat",
-    "onCommand:codegraph.initializeWorkspace",
-    "onCommand:codegraph.syncIndex",
-    "onCommand:codegraph.showStatus",
-    "onCommand:codegraph.analyzeImpact",
-    "onCommand:codegraph.openWorkflowGraph",
-    "onCommand:codegraph.showTokenSavings",
-    "onCommand:codegraph.exportLatestMarkdown",
-    "onCommand:codegraph.exportLatestPdf"
+    "onChatParticipant:codebrain.chat",
+    "onCommand:codebrain.initializeWorkspace",
+    "onCommand:codebrain.syncIndex",
+    "onCommand:codebrain.showStatus",
+    "onCommand:codebrain.analyzeImpact",
+    "onCommand:codebrain.openWorkflowGraph",
+    "onCommand:codebrain.showTokenSavings",
+    "onCommand:codebrain.exportLatestMarkdown"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "CodeGraph executes its bundled local runtime and reads workspace source files."
+      "description": "CodeBrain executes its bundled local runtime and reads workspace source files."
     },
     "virtualWorkspaces": {
       "supported": false,
-      "description": "The local CodeGraph runtime requires a filesystem-backed workspace."
+      "description": "The local CodeBrain runtime requires a filesystem-backed workspace."
     }
   },
   "contributes": {
     "mcpServerDefinitionProviders": [
       {
-        "id": "codegraph.runtime",
-        "label": "CodeGraph (Bundled Runtime)"
+        "id": "codebrain.runtime",
+        "label": "CodeBrain (Bundled Runtime)"
       }
     ],
     "chatSkills": [
       {
-        "path": "./skills/codegraph/SKILL.md"
+        "path": "./skills/codebrain/SKILL.md"
       }
     ],
     "chatAgents": [
       {
-        "path": "./agents/codegraph-reviewer.agent.md"
+        "path": "./agents/codebrain-reviewer.agent.md"
       }
     ],
     "chatParticipants": [
       {
-        "id": "codegraph.chat",
-        "name": "codegraph",
-        "fullName": "CodeGraph",
-        "description": "Explain workflows or review code with CodeGraph context.",
+        "id": "codebrain.chat",
+        "name": "codebrain",
+        "fullName": "CodeBrain",
+        "description": "Explain workflows or review code with CodeBrain context.",
         "isSticky": true,
         "commands": [
           {
@@ -123,113 +123,108 @@
     ],
     "commands": [
       {
-        "command": "codegraph.initializeWorkspace",
-        "title": "CodeGraph: Initialize Workspace",
+        "command": "codebrain.initializeWorkspace",
+        "title": "CodeBrain: Initialize Workspace",
         "icon": "$(database)"
       },
       {
-        "command": "codegraph.syncIndex",
-        "title": "CodeGraph: Refresh Index",
+        "command": "codebrain.syncIndex",
+        "title": "CodeBrain: Refresh Index",
         "icon": "$(sync)"
       },
       {
-        "command": "codegraph.showStatus",
-        "title": "CodeGraph: Show Index Status",
+        "command": "codebrain.showStatus",
+        "title": "CodeBrain: Show Index Status",
         "icon": "$(info)"
       },
       {
-        "command": "codegraph.analyzeImpact",
-        "title": "CodeGraph: Analyze Change Impact",
+        "command": "codebrain.analyzeImpact",
+        "title": "CodeBrain: Analyze Change Impact",
         "icon": "$(type-hierarchy-sub)"
       },
       {
-        "command": "codegraph.openWorkflowGraph",
-        "title": "CodeGraph: Open Workflow Graph",
+        "command": "codebrain.openWorkflowGraph",
+        "title": "CodeBrain: Open Workflow Graph",
         "icon": "$(graph)"
       },
       {
-        "command": "codegraph.showTokenSavings",
-        "title": "CodeGraph: Token Savings Dashboard",
+        "command": "codebrain.showTokenSavings",
+        "title": "CodeBrain: Token Savings Dashboard",
         "icon": "$(dashboard)"
       },
       {
-        "command": "codegraph.resetTokenSavings",
-        "title": "CodeGraph: Reset Token Savings"
+        "command": "codebrain.resetTokenSavings",
+        "title": "CodeBrain: Reset Token Savings"
       },
       {
-        "command": "codegraph.exportLatestMarkdown",
-        "title": "CodeGraph: Export Latest Report as Markdown",
+        "command": "codebrain.exportLatestMarkdown",
+        "title": "CodeBrain: Export Latest Report as Markdown",
         "icon": "$(markdown)"
-      },
-      {
-        "command": "codegraph.exportLatestPdf",
-        "title": "CodeGraph: Export Latest Report as PDF",
-        "icon": "$(file-pdf)"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "codegraph.analyzeImpact",
+          "command": "codebrain.analyzeImpact",
           "group": "navigation@90",
           "when": "resourceScheme == file"
         }
       ],
       "scm/title": [
         {
-          "command": "codegraph.analyzeImpact",
+          "command": "codebrain.analyzeImpact",
           "group": "navigation"
         }
       ],
       "commandPalette": [
         {
-          "command": "codegraph.resetTokenSavings",
-          "when": "codegraph.tokenSavings.hasData"
+          "command": "codebrain.resetTokenSavings",
+          "when": "codebrain.tokenSavings.hasData"
         }
       ]
     },
     "configuration": {
-      "title": "CodeGraph",
+      "title": "CodeBrain",
       "properties": {
-        "codegraph.autoRefresh.enabled": {
+        "codebrain.autoRefresh.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Keep the index fresh with CodeGraph's native watcher while the bundled MCP runtime is active."
+          "description": "Keep the index fresh with CodeBrain's native watcher while the bundled MCP runtime is active."
         },
-        "codegraph.autoRefresh.debounceMs": {
+        "codebrain.autoRefresh.debounceMs": {
           "type": "number",
           "default": 1000,
           "minimum": 100,
           "maximum": 60000,
           "description": "Quiet period before a burst of file changes is incrementally synced."
         },
-        "codegraph.chat.maxContextFiles": {
+        "codebrain.chat.maxContextFiles": {
           "type": "number",
           "default": 12,
           "minimum": 1,
           "maximum": 30,
-          "description": "Maximum number of source files returned by CodeGraph for a chat report."
+          "description": "Maximum number of source files returned by CodeBrain for a chat report."
         },
-        "codegraph.chat.maxDiffCharacters": {
+        "codebrain.chat.maxDiffCharacters": {
           "type": "number",
           "default": 120000,
           "minimum": 10000,
           "maximum": 500000,
           "description": "Maximum Git diff size supplied to /review. Larger diffs are truncated with an explicit warning."
         },
-        "codegraph.impact.maxDepth": {
+        "codebrain.impact.maxDepth": {
           "type": "number",
           "default": 5,
           "minimum": 1,
           "maximum": 12,
           "description": "Maximum dependency depth for affected-test detection."
         },
-        "codegraph.metrics.enabled": {
+        "codebrain.metrics.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Store workspace-local estimates of context tokens and file reads saved by impact analysis."
         },
-        "codegraph.reports.openPreview": {
+        "codebrain.reports.openPreview": {
           "type": "boolean",
           "default": true,
           "description": "Automatically open generated Markdown reports in VS Code's preview."
@@ -244,16 +239,11 @@
     "build:runtime": "node ./scripts/build-runtime.mjs",
     "build:all": "npm run build:runtime && npm run build",
     "test": "npm run check && node --test ./test/*.test.mjs",
-    "demo:pdf": "node ./scripts/generate-pdf-sample.mjs",
     "package": "node ./scripts/package-extension.mjs",
     "package:all": "node ./scripts/package-extension.mjs --all"
   },
-  "dependencies": {
-    "pdfkit": "^0.17.2"
-  },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@types/pdfkit": "^0.17.3",
     "@types/vscode": "^1.125.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.0",

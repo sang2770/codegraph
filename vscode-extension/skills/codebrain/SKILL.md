@@ -1,11 +1,11 @@
 ---
-name: codegraph
-description: Use CodeGraph for fast, token-efficient code understanding, workflow explanations, dependency tracing, blast-radius analysis, and high-signal code review. Load when a request asks what code does, how a workflow reaches another component, what a change affects, or whether a change is risky.
+name: codebrain
+description: Use CodeBrain for fast, token-efficient code understanding, workflow explanations, dependency tracing, blast-radius analysis, and high-signal code review. Load when a request asks what code does, how a workflow reaches another component, what a change affects, or whether a change is risky.
 argument-hint: "[question, symbol, file, workflow, or change to analyze]"
 user-invocable: true
 ---
 
-# CodeGraph
+# CodeBrain
 
 Use the `codegraph_explore` MCP tool before grep, repository-wide search, or opening a chain of source files when the project has a `.codegraph/` index.
 

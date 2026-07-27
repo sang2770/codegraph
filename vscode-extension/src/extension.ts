@@ -30,7 +30,7 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showErrorMessage(`CodeGraph extension: ${message}`);
+    void vscode.window.showErrorMessage(`CodeBrain extension: ${message}`);
   }
 }
 

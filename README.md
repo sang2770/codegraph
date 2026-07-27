@@ -49,7 +49,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 ## Contents
 
 - [Get Started](#get-started)
-- [VS Code Extension](#vs-code-extension)
+- [CodeBrain VS Code Extension](#codebrain-vs-code-extension)
 - [Language Support](#language-support)
 - [Why CodeGraph?](#why-codegraph)
 - [Key Features](#key-features)
@@ -140,18 +140,18 @@ Pass `--keep-cli` to remove only the agent configurations and keep the CLI insta
 
 ---
 
-## VS Code Extension
+## CodeBrain VS Code Extension
 
-The repository includes a platform-specific [VS Code extension](vscode-extension/README.md) that packages the self-contained CodeGraph runtime and automatically contributes:
+The repository includes the platform-specific [CodeBrain VS Code extension](vscode-extension/README.md), which packages the self-contained semantic runtime and automatically contributes:
 
 - the `codegraph_explore` MCP server;
-- a CodeGraph Agent Skill;
+- a CodeBrain Agent Skill;
 - configurable native index auto-refresh;
-- the `@codegraph /explain` workflow report with a temporary Markdown + Mermaid preview;
-- the `@codegraph /review` diff and blast-radius review;
+- the `@codebrain /explain` workflow report with a temporary Markdown + Mermaid preview;
+- the `@codebrain /review` diff and blast-radius review;
 - `/impact`, affected-test detection, a workflow graph, and a token-saving dashboard;
 - a bundled native Rust kernel with WASM fallback;
-- a read-only reviewer agent and Markdown/PDF export.
+- a read-only reviewer agent and lightweight Markdown export.
 
 Build the extension and the runtime for the current machine with:
 

@@ -52,6 +52,6 @@ for (const target of targets) {
     '--target',
     target,
     '--out',
-    `codegraph-${target}.vsix`,
+    `codebrain-${target}.vsix`,
   ]);
 }

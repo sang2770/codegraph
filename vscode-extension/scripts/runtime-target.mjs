@@ -15,7 +15,7 @@ export function normalizeTarget(platform = process.platform, arch = process.arch
       : null;
 
   if (!normalizedPlatform || !normalizedArch) {
-    throw new Error(`Unsupported CodeGraph runtime target: ${platform}-${arch}`);
+    throw new Error(`Unsupported CodeBrain runtime target: ${platform}-${arch}`);
   }
 
   return `${normalizedPlatform}-${normalizedArch}`;

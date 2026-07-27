@@ -6,17 +6,17 @@ import { assertTarget, normalizeTarget } from './runtime-target.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const extensionRoot = resolve(scriptDir, '..');
-const codegraphRoot = resolve(extensionRoot, '..');
+const engineRoot = resolve(extensionRoot, '..');
 const requestedTarget = process.argv[2] ?? normalizeTarget();
 const target = assertTarget(requestedTarget);
 const runtimeRoot = join(extensionRoot, 'runtime');
 const destination = join(runtimeRoot, target);
 const archiveExtension = target.startsWith('win32-') ? '.zip' : '.tar.gz';
-const archive = join(codegraphRoot, 'release', `codegraph-${target}${archiveExtension}`);
+const archive = join(engineRoot, 'release', `codegraph-${target}${archiveExtension}`);
 const hostTarget = normalizeTarget();
 const requireKernel = process.env.CODEGRAPH_REQUIRE_NATIVE_KERNEL === '1';
 
-function run(command, args, cwd = codegraphRoot) {
+function run(command, args, cwd = engineRoot) {
   const result = spawnSync(command, args, {
     cwd,
     stdio: 'inherit',
@@ -34,13 +34,13 @@ mkdirSync(runtimeRoot, { recursive: true });
 
 if (target === hostTarget && process.env.CODEGRAPH_SKIP_NATIVE_KERNEL !== '1') {
   const cargo = spawnSync('cargo', ['--version'], {
-    cwd: codegraphRoot,
+    cwd: engineRoot,
     encoding: 'utf8',
     env: process.env,
   });
   if (cargo.status === 0) {
     console.log(`[runtime] building native Rust kernel for ${target}`);
-    run('bash', [join(codegraphRoot, 'scripts', 'build-kernel.sh')]);
+    run('bash', [join(engineRoot, 'scripts', 'build-kernel.sh')]);
   } else if (requireKernel) {
     throw new Error(
       'A Rust toolchain is required because CODEGRAPH_REQUIRE_NATIVE_KERNEL=1.',
@@ -52,10 +52,10 @@ if (target === hostTarget && process.env.CODEGRAPH_SKIP_NATIVE_KERNEL !== '1') {
   }
 }
 
-run('bash', [join(codegraphRoot, 'scripts', 'build-bundle.sh'), target]);
+run('bash', [join(engineRoot, 'scripts', 'build-bundle.sh'), target]);
 
 if (!existsSync(archive)) {
-  throw new Error(`CodeGraph bundle was not created: ${archive}`);
+  throw new Error(`CodeBrain engine bundle was not created: ${archive}`);
 }
 
 rmSync(destination, { recursive: true, force: true });

@@ -35,7 +35,7 @@ function runtimeTarget(): string {
     (process.arch !== 'x64' && process.arch !== 'arm64')
   ) {
     throw new Error(
-      `CodeGraph does not include a runtime for ${process.platform}-${process.arch}.`,
+      `CodeBrain does not include a runtime for ${process.platform}-${process.arch}.`,
     );
   }
   return `${process.platform}-${process.arch}`;
@@ -49,7 +49,7 @@ export function locateRuntime(extensionUri: vscode.Uri): RuntimeCommand {
 
   if (!existsSync(command) || !existsSync(entrypoint)) {
     throw new Error(
-      `Bundled CodeGraph runtime is missing for ${target}. Reinstall the platform-specific extension package.`,
+      `Bundled CodeBrain runtime is missing for ${target}. Reinstall the platform-specific extension package.`,
     );
   }
 
@@ -133,7 +133,7 @@ export async function runProcess(
   });
 }
 
-export async function runCodeGraph(
+export async function runCodeBrain(
   runtime: RuntimeCommand,
   args: readonly string[],
   options: RunOptions,
@@ -141,8 +141,8 @@ export async function runCodeGraph(
   return runProcess(runtime.command, [...runtime.baseArgs, ...args], options);
 }
 
-export function codeGraphEnvironment(): Record<string, string> {
-  const config = vscode.workspace.getConfiguration('codegraph');
+export function codeBrainEnvironment(): Record<string, string> {
+  const config = vscode.workspace.getConfiguration('codebrain');
   const autoRefresh = config.get<boolean>('autoRefresh.enabled', true);
   const debounceMs = config.get<number>('autoRefresh.debounceMs', 1000);
 

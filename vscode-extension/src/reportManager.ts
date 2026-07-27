@@ -1,6 +1,5 @@
 import { basename } from 'node:path';
 import * as vscode from 'vscode';
-import { renderMarkdownPdf } from './pdfRenderer';
 import { ReportKind, writeAndPreviewReport } from './reports';
 
 export interface StoredReport {
@@ -24,11 +23,8 @@ export class ReportManager {
 
   public constructor(private readonly context: vscode.ExtensionContext) {
     context.subscriptions.push(
-      vscode.commands.registerCommand('codegraph.exportLatestMarkdown', () =>
+      vscode.commands.registerCommand('codebrain.exportLatestMarkdown', () =>
         this.exportMarkdown(),
-      ),
-      vscode.commands.registerCommand('codegraph.exportLatestPdf', () =>
-        this.exportPdf(),
       ),
     );
   }
@@ -49,7 +45,7 @@ export class ReportManager {
         )
       : undefined;
     this.latest = { ...report, temporaryUri };
-    await this.context.workspaceState.update('codegraph.latestReport', {
+    await this.context.workspaceState.update('codebrain.latestReport', {
       kind: report.kind,
       title: report.title,
       markdown: report.markdown,
@@ -65,10 +61,10 @@ export class ReportManager {
     const uri = await vscode.window.showSaveDialog({
       defaultUri: vscode.Uri.joinPath(
         report.folder.uri,
-        `${slug(report.title) || 'codegraph-report'}.md`,
+        `${slug(report.title) || 'codebrain-report'}.md`,
       ),
       filters: { Markdown: ['md'] },
-      saveLabel: 'Export CodeGraph Markdown',
+      saveLabel: 'Export CodeBrain Markdown',
     });
     if (!uri) return;
     await vscode.workspace.fs.writeFile(
@@ -76,45 +72,14 @@ export class ReportManager {
       Buffer.from(report.markdown, 'utf8'),
     );
     void vscode.window.showInformationMessage(
-      `CodeGraph Markdown exported to ${basename(uri.fsPath)}.`,
-    );
-  }
-
-  public async exportPdf(): Promise<void> {
-    const report = this.requireLatest();
-    if (!report) return;
-    const uri = await vscode.window.showSaveDialog({
-      defaultUri: vscode.Uri.joinPath(
-        report.folder.uri,
-        `${slug(report.title) || 'codegraph-report'}.pdf`,
-      ),
-      filters: { PDF: ['pdf'] },
-      saveLabel: 'Export CodeGraph PDF',
-    });
-    if (!uri) return;
-
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: 'Exporting CodeGraph PDF',
-        cancellable: false,
-      },
-      async () => {
-        const pdf = await renderMarkdownPdf(report.markdown, {
-          title: report.title,
-        });
-        await vscode.workspace.fs.writeFile(uri, pdf);
-      },
-    );
-    void vscode.window.showInformationMessage(
-      `CodeGraph PDF exported to ${basename(uri.fsPath)}.`,
+      `CodeBrain Markdown exported to ${basename(uri.fsPath)}.`,
     );
   }
 
   private requireLatest(): StoredReport | undefined {
     if (!this.latest) {
       void vscode.window.showWarningMessage(
-        'Run CodeGraph Explain, Review, or Analyze Change Impact before exporting.',
+        'Run CodeBrain Explain, Review, or Analyze Change Impact before exporting.',
       );
     }
     return this.latest;
