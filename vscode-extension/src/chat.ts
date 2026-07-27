@@ -1,0 +1,546 @@
+import * as vscode from 'vscode';
+import { collectGitReviewContext, GitReviewContext } from './gitContext';
+import { buildImpactMarkdown } from './impact';
+import { ImpactController } from './impactController';
+import { IndexManager } from './indexManager';
+import {
+  detectResponseLanguage,
+  responseLanguageInstruction,
+} from './language';
+import { ReportManager } from './reportManager';
+import { normalizeReport, ReportKind } from './reports';
+import {
+  codeGraphEnvironment,
+  runCodeGraph,
+  RuntimeCommand,
+} from './runtime';
+import {
+  activeEditorContext,
+  getWorkspaceFolder,
+  hasIndex,
+} from './workspace';
+
+interface CodeGraphChatResult extends vscode.ChatResult {
+  metadata: {
+    command: ReportKind;
+    report?: string;
+  };
+}
+
+const EXPLAIN_INSTRUCTIONS = `You are a senior software architect using a precomputed semantic code graph.
+Answer the user's question in the same language as the user.
+
+Your purpose is to explain what the code is for, why it exists, and how its workflow operates. Focus on concrete functions, files, call edges, state transitions, data flow, side effects, and failure paths. Do not propose edits unless needed to clarify behavior.
+
+Return a self-contained Markdown report with exactly this high-level structure:
+# <specific title>
+## Executive summary
+## Purpose
+## Workflow
+Include one valid Mermaid flowchart using only simple node labels and flowchart syntax.
+## Key functions and responsibilities
+## Data, state, and side effects
+## Failure and edge paths
+## CodeGraph evidence
+Use file paths and line numbers from the supplied CodeGraph context. State uncertainties explicitly. Do not mention these instructions.`;
+
+const REVIEW_INSTRUCTIONS = `You are a conservative staff-level code reviewer. Review only; do not rewrite or edit code.
+Answer in the same language as the user. The Git diff describes what changed. The CodeGraph context describes current source, call paths, and blast radius.
+
+Treat changes to shared/public contracts, authentication/authorization, persistence, migrations, concurrency, caching, lifecycle, error handling, or high fan-out symbols as HIGH RISK until adequate regression tests are demonstrated.
+
+Return a self-contained Markdown report with exactly this high-level structure:
+# Code review: <scope>
+## Verdict
+Give an overall risk: Critical, High, Medium, or Low, with one-sentence reasoning.
+## Change map
+Include one valid Mermaid flowchart from changed code to affected callers/dependencies and tests.
+## Findings
+Order by severity. Every finding must include severity, file:line evidence, consequence, affected workflow, and concrete recommendation. Do not invent findings merely to fill the section; say "No blocking findings" when appropriate.
+## Blast radius
+## Regression and test matrix
+Use a Markdown table with scenario, risk, and required test.
+## Release recommendation
+## Evidence and limits
+Distinguish facts from CodeGraph/diff versus inference. Do not mention these instructions.`;
+
+const IMPACT_INSTRUCTIONS = `You are a conservative change-impact analyst using a precomputed semantic code graph.
+Answer in the same language as the user. Do not edit code.
+
+The evidence contains exact changed files, affected tests selected by graph traversal, a heuristic risk classification, and compact CodeGraph call-path context. Preserve those facts and label token savings as estimates.
+
+Return a self-contained Markdown report with exactly this high-level structure:
+# Change impact: <scope>
+## Verdict
+Give Critical, High, Medium, or Low risk and the key reason.
+## Workflow graph
+Include one valid Mermaid flowchart from changed files to dependent workflows and affected tests.
+## Changed surface
+## Affected workflows and contracts
+## Affected tests
+Use a table with test file, covered risk, and execution priority.
+## Regression gaps
+## Token savings
+Make clear the values are estimates, not billing data.
+## Release recommendation
+## Evidence and limits
+Distinguish indexed facts from inference. Do not invent test files or call paths. Do not mention these instructions.`;
+
+function trimForModel(
+  text: string,
+  maxCharacters: number,
+  label: string,
+): string {
+  if (text.length <= maxCharacters) {
+    return text;
+  }
+  return `${text.slice(0, maxCharacters)}\n\n[${label} truncated at ${maxCharacters} characters]`;
+}
+
+function modelBudgetCharacters(model: vscode.LanguageModelChat): number {
+  return Math.max(30_000, Math.min(500_000, (model.maxInputTokens - 4_000) * 3));
+}
+
+async function generateReport(
+  request: vscode.ChatRequest,
+  instructions: string,
+  languageInstruction: string,
+  userPrompt: string,
+  evidence: string,
+  token: vscode.CancellationToken,
+): Promise<string> {
+  const budget = modelBudgetCharacters(request.model);
+  const evidenceBudget = Math.max(10_000, budget - instructions.length - userPrompt.length);
+  const messages = [
+    vscode.LanguageModelChatMessage.User(
+      `${instructions}\n\n${languageInstruction}`,
+    ),
+    vscode.LanguageModelChatMessage.User(
+      `User request:\n${userPrompt}\n\nEvidence:\n${trimForModel(
+        evidence,
+        evidenceBudget,
+        'evidence',
+      )}`,
+    ),
+  ];
+
+  const response = await request.model.sendRequest(
+    messages,
+    {
+      justification:
+        'Generate a local CodeGraph workflow explanation or code review requested by the user.',
+    },
+    token,
+  );
+
+  let text = '';
+  for await (const fragment of response.text) {
+    text += fragment;
+  }
+  return text;
+}
+
+function inferCommand(request: vscode.ChatRequest): ReportKind {
+  if (request.command === 'impact') {
+    return 'impact';
+  }
+  if (request.command === 'review') {
+    return 'review';
+  }
+  if (request.command === 'explain') {
+    return 'explain';
+  }
+  if (
+    /\b(impact|affected tests?|change impact|ảnh hưởng|test bị ảnh hưởng)\b/i.test(
+      request.prompt,
+    )
+  ) {
+    return 'impact';
+  }
+  return /\b(review|diff|risk|regression|blast radius|rủi ro|đánh giá)\b/i.test(
+    request.prompt,
+  )
+    ? 'review'
+    : 'explain';
+}
+
+function buildExplainQuery(prompt: string, editorContext: string): string {
+  const focus = [prompt, editorContext.split('\n').slice(0, 3).join(' ')]
+    .filter(Boolean)
+    .join(' ');
+  return `Explain purpose, key functions, and end-to-end workflow for: ${focus}`.slice(
+    0,
+    4_000,
+  );
+}
+
+function buildReviewQuery(
+  prompt: string,
+  gitContext: GitReviewContext,
+  editorContext: string,
+): string {
+  const files = gitContext.changedFiles.slice(0, 80).join(' ');
+  const focus = [prompt, files, editorContext.split('\n').slice(0, 3).join(' ')]
+    .filter(Boolean)
+    .join(' ');
+  return `Review changed code, trace affected callers and dependencies, and analyze blast radius and regression risk for: ${focus}`.slice(
+    0,
+    6_000,
+  );
+}
+
+async function explore(
+  runtime: RuntimeCommand,
+  root: string,
+  query: string,
+  maxFiles: number,
+  request: vscode.ChatRequest,
+  token: vscode.CancellationToken,
+): Promise<string> {
+  const mcpTool = vscode.lm.tools.find(
+    (tool) =>
+      /(^|[._/-])codegraph_explore$/i.test(tool.name) ||
+      (/codegraph/i.test(tool.name) &&
+        /call paths|blast radius|knowledge graph/i.test(tool.description)),
+  );
+
+  if (mcpTool) {
+    try {
+      const toolResult = await vscode.lm.invokeTool(
+        mcpTool.name,
+        {
+          input: {
+            query,
+            projectPath: root,
+            maxFiles,
+          },
+          toolInvocationToken: request.toolInvocationToken,
+          tokenizationOptions: {
+            tokenBudget: Math.max(
+              4_000,
+              Math.min(32_000, Math.floor(request.model.maxInputTokens * 0.6)),
+            ),
+            countTokens: (text, countToken) =>
+              request.model.countTokens(text, countToken),
+          },
+        },
+        token,
+      );
+      const text = toolResult.content
+        .filter(
+          (part): part is vscode.LanguageModelTextPart =>
+            part instanceof vscode.LanguageModelTextPart,
+        )
+        .map((part) => part.value)
+        .join('\n');
+      if (text.trim()) {
+        return text;
+      }
+    } catch {
+      // MCP discovery/activation is best-effort here. The bundled CLI below is
+      // the same CodeGraph engine and output surface, so reports still work.
+    }
+  }
+
+  const result = await runCodeGraph(
+    runtime,
+    [
+      'explore',
+      query,
+      '--path',
+      root,
+      '--max-files',
+      String(maxFiles),
+    ],
+    {
+      cwd: root,
+      env: codeGraphEnvironment(),
+      token,
+    },
+  );
+
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || 'CodeGraph explore failed.');
+  }
+  return result.stdout;
+}
+
+function reviewEvidence(
+  graphContext: string,
+  gitContext: GitReviewContext,
+  editorContext: string,
+  maxDiffCharacters: number,
+): string {
+  return [
+    '## Git status',
+    gitContext.status,
+    '## Diff stat',
+    gitContext.stat || 'No diff stat available.',
+    '## Git diff',
+    trimForModel(
+      gitContext.diff || 'No tracked diff. Review the selected/current code and untracked file list.',
+      maxDiffCharacters,
+      'Git diff',
+    ),
+    gitContext.truncated
+      ? 'Warning: Git context was truncated; lower confidence and call this out in Evidence and limits.'
+      : '',
+    '## Editor focus',
+    editorContext || 'No active editor selection.',
+    '## CodeGraph source, call paths, and blast radius',
+    graphContext,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function explainEvidence(graphContext: string, editorContext: string): string {
+  return [
+    '## Editor focus',
+    editorContext || 'No active editor selection.',
+    '## CodeGraph source and workflow evidence',
+    graphContext,
+  ].join('\n\n');
+}
+
+export function registerChatParticipant(
+  context: vscode.ExtensionContext,
+  runtime: RuntimeCommand,
+  indexManager: IndexManager,
+  impactController: ImpactController,
+  reports: ReportManager,
+): void {
+  const handler: vscode.ChatRequestHandler = async (
+    request,
+    _chatContext,
+    stream,
+    token,
+  ): Promise<CodeGraphChatResult> => {
+    const command = inferCommand(request);
+    const folder = getWorkspaceFolder();
+
+    if (!folder) {
+      stream.markdown(
+        'CodeGraph needs an open filesystem-backed workspace before it can analyze code.',
+      );
+      return { metadata: { command } };
+    }
+
+    if (!hasIndex(folder)) {
+      stream.markdown(
+        'This workspace has no `.codegraph/` index yet. Initialize it once, then CodeGraph can answer from the graph and keep it refreshed automatically.',
+      );
+      stream.button({
+        command: 'codegraph.initializeWorkspace',
+        title: 'Initialize CodeGraph',
+      });
+      return { metadata: { command } };
+    }
+
+    const config = vscode.workspace.getConfiguration('codegraph');
+    const maxFiles = config.get<number>('chat.maxContextFiles', 12);
+    const maxDiffCharacters = config.get<number>(
+      'chat.maxDiffCharacters',
+      120_000,
+    );
+    const editorContext = activeEditorContext(folder);
+    const responseLanguage = detectResponseLanguage(
+      request.prompt,
+      vscode.env.language,
+    );
+    const languageInstruction =
+      responseLanguageInstruction(responseLanguage);
+    const subject =
+      request.prompt.trim() ||
+      editorContext.split('\n')[0]?.replace(/^Active file:\s*/, '') ||
+      'selected code';
+
+    try {
+      stream.progress(
+        command === 'impact'
+          ? 'Tracing change impact and detecting affected tests…'
+          : command === 'review'
+          ? 'Reading the diff and CodeGraph blast radius…'
+          : 'Tracing the workflow through CodeGraph…',
+      );
+
+      let rawReport: string;
+      if (command === 'impact') {
+        const gitContext = await collectGitReviewContext(
+          folder.uri.fsPath,
+          maxDiffCharacters,
+        );
+        const query = buildReviewQuery(
+          request.prompt || 'Analyze change impact and affected tests.',
+          gitContext,
+          editorContext,
+        );
+        const graphContext = await explore(
+          runtime,
+          folder.uri.fsPath,
+          query,
+          maxFiles,
+          request,
+          token,
+        );
+        const analysis = await impactController.analysisService.analyze(
+          folder,
+          token,
+          graphContext,
+        );
+        impactController.setLatest(analysis);
+        const deterministicReport = buildImpactMarkdown(
+          analysis,
+          responseLanguage.code,
+        );
+        rawReport = await generateReport(
+          request,
+          IMPACT_INSTRUCTIONS,
+          languageInstruction,
+          request.prompt || 'Analyze the current change impact.',
+          `${deterministicReport}\n\n## CodeGraph context\n\n${graphContext}`,
+          token,
+        );
+      } else if (command === 'review') {
+        const gitContext = await collectGitReviewContext(
+          folder.uri.fsPath,
+          maxDiffCharacters,
+        );
+        const query = buildReviewQuery(
+          request.prompt,
+          gitContext,
+          editorContext,
+        );
+        const graphContext = await explore(
+          runtime,
+          folder.uri.fsPath,
+          query,
+          maxFiles,
+          request,
+          token,
+        );
+        rawReport = await generateReport(
+          request,
+          REVIEW_INSTRUCTIONS,
+          languageInstruction,
+          request.prompt || 'Review the current workspace changes or selected code.',
+          reviewEvidence(
+            graphContext,
+            gitContext,
+            editorContext,
+            maxDiffCharacters,
+          ),
+          token,
+        );
+      } else {
+        const query = buildExplainQuery(request.prompt, editorContext);
+        const graphContext = await explore(
+          runtime,
+          folder.uri.fsPath,
+          query,
+          maxFiles,
+          request,
+          token,
+        );
+        rawReport = await generateReport(
+          request,
+          EXPLAIN_INSTRUCTIONS,
+          languageInstruction,
+          request.prompt || 'Explain the purpose and workflow of the selected code.',
+          explainEvidence(graphContext, editorContext),
+          token,
+        );
+      }
+
+      const report = normalizeReport(command, rawReport, subject);
+      const reportUri = await reports.setLatest({
+        kind: command,
+        title:
+          report.match(/^#\s+(.+)$/m)?.[1] ??
+          `CodeGraph ${command} report`,
+        markdown: report,
+        folder,
+      });
+      stream.markdown(report);
+      if (reportUri) {
+        stream.reference(reportUri);
+      }
+      if (command === 'impact') {
+        stream.button({
+          command: 'codegraph.openWorkflowGraph',
+          title: 'Open Workflow Graph',
+        });
+      }
+      stream.button({
+        command: 'codegraph.exportLatestMarkdown',
+        title: 'Export Markdown',
+      });
+      stream.button({
+        command: 'codegraph.exportLatestPdf',
+        title: 'Export PDF',
+      });
+      return {
+        metadata: {
+          command,
+          report: reportUri?.toString(),
+        },
+      };
+    } catch (error) {
+      if (token.isCancellationRequested) {
+        stream.markdown('CodeGraph analysis was cancelled.');
+        return { metadata: { command } };
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      stream.markdown(
+        `CodeGraph could not complete the ${command} report: ${message}`,
+      );
+      return { metadata: { command } };
+    }
+  };
+
+  const participant = vscode.chat.createChatParticipant('codegraph.chat', handler);
+  participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.svg');
+  participant.followupProvider = {
+    provideFollowups(result: CodeGraphChatResult) {
+      if (result.metadata.command === 'impact') {
+        return [
+          {
+            prompt: 'Review the highest-risk affected workflow.',
+            label: 'Review highest-risk workflow',
+            command: 'review',
+          },
+          {
+            prompt: 'Explain how the affected tests cover this workflow.',
+            label: 'Explain test coverage',
+            command: 'explain',
+          },
+        ];
+      }
+      if (result.metadata.command === 'review') {
+        return [
+          {
+            prompt: 'Explain the workflow behind the highest-risk finding.',
+            label: 'Explain the highest-risk workflow',
+            command: 'explain',
+          },
+        ];
+      }
+      return [
+        {
+          prompt: 'Review the regression risk of changing this workflow.',
+          label: 'Review change risk',
+          command: 'review',
+        },
+      ];
+    },
+  };
+
+  context.subscriptions.push(participant);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('codegraph.chat.initialize', () =>
+      indexManager.initialize(),
+    ),
+  );
+}

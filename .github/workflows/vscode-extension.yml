@@ -1,0 +1,75 @@
+name: VS Code extension
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - "scripts/build-bundle.sh"
+      - "scripts/build-kernel.sh"
+      - "codegraph-kernel/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vscode-extension/**"
+      - ".github/workflows/vscode-extension.yml"
+
+jobs:
+  package:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-15
+          - target: darwin-x64
+            os: macos-15-intel
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: win32-arm64
+            os: windows-11-arm
+          - target: win32-x64
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            vscode-extension/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CodeGraph dependencies
+        run: npm ci
+
+      - name: Install extension dependencies
+        working-directory: vscode-extension
+        run: npm ci
+
+      - name: Test extension
+        working-directory: vscode-extension
+        run: npm test
+
+      - name: Package target
+        working-directory: vscode-extension
+        shell: bash
+        env:
+          CODEGRAPH_REQUIRE_NATIVE_KERNEL: "1"
+        run: npm run package -- --target "${{ matrix.target }}"
+
+      - name: Verify native kernel in packaged runtime
+        shell: bash
+        run: test -f "vscode-extension/runtime/${{ matrix.target }}/lib/kernel/codegraph-kernel.node"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codegraph-${{ matrix.target }}
+          path: vscode-extension/codegraph-${{ matrix.target }}.vsix
+          if-no-files-found: error

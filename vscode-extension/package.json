@@ -1,0 +1,262 @@
+{
+  "name": "codegraph",
+  "displayName": "CodeGraph",
+  "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
+  "version": "0.2.0",
+  "publisher": "codegraph",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/colbymchenry/codegraph.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "codegraph",
+    "mcp",
+    "copilot",
+    "code intelligence",
+    "code review",
+    "call graph"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onChatParticipant:codegraph.chat",
+    "onCommand:codegraph.initializeWorkspace",
+    "onCommand:codegraph.syncIndex",
+    "onCommand:codegraph.showStatus",
+    "onCommand:codegraph.analyzeImpact",
+    "onCommand:codegraph.openWorkflowGraph",
+    "onCommand:codegraph.showTokenSavings",
+    "onCommand:codegraph.exportLatestMarkdown",
+    "onCommand:codegraph.exportLatestPdf"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "CodeGraph executes its bundled local runtime and reads workspace source files."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The local CodeGraph runtime requires a filesystem-backed workspace."
+    }
+  },
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "codegraph.runtime",
+        "label": "CodeGraph (Bundled Runtime)"
+      }
+    ],
+    "chatSkills": [
+      {
+        "path": "./skills/codegraph/SKILL.md"
+      }
+    ],
+    "chatAgents": [
+      {
+        "path": "./agents/codegraph-reviewer.agent.md"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "codegraph.chat",
+        "name": "codegraph",
+        "fullName": "CodeGraph",
+        "description": "Explain workflows or review code with CodeGraph context.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "explain",
+            "description": "Explain purpose, functions, and workflow; create a Markdown report with a Mermaid preview."
+          },
+          {
+            "name": "review",
+            "description": "Review changed or selected code, analyze blast radius, and classify risk without editing."
+          },
+          {
+            "name": "impact",
+            "description": "Analyze change impact, detect affected tests, classify risk, and report estimated token savings."
+          }
+        ],
+        "disambiguation": [
+          {
+            "category": "Code workflow explanation",
+            "description": "Explains what code does, why it exists, and how control or data flows through functions.",
+            "examples": [
+              "What is this function used for?",
+              "How does this request workflow work?",
+              "Explain the purpose of the selected code."
+            ]
+          },
+          {
+            "category": "Blast-radius code review",
+            "description": "Reviews code changes and evaluates affected callers, dependencies, regressions, and risk.",
+            "examples": [
+              "Review my changes.",
+              "What can break if I change this?",
+              "Assess the risk of this diff."
+            ]
+          },
+          {
+            "category": "Change-impact and test selection",
+            "description": "Traces changed files through dependent workflows and identifies the indexed tests that should run.",
+            "examples": [
+              "Analyze Change Impact.",
+              "Which tests are affected by my changes?",
+              "Phân tích ảnh hưởng của thay đổi này."
+            ]
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "codegraph.initializeWorkspace",
+        "title": "CodeGraph: Initialize Workspace",
+        "icon": "$(database)"
+      },
+      {
+        "command": "codegraph.syncIndex",
+        "title": "CodeGraph: Refresh Index",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "codegraph.showStatus",
+        "title": "CodeGraph: Show Index Status",
+        "icon": "$(info)"
+      },
+      {
+        "command": "codegraph.analyzeImpact",
+        "title": "CodeGraph: Analyze Change Impact",
+        "icon": "$(type-hierarchy-sub)"
+      },
+      {
+        "command": "codegraph.openWorkflowGraph",
+        "title": "CodeGraph: Open Workflow Graph",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "codegraph.showTokenSavings",
+        "title": "CodeGraph: Token Savings Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "codegraph.resetTokenSavings",
+        "title": "CodeGraph: Reset Token Savings"
+      },
+      {
+        "command": "codegraph.exportLatestMarkdown",
+        "title": "CodeGraph: Export Latest Report as Markdown",
+        "icon": "$(markdown)"
+      },
+      {
+        "command": "codegraph.exportLatestPdf",
+        "title": "CodeGraph: Export Latest Report as PDF",
+        "icon": "$(file-pdf)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "codegraph.analyzeImpact",
+          "group": "navigation@90",
+          "when": "resourceScheme == file"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "codegraph.analyzeImpact",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "codegraph.resetTokenSavings",
+          "when": "codegraph.tokenSavings.hasData"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CodeGraph",
+      "properties": {
+        "codegraph.autoRefresh.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the index fresh with CodeGraph's native watcher while the bundled MCP runtime is active."
+        },
+        "codegraph.autoRefresh.debounceMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "maximum": 60000,
+          "description": "Quiet period before a burst of file changes is incrementally synced."
+        },
+        "codegraph.chat.maxContextFiles": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Maximum number of source files returned by CodeGraph for a chat report."
+        },
+        "codegraph.chat.maxDiffCharacters": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 10000,
+          "maximum": 500000,
+          "description": "Maximum Git diff size supplied to /review. Larger diffs are truncated with an explicit warning."
+        },
+        "codegraph.impact.maxDepth": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Maximum dependency depth for affected-test detection."
+        },
+        "codegraph.metrics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Store workspace-local estimates of context tokens and file reads saved by impact analysis."
+        },
+        "codegraph.reports.openPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open generated Markdown reports in VS Code's preview."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "bundle": "node ./scripts/bundle-extension.mjs",
+    "build": "npm run check && npm run bundle",
+    "build:runtime": "node ./scripts/build-runtime.mjs",
+    "build:all": "npm run build:runtime && npm run build",
+    "test": "npm run check && node --test ./test/*.test.mjs",
+    "demo:pdf": "node ./scripts/generate-pdf-sample.mjs",
+    "package": "node ./scripts/package-extension.mjs",
+    "package:all": "node ./scripts/package-extension.mjs --all"
+  },
+  "dependencies": {
+    "pdfkit": "^0.17.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pdfkit": "^0.17.3",
+    "@types/vscode": "^1.125.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}

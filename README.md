@@ -49,6 +49,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 ## Contents
 
 - [Get Started](#get-started)
+- [VS Code Extension](#vs-code-extension)
 - [Language Support](#language-support)
 - [Why CodeGraph?](#why-codegraph)
 - [Key Features](#key-features)
@@ -136,6 +137,31 @@ codegraph uninstall
 Pass `--keep-cli` to remove only the agent configurations and keep the CLI installed.
 
 <sub>Reverses the installer — strips CodeGraph's MCP server config, instructions, and permissions from each configured agent. Your project indexes (`.codegraph/`) are left untouched; remove those per-project with `codegraph uninit`. Use `--target` to remove from specific agents, or `--yes` to run non-interactively.</sub>
+
+---
+
+## VS Code Extension
+
+The repository includes a platform-specific [VS Code extension](vscode-extension/README.md) that packages the self-contained CodeGraph runtime and automatically contributes:
+
+- the `codegraph_explore` MCP server;
+- a CodeGraph Agent Skill;
+- configurable native index auto-refresh;
+- the `@codegraph /explain` workflow report with a temporary Markdown + Mermaid preview;
+- the `@codegraph /review` diff and blast-radius review;
+- `/impact`, affected-test detection, a workflow graph, and a token-saving dashboard;
+- a bundled native Rust kernel with WASM fallback;
+- a read-only reviewer agent and Markdown/PDF export.
+
+Build the extension and the runtime for the current machine with:
+
+```bash
+cd vscode-extension
+npm ci
+npm run build:all
+```
+
+Package a platform-specific VSIX with `npm run package`.
 
 ---
 
