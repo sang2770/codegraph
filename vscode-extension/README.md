@@ -88,13 +88,15 @@ The participant:
 
 ### `@codebrain /review`
 
-`/review` combines:
+`/review` is one unified review pass. It combines:
 
 - Git status, stat, and diff.
 - Active editor selection.
 - CodeBrain source, callers, dependencies, and blast radius.
+- Architecture, workflow, and public-contract analysis.
+- Changed-hunk correctness, null/undefined boundaries, edge cases, and concrete convention checks.
 
-It returns a structured review with severity-ranked findings, an impact diagram, a regression test matrix, and an overall risk verdict. The participant is review-only; it does not modify files. Shared contracts, security, persistence, concurrency, lifecycle, and high fan-out changes are treated conservatively as high risk.
+It returns one structured verdict with severity-ranked findings, an impact diagram, a regression test matrix, and a release recommendation. There is no overview/code-level mode choice: the command checks both layers so important cross-file risks and local defects appear in the same report. The participant is review-only; it does not modify files. Shared contracts, security, persistence, concurrency, lifecycle, and high fan-out changes are treated conservatively as high risk.
 
 ### `@codebrain /impact` and Analyze Change Impact
 

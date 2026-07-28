@@ -82,12 +82,8 @@
             "description": "Explain purpose, functions, and workflow; create a Markdown report with a Mermaid preview."
           },
           {
-            "name": "review-overview",
-            "description": "Review architecture, changed workflows, public contracts, blast radius, regression risk, and release readiness."
-          },
-          {
-            "name": "review-code",
-            "description": "Review code-level correctness: conventions, null/undefined safety, edge cases, affected methods/callers, and test gaps."
+            "name": "review",
+            "description": "Run one graph-grounded review covering architecture, contracts, blast radius, code correctness, boundary safety, test gaps, and release readiness."
           },
           {
             "name": "impact",
@@ -105,21 +101,13 @@
             ]
           },
           {
-            "category": "Overview code review",
-            "description": "Reviews architecture, changed workflows, affected contracts, blast radius, regressions, and release risk.",
+            "category": "Graph-grounded code review",
+            "description": "Reviews architecture and changed workflows together with code correctness, boundary safety, affected methods, regressions, test gaps, and release risk.",
             "examples": [
-              "Give me an overview review of my changes.",
+              "Review my changes.",
               "What can break if I change this?",
-              "Assess the risk of this diff."
-            ]
-          },
-          {
-            "category": "Code-level review",
-            "description": "Checks changed code for correctness, conventions, null/undefined handling, edge cases, affected methods, and test gaps.",
-            "examples": [
-              "Review this diff at code level.",
               "Check null and undefined handling.",
-              "Which affected methods and edge cases need tests?"
+              "Assess the release risk and missing tests for this diff."
             ]
           },
           {
