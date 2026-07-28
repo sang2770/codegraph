@@ -11,6 +11,17 @@ export interface TokenSavingSample {
   affectedTests: number;
 }
 
+export interface ChatRequestTokenSample {
+  command: 'explain' | 'review' | 'impact';
+  model: string;
+  generatedAt: string;
+  codeBrainContextTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  latencyMs: number;
+}
+
 export interface TokenSavingSnapshot {
   analyses: number;
   totalLatencyMs: number;
@@ -19,6 +30,7 @@ export interface TokenSavingSnapshot {
   totalTokensSaved: number;
   totalFileReadsAvoided: number;
   last?: TokenSavingSample;
+  lastChatRequest?: ChatRequestTokenSample;
 }
 
 const STORAGE_KEY = 'codebrain.tokenSavings.v1';
@@ -37,7 +49,7 @@ export class MetricsStore {
     void vscode.commands.executeCommand(
       'setContext',
       'codebrain.tokenSavings.hasData',
-      this.snapshot().analyses > 0,
+      this.snapshot().analyses > 0 || this.snapshot().lastChatRequest !== undefined,
     );
   }
 
@@ -58,6 +70,7 @@ export class MetricsStore {
     }
     const current = this.snapshot();
     await this.context.workspaceState.update(STORAGE_KEY, {
+      ...current,
       analyses: current.analyses + 1,
       totalLatencyMs: current.totalLatencyMs + sample.latencyMs,
       totalContextTokens: current.totalContextTokens + sample.contextTokens,
@@ -66,6 +79,26 @@ export class MetricsStore {
       totalFileReadsAvoided:
         current.totalFileReadsAvoided + sample.fileReadsAvoided,
       last: sample,
+    } satisfies TokenSavingSnapshot);
+    await vscode.commands.executeCommand(
+      'setContext',
+      'codebrain.tokenSavings.hasData',
+      true,
+    );
+  }
+
+  public async recordChatRequest(sample: ChatRequestTokenSample): Promise<void> {
+    if (
+      !vscode.workspace
+        .getConfiguration('codebrain')
+        .get<boolean>('metrics.enabled', true)
+    ) {
+      return;
+    }
+    const current = this.snapshot();
+    await this.context.workspaceState.update(STORAGE_KEY, {
+      ...current,
+      lastChatRequest: sample,
     } satisfies TokenSavingSnapshot);
     await vscode.commands.executeCommand(
       'setContext',

@@ -90,6 +90,19 @@ function panelHtml(
   const scriptNonce = nonce();
   const risk = analysis?.risk ?? 'not analyzed';
   const last = analysis?.metrics ?? snapshot.last;
+  const latestRequest = snapshot.lastChatRequest;
+  const latestRequestSection = latestRequest
+    ? `<h2>Latest chat request · estimated</h2>
+  <section class="cards">
+    <div class="card"><div class="label">Command</div><div class="value">/${escapeHtml(latestRequest.command)}</div></div>
+    <div class="card"><div class="label">Model</div><div class="value compact">${escapeHtml(latestRequest.model)}</div></div>
+    <div class="card"><div class="label">CodeBrain context</div><div class="value">${metric(latestRequest.codeBrainContextTokens)}</div></div>
+    <div class="card"><div class="label">Model input</div><div class="value">${metric(latestRequest.inputTokens)}</div></div>
+    <div class="card"><div class="label">Model output</div><div class="value">${metric(latestRequest.outputTokens)}</div></div>
+    <div class="card"><div class="label">Request total</div><div class="value">${metric(latestRequest.totalTokens)}</div></div>
+    <div class="card"><div class="label">Request latency</div><div class="value">${metric(latestRequest.latencyMs)} ms</div></div>
+  </section>`
+    : '';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -101,13 +114,13 @@ function panelHtml(
     :root { color-scheme: light dark; }
     body { padding: 22px; color: var(--vscode-foreground); font-family: var(--vscode-font-family); background: var(--vscode-editor-background); }
     header { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:18px; }
-    h1 { font-size:22px; margin:0; } .subtitle { color:var(--vscode-descriptionForeground); margin-top:5px; }
+    h1 { font-size:22px; margin:0; } h2 { font-size:16px; margin:24px 0 0; } .subtitle { color:var(--vscode-descriptionForeground); margin-top:5px; }
     button { border:1px solid var(--vscode-button-border, transparent); border-radius:5px; padding:7px 11px; color:var(--vscode-button-foreground); background:var(--vscode-button-background); cursor:pointer; }
     button.secondary { color:var(--vscode-button-secondaryForeground); background:var(--vscode-button-secondaryBackground); }
     .actions { display:flex; flex-wrap:wrap; gap:8px; }
     .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:16px 0; }
     .card { border:1px solid var(--vscode-panel-border); border-radius:9px; padding:13px; background:var(--vscode-sideBar-background); }
-    .card .label { color:var(--vscode-descriptionForeground); font-size:12px; } .card .value { font-size:21px; font-weight:650; margin-top:6px; }
+    .card .label { color:var(--vscode-descriptionForeground); font-size:12px; } .card .value { font-size:21px; font-weight:650; margin-top:6px; } .card .value.compact { font-size:15px; overflow-wrap:anywhere; }
     .risk { text-transform:uppercase; } .risk.high,.risk.critical { color:var(--vscode-errorForeground); } .risk.medium { color:var(--vscode-editorWarning-foreground); } .risk.low { color:var(--vscode-testing-iconPassed); }
     .surface { border:1px solid var(--vscode-panel-border); border-radius:10px; overflow:auto; background:var(--vscode-editorWidget-background); }
     .graph { min-width:760px; width:100%; max-height:720px; }
@@ -137,6 +150,7 @@ function panelHtml(
     <div class="card"><div class="label">Last latency</div><div class="value">${metric(last?.latencyMs ?? 0)} ms</div></div>
     <div class="card"><div class="label">Extraction engine</div><div class="value">${nativeKernel ? 'Rust native' : 'WASM fallback'}</div></div>
   </section>
+  ${latestRequestSection}
   <section class="surface">${graphSvg(analysis)}</section>
   <div class="note">Click a graph node to open its source file. Token values are estimates, not model billing data.</div>
   <script nonce="${scriptNonce}">

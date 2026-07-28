@@ -7,6 +7,10 @@ import {
   detectResponseLanguage,
   responseLanguageInstruction,
 } from './language';
+import {
+  ChatRequestTokenSample,
+  MetricsStore,
+} from './metrics';
 import { ReportManager } from './reportManager';
 import { normalizeReport, ReportKind } from './reports';
 import {
@@ -24,7 +28,15 @@ interface CodeBrainChatResult extends vscode.ChatResult {
   metadata: {
     command: ReportKind;
     report?: string;
+    tokens?: ChatRequestTokenSample;
   };
+}
+
+interface GeneratedReport {
+  text: string;
+  codeBrainContextTokens: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 const EXPLAIN_INSTRUCTIONS = `You are a senior software architect using a precomputed semantic code graph.
@@ -119,28 +131,46 @@ function modelBudgetCharacters(model: vscode.LanguageModelChat): number {
   return Math.max(30_000, Math.min(500_000, (model.maxInputTokens - 4_000) * 3));
 }
 
+async function countTokens(
+  model: vscode.LanguageModelChat,
+  text: string,
+  token: vscode.CancellationToken,
+): Promise<number> {
+  try {
+    return await model.countTokens(text, token);
+  } catch {
+    // Token counting is supplied by the selected model provider. Preserve the
+    // request when that optional provider operation fails and keep the result
+    // explicitly labelled as an estimate in the UI.
+    return Math.ceil(text.length / 4);
+  }
+}
+
 async function generateReport(
   request: vscode.ChatRequest,
   instructions: string,
   languageInstruction: string,
   userPrompt: string,
   evidence: string,
+  codeBrainContext: string,
   token: vscode.CancellationToken,
-): Promise<string> {
+): Promise<GeneratedReport> {
   const budget = modelBudgetCharacters(request.model);
   const evidenceBudget = Math.max(10_000, budget - instructions.length - userPrompt.length);
+  const instructionText = `${instructions}\n\n${languageInstruction}`;
+  const requestText = `User request:\n${userPrompt}\n\nEvidence:\n${trimForModel(
+    evidence,
+    evidenceBudget,
+    'evidence',
+  )}`;
   const messages = [
-    vscode.LanguageModelChatMessage.User(
-      `${instructions}\n\n${languageInstruction}`,
-    ),
-    vscode.LanguageModelChatMessage.User(
-      `User request:\n${userPrompt}\n\nEvidence:\n${trimForModel(
-        evidence,
-        evidenceBudget,
-        'evidence',
-      )}`,
-    ),
+    vscode.LanguageModelChatMessage.User(instructionText),
+    vscode.LanguageModelChatMessage.User(requestText),
   ];
+  const [inputTokens, codeBrainContextTokens] = await Promise.all([
+    countTokens(request.model, `${instructionText}\n\n${requestText}`, token),
+    countTokens(request.model, codeBrainContext, token),
+  ]);
 
   const response = await request.model.sendRequest(
     messages,
@@ -155,7 +185,35 @@ async function generateReport(
   for await (const fragment of response.text) {
     text += fragment;
   }
-  return text;
+  const outputTokens = await countTokens(request.model, text, token);
+  return {
+    text,
+    codeBrainContextTokens,
+    inputTokens,
+    outputTokens,
+  };
+}
+
+function tokenUsageFooter(
+  sample: ChatRequestTokenSample,
+  languageCode: string,
+): string {
+  const locale = languageCode === 'vi' ? 'vi-VN' : 'en-US';
+  const format = (value: number) => new Intl.NumberFormat(locale).format(value);
+  if (languageCode === 'vi') {
+    return [
+      '---',
+      `> 📊 **Token request · ước tính** — CodeBrain context: **${format(sample.codeBrainContextTokens)}** · Input: **${format(sample.inputTokens)}** · Output: **${format(sample.outputTokens)}** · Tổng: **${format(sample.totalTokens)}** · Thời gian: **${format(sample.latencyMs)} ms**`,
+      '>',
+      '> Không phải dữ liệu billing; số token do model provider đếm và có thể không gồm hidden/system overhead.',
+    ].join('\n');
+  }
+  return [
+    '---',
+    `> 📊 **Request tokens · estimated** — CodeBrain context: **${format(sample.codeBrainContextTokens)}** · Input: **${format(sample.inputTokens)}** · Output: **${format(sample.outputTokens)}** · Total: **${format(sample.totalTokens)}** · Latency: **${format(sample.latencyMs)} ms**`,
+    '>',
+    '> Not billing data; counts come from the model provider and may exclude hidden/system overhead.',
+  ].join('\n');
 }
 
 function inferCommand(request: vscode.ChatRequest): ReportKind {
@@ -328,6 +386,7 @@ export function registerChatParticipant(
   runtime: RuntimeCommand,
   indexManager: IndexManager,
   impactController: ImpactController,
+  metrics: MetricsStore,
   reports: ReportManager,
 ): void {
   const handler: vscode.ChatRequestHandler = async (
@@ -363,6 +422,7 @@ export function registerChatParticipant(
       'chat.maxDiffCharacters',
       120_000,
     );
+    const showTokenUsage = config.get<boolean>('chat.showTokenUsage', true);
     const editorContext = activeEditorContext(folder);
     const responseLanguage = detectResponseLanguage(
       request.prompt,
@@ -376,6 +436,7 @@ export function registerChatParticipant(
       'selected code';
 
     try {
+      const requestStartedAt = Date.now();
       stream.progress(
         command === 'impact'
           ? 'Tracing change impact and detecting affected tests…'
@@ -384,7 +445,7 @@ export function registerChatParticipant(
           : 'Tracing the workflow through CodeBrain…',
       );
 
-      let rawReport: string;
+      let generatedReport: GeneratedReport;
       if (command === 'impact') {
         const gitContext = await collectGitReviewContext(
           folder.uri.fsPath,
@@ -413,12 +474,13 @@ export function registerChatParticipant(
           analysis,
           responseLanguage.code,
         );
-        rawReport = await generateReport(
+        generatedReport = await generateReport(
           request,
           IMPACT_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Analyze the current change impact.',
           `${deterministicReport}\n\n## CodeBrain context\n\n${graphContext}`,
+          graphContext,
           token,
         );
       } else if (command === 'review') {
@@ -439,7 +501,7 @@ export function registerChatParticipant(
           request,
           token,
         );
-        rawReport = await generateReport(
+        generatedReport = await generateReport(
           request,
           REVIEW_INSTRUCTIONS,
           languageInstruction,
@@ -450,6 +512,7 @@ export function registerChatParticipant(
             editorContext,
             maxDiffCharacters,
           ),
+          graphContext,
           token,
         );
       } else {
@@ -462,17 +525,43 @@ export function registerChatParticipant(
           request,
           token,
         );
-        rawReport = await generateReport(
+        generatedReport = await generateReport(
           request,
           EXPLAIN_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Explain the purpose and workflow of the selected code.',
           explainEvidence(graphContext, editorContext),
+          graphContext,
           token,
         );
       }
 
-      const report = normalizeReport(command, rawReport, subject);
+      const tokenSample: ChatRequestTokenSample = {
+        command,
+        model: request.model.name,
+        generatedAt: new Date().toISOString(),
+        codeBrainContextTokens: generatedReport.codeBrainContextTokens,
+        inputTokens: generatedReport.inputTokens,
+        outputTokens: generatedReport.outputTokens,
+        totalTokens: generatedReport.inputTokens + generatedReport.outputTokens,
+        latencyMs: Date.now() - requestStartedAt,
+      };
+      try {
+        await metrics.recordChatRequest(tokenSample);
+      } catch {
+        // Metrics are optional and must never hide an otherwise valid report.
+      }
+      const normalizedReport = normalizeReport(
+        command,
+        generatedReport.text,
+        subject,
+      );
+      const report = showTokenUsage
+        ? `${normalizedReport.trim()}\n\n${tokenUsageFooter(
+            tokenSample,
+            responseLanguage.code,
+          )}\n`
+        : normalizedReport;
       const reportUri = await reports.setLatest({
         kind: command,
         title:
@@ -499,6 +588,7 @@ export function registerChatParticipant(
         metadata: {
           command,
           report: reportUri?.toString(),
+          tokens: tokenSample,
         },
       };
     } catch (error) {

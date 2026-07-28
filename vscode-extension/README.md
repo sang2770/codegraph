@@ -120,6 +120,12 @@ The dashboard stores workspace-local aggregate estimates for:
 - file reads avoided;
 - query latency and analysis count.
 
+Each `/explain`, `/review`, and `/impact` response also includes a compact
+per-request footer with model-specific estimates for CodeBrain graph context,
+total model input, model output, total request tokens, and end-to-end latency.
+The latest request is stored in workspace state and shown in the dashboard.
+Set `codebrain.chat.showTokenUsage` to `false` to hide the response footer.
+
 The UI and exported report explicitly label these values as estimates. They are not model billing or telemetry data, and nothing is uploaded by the metrics store.
 
 ### Markdown reports

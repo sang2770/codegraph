@@ -213,6 +213,11 @@
           "maximum": 500000,
           "description": "Maximum Git diff size supplied to code review commands. Larger diffs are truncated with an explicit warning."
         },
+        "codebrain.chat.showTokenUsage": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show model-specific estimated token counts and latency for each CodeBrain chat request."
+        },
         "codebrain.impact.maxDepth": {
           "type": "number",
           "default": 5,

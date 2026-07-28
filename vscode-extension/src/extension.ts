@@ -26,6 +26,7 @@ export function activate(context: vscode.ExtensionContext): void {
       runtime,
       indexManager,
       impactController,
+      metrics,
       reports,
     );
   } catch (error) {
