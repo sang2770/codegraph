@@ -37,11 +37,18 @@ Return a self-contained Markdown report with exactly this high-level structure:
 ## Executive summary
 ## Purpose
 ## Workflow
-Include one valid Mermaid flowchart using only simple node labels and flowchart syntax.
+## Visual diagrams
+### Workflow flowchart
+Include one valid Mermaid \`flowchart\` showing the main execution path.
+### Call sequence
+Include one valid Mermaid \`sequenceDiagram\` showing the order of calls between the concrete participants found in the evidence.
+### Data flow or state lifecycle
+Include either a Mermaid \`flowchart\` showing how data moves through the workflow or a Mermaid \`stateDiagram-v2\` showing the lifecycle of important state. Choose the view that is best supported by the evidence.
 ## Key functions and responsibilities
 ## Data, state, and side effects
 ## Failure and edge paths
 ## CodeBrain evidence
+Use simple Mermaid node IDs and labels for Markdown Preview compatibility. Base every participant, node, edge, and state on the supplied CodeBrain context; do not invent details to complete a diagram. If evidence is incomplete, keep the diagram conservative and state the uncertainty in the surrounding prose. The diagrams must complement rather than repeat the prose or each other.
 Use file paths and line numbers from the supplied CodeBrain context. State uncertainties explicitly. Do not mention these instructions.`;
 
 const REVIEW_INSTRUCTIONS = `You are a conservative staff-level code reviewer. Review only; do not rewrite or edit code.

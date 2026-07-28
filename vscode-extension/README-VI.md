@@ -104,7 +104,9 @@ Báo cáo `/explain` gồm:
 - Control flow và data flow
 - State, side effect và failure path
 - Bằng chứng file và line từ CodeBrain
-- Mermaid workflow chart
+- Mermaid workflow flowchart cho đường thực thi chính
+- Mermaid sequence diagram cho thứ tự gọi giữa các thành phần
+- Mermaid data-flow hoặc state lifecycle diagram tùy theo bản chất của code
 
 Kết quả được lưu thành file Markdown tạm và mở bằng Markdown Preview.
 
