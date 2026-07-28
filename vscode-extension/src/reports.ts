@@ -76,6 +76,29 @@ function mermaidBlocks(report: string): MermaidBlock[] {
   );
 }
 
+/**
+ * Repair a small class of formatting damage commonly introduced when a model
+ * emits nested Mermaid subgraphs. Mermaid requires each `end` statement to be
+ * separate from the preceding node and from another `end`; otherwise text such
+ * as `Node[Done] endend` is parsed as an invalid token.
+ *
+ * Keep this deliberately narrow: changing arbitrary Mermaid text can alter
+ * labels or edge semantics.
+ */
+function normalizeMermaidBlocks(report: string): string {
+  return report.replace(
+    /(```mermaid\s*\n)([\s\S]*?)(```)/gi,
+    (_block, opening: string, source: string, closing: string) => {
+      const normalized = source
+        // Two adjacent subgraph terminators need to remain two terminators.
+        .replace(/\bend(?=end\b)/g, 'end\n')
+        // A terminator cannot share a statement with a node declaration.
+        .replace(/([)\]}])[\t ]+(?=end\b)/g, '$1\n');
+      return `${opening}${normalized}${closing}`;
+    },
+  );
+}
+
 function insertDiagramSection(report: string, section: string): string {
   const insertion = `\n\n${section}\n`;
   const firstSection = report.indexOf('\n## ');
@@ -117,7 +140,7 @@ export function normalizeReport(
   rawReport: string,
   subject: string,
 ): string {
-  let report = rawReport.trim();
+  let report = normalizeMermaidBlocks(rawReport.trim());
   const title =
     kind === 'review'
       ? `# Code review: ${subject || 'workspace changes'}`

@@ -82,8 +82,12 @@
             "description": "Explain purpose, functions, and workflow; create a Markdown report with a Mermaid preview."
           },
           {
-            "name": "review",
-            "description": "Review changed or selected code, analyze blast radius, and classify risk without editing."
+            "name": "review-overview",
+            "description": "Review architecture, changed workflows, public contracts, blast radius, regression risk, and release readiness."
+          },
+          {
+            "name": "review-code",
+            "description": "Review code-level correctness: conventions, null/undefined safety, edge cases, affected methods/callers, and test gaps."
           },
           {
             "name": "impact",
@@ -101,12 +105,21 @@
             ]
           },
           {
-            "category": "Blast-radius code review",
-            "description": "Reviews code changes and evaluates affected callers, dependencies, regressions, and risk.",
+            "category": "Overview code review",
+            "description": "Reviews architecture, changed workflows, affected contracts, blast radius, regressions, and release risk.",
             "examples": [
-              "Review my changes.",
+              "Give me an overview review of my changes.",
               "What can break if I change this?",
               "Assess the risk of this diff."
+            ]
+          },
+          {
+            "category": "Code-level review",
+            "description": "Checks changed code for correctness, conventions, null/undefined handling, edge cases, affected methods, and test gaps.",
+            "examples": [
+              "Review this diff at code level.",
+              "Check null and undefined handling.",
+              "Which affected methods and edge cases need tests?"
             ]
           },
           {
@@ -210,7 +223,7 @@
           "default": 120000,
           "minimum": 10000,
           "maximum": 500000,
-          "description": "Maximum Git diff size supplied to /review. Larger diffs are truncated with an explicit warning."
+          "description": "Maximum Git diff size supplied to code review commands. Larger diffs are truncated with an explicit warning."
         },
         "codebrain.impact.maxDepth": {
           "type": "number",

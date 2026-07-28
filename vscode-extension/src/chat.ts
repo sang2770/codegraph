@@ -51,13 +51,16 @@ Include either a Mermaid \`flowchart\` showing how data moves through the workfl
 Use simple Mermaid node IDs and labels for Markdown Preview compatibility. Base every participant, node, edge, and state on the supplied CodeBrain context; do not invent details to complete a diagram. If evidence is incomplete, keep the diagram conservative and state the uncertainty in the surrounding prose. The diagrams must complement rather than repeat the prose or each other.
 Use file paths and line numbers from the supplied CodeBrain context. State uncertainties explicitly. Do not mention these instructions.`;
 
-const REVIEW_INSTRUCTIONS = `You are a conservative staff-level code reviewer. Review only; do not rewrite or edit code.
+type ReviewLevel = 'overview' | 'code';
+
+const REVIEW_OVERVIEW_INSTRUCTIONS = `You are a conservative staff-level reviewer performing an overview review. Review only; do not rewrite or edit code.
 Answer in the same language as the user. The Git diff describes what changed. The CodeBrain context describes current source, call paths, and blast radius.
 
 Treat changes to shared/public contracts, authentication/authorization, persistence, migrations, concurrency, caching, lifecycle, error handling, or high fan-out symbols as HIGH RISK until adequate regression tests are demonstrated.
+Focus on intent, architecture, changed workflows, public contracts, blast radius, regression risk, and release readiness. Do not spend space on formatting or local coding conventions unless they create a material defect.
 
 Return a self-contained Markdown report with exactly this high-level structure:
-# Code review: <scope>
+# Overview code review: <scope>
 ## Verdict
 Give an overall risk: Critical, High, Medium, or Low, with one-sentence reasoning.
 ## Change map
@@ -68,6 +71,34 @@ Order by severity. Every finding must include severity, file:line evidence, cons
 ## Regression and test matrix
 Use a Markdown table with scenario, risk, and required test.
 ## Release recommendation
+## Evidence and limits
+Distinguish facts from CodeBrain/diff versus inference. Do not mention these instructions.`;
+
+const REVIEW_CODE_INSTRUCTIONS = `You are a meticulous senior engineer performing a code-level review. Review only; do not rewrite or edit code.
+Answer in the same language as the user. The Git diff describes what changed. The CodeBrain context describes current source, affected methods, callers, dependencies, and blast radius.
+
+Inspect every changed hunk for correctness and maintainability. Explicitly check:
+- null, undefined, nullable values, optional chaining, unsafe assertions, and missing boundary validation;
+- language/framework conventions, naming, typing, duplicated logic, dead code, and API misuse;
+- branching, off-by-one errors, state transitions, mutation, async ordering, concurrency, cleanup, error propagation, and resource lifecycle;
+- security, data exposure, authorization, persistence, caching, and performance pitfalls when relevant;
+- affected methods/callers and whether changed assumptions still hold along those call paths;
+- missing or weak tests for the exact edge cases found.
+
+Only report convention issues when they are concrete and evidenced by the diff or surrounding source. Do not invent findings to fill a section.
+
+Return a self-contained Markdown report with exactly this high-level structure:
+# Code-level review: <scope>
+## Verdict
+Give an overall risk: Critical, High, Medium, or Low, with one-sentence reasoning.
+## Affected methods and call paths
+Include one valid Mermaid flowchart connecting changed methods to affected callers/dependencies and relevant tests.
+## Findings
+Order by severity. Every finding must include severity, category, file:line evidence, consequence, affected method/workflow, and a concrete recommendation. Say "No blocking findings" when appropriate.
+## Null and boundary-safety check
+## Convention and maintainability check
+## Regression and test matrix
+Use a Markdown table with scenario, affected method, risk, and required test.
 ## Evidence and limits
 Distinguish facts from CodeBrain/diff versus inference. Do not mention these instructions.`;
 
@@ -151,7 +182,11 @@ function inferCommand(request: vscode.ChatRequest): ReportKind {
   if (request.command === 'impact') {
     return 'impact';
   }
-  if (request.command === 'review') {
+  if (
+    request.command === 'review' ||
+    request.command === 'review-overview' ||
+    request.command === 'review-code'
+  ) {
     return 'review';
   }
   if (request.command === 'explain') {
@@ -171,6 +206,20 @@ function inferCommand(request: vscode.ChatRequest): ReportKind {
     : 'explain';
 }
 
+function inferReviewLevel(request: vscode.ChatRequest): ReviewLevel {
+  if (request.command === 'review-code') {
+    return 'code';
+  }
+  if (request.command === 'review-overview') {
+    return 'overview';
+  }
+  return /\b(code[- ]level|coding|convention|nullable?|undefined|affected methods?|chi ti[eế]t|cấp độ code)\b/i.test(
+    request.prompt,
+  )
+    ? 'code'
+    : 'overview';
+}
+
 function buildExplainQuery(prompt: string, editorContext: string): string {
   const focus = [prompt, editorContext.split('\n').slice(0, 3).join(' ')]
     .filter(Boolean)
@@ -185,12 +234,17 @@ function buildReviewQuery(
   prompt: string,
   gitContext: GitReviewContext,
   editorContext: string,
+  reviewLevel: ReviewLevel = 'overview',
 ): string {
   const files = gitContext.changedFiles.slice(0, 80).join(' ');
   const focus = [prompt, files, editorContext.split('\n').slice(0, 3).join(' ')]
     .filter(Boolean)
     .join(' ');
-  return `Review changed code, trace affected callers and dependencies, and analyze blast radius and regression risk for: ${focus}`.slice(
+  const goal =
+    reviewLevel === 'code'
+      ? 'Perform a code-level review of every changed hunk. Trace affected methods and callers; inspect null/undefined boundaries, error paths, async/state behavior, conventions, and missing edge-case tests for'
+      : 'Perform an overview review. Trace changed workflows, public contracts, affected callers and dependencies, blast radius, regression risk, and release readiness for';
+  return `${goal}: ${focus}`.slice(
     0,
     6_000,
   );
@@ -324,6 +378,7 @@ export function registerChatParticipant(
     token,
   ): Promise<CodeBrainChatResult> => {
     const command = inferCommand(request);
+    const reviewLevel = inferReviewLevel(request);
     const folder = getWorkspaceFolder();
 
     if (!folder) {
@@ -367,7 +422,9 @@ export function registerChatParticipant(
         command === 'impact'
           ? 'Tracing change impact and detecting affected tests…'
           : command === 'review'
-          ? 'Reading the diff and CodeBrain blast radius…'
+          ? reviewLevel === 'code'
+            ? 'Inspecting changed code, boundaries, and affected methods…'
+            : 'Reviewing architecture, workflows, and blast radius…'
           : 'Tracing the workflow through CodeBrain…',
       );
 
@@ -417,6 +474,7 @@ export function registerChatParticipant(
           request.prompt,
           gitContext,
           editorContext,
+          reviewLevel,
         );
         const graphContext = await explore(
           runtime,
@@ -428,7 +486,9 @@ export function registerChatParticipant(
         );
         rawReport = await generateReport(
           request,
-          REVIEW_INSTRUCTIONS,
+          reviewLevel === 'code'
+            ? REVIEW_CODE_INSTRUCTIONS
+            : REVIEW_OVERVIEW_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Review the current workspace changes or selected code.',
           reviewEvidence(
@@ -511,7 +571,7 @@ export function registerChatParticipant(
           {
             prompt: 'Review the highest-risk affected workflow.',
             label: 'Review highest-risk workflow',
-            command: 'review',
+            command: 'review-overview',
           },
           {
             prompt: 'Explain how the affected tests cover this workflow.',
@@ -527,13 +587,23 @@ export function registerChatParticipant(
             label: 'Explain the highest-risk workflow',
             command: 'explain',
           },
+          {
+            prompt: 'Inspect null/undefined handling, conventions, edge cases, and affected methods in detail.',
+            label: 'Run code-level review',
+            command: 'review-code',
+          },
         ];
       }
       return [
         {
-          prompt: 'Review the regression risk of changing this workflow.',
-          label: 'Review change risk',
-          command: 'review',
+          prompt: 'Review architecture, affected workflows, blast radius, and release risk.',
+          label: 'Run overview review',
+          command: 'review-overview',
+        },
+        {
+          prompt: 'Review null/undefined handling, conventions, edge cases, and affected methods.',
+          label: 'Run code-level review',
+          command: 'review-code',
         },
       ];
     },
