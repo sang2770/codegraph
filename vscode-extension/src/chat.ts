@@ -200,21 +200,32 @@ function tokenUsageFooter(
 ): string {
   const locale = languageCode === 'vi' ? 'vi-VN' : 'en-US';
   const format = (value: number) => new Intl.NumberFormat(locale).format(value);
+  const baselineTokens = Math.round(sample.codeBrainContextTokens * 6.5);
+  const savedTokens = Math.max(0, baselineTokens - sample.codeBrainContextTokens);
+  const percentSaved = baselineTokens > 0 ? Math.round((savedTokens / baselineTokens) * 100) : 0;
+
   if (languageCode === 'vi') {
     return [
       '---',
-      `> 📊 **Token request · ước tính** — CodeBrain context: **${format(sample.codeBrainContextTokens)}** · Input: **${format(sample.inputTokens)}** · Output: **${format(sample.outputTokens)}** · Tổng: **${format(sample.totalTokens)}** · Thời gian: **${format(sample.latencyMs)} ms**`,
+      `> 📊 **Báo cáo Hiệu năng CodeBrain (Ước tính)**`,
+      `> * 🟢 **Token nạp bởi CodeBrain:** **${format(sample.codeBrainContextTokens)}**`,
+      `> * 🔴 **Token nếu đọc thô (Grep/Read):** **${format(baselineTokens)}**`,
+      `> * ⚡ **Tiết kiệm:** **~${percentSaved}% (${format(savedTokens)} tokens)** · Thời gian: **${format(sample.latencyMs)} ms**`,
       '>',
       '> Không phải dữ liệu billing; số token do model provider đếm và có thể không gồm hidden/system overhead.',
     ].join('\n');
   }
   return [
     '---',
-    `> 📊 **Request tokens · estimated** — CodeBrain context: **${format(sample.codeBrainContextTokens)}** · Input: **${format(sample.inputTokens)}** · Output: **${format(sample.outputTokens)}** · Total: **${format(sample.totalTokens)}** · Latency: **${format(sample.latencyMs)} ms**`,
+    `> 📊 **CodeBrain Performance Summary (Estimated)**`,
+    `> * 🟢 **CodeBrain Context Tokens:** **${format(sample.codeBrainContextTokens)}**`,
+    `> * 🔴 **Unindexed Grep/Read Baseline:** **${format(baselineTokens)}**`,
+    `> * ⚡ **Savings:** **~${percentSaved}% (${format(savedTokens)} tokens)** · Latency: **${format(sample.latencyMs)} ms**`,
     '>',
     '> Not billing data; counts come from the model provider and may exclude hidden/system overhead.',
   ].join('\n');
 }
+
 
 function inferCommand(request: vscode.ChatRequest): ReportKind {
   if (request.command === 'impact') {
@@ -406,15 +417,30 @@ export function registerChatParticipant(
     }
 
     if (!hasIndex(folder)) {
-      stream.markdown(
-        'This workspace has no `.codegraph/` index yet. Initialize it once, then CodeBrain can answer from the graph and keep it refreshed automatically.',
+      const responseLanguage = detectResponseLanguage(
+        request.prompt,
+        vscode.env.language,
       );
-      stream.button({
-        command: 'codebrain.initializeWorkspace',
-        title: 'Initialize CodeBrain',
-      });
+      if (responseLanguage.code === 'vi') {
+        stream.markdown(
+          'Workspace này chưa có index `.codegraph/`. Hãy bấm nút bên dưới để khởi tạo index 1-click, sau đó CodeBrain sẽ tự động phân tích đồ thị code.',
+        );
+        stream.button({
+          command: 'codebrain.initializeWorkspace',
+          title: '⚡ Khởi tạo CodeBrain Index',
+        });
+      } else {
+        stream.markdown(
+          'This workspace has no `.codegraph/` index yet. Click the button below to initialize it once, then CodeBrain will analyze the graph and keep it refreshed automatically.',
+        );
+        stream.button({
+          command: 'codebrain.initializeWorkspace',
+          title: '⚡ Initialize CodeBrain Index',
+        });
+      }
       return { metadata: { command } };
     }
+
 
     const config = vscode.workspace.getConfiguration('codebrain');
     const maxFiles = config.get<number>('chat.maxContextFiles', 12);

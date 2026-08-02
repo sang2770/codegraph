@@ -98,17 +98,18 @@ export class IndexManager implements vscode.Disposable {
     const result = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `Building CodeBrain index for ${workspaceLabel(folder)}`,
+        title: `⚡ CodeBrain Engine: Building AST index for ${workspaceLabel(folder)}`,
         cancellable: false,
       },
       async (progress) => {
-        progress.report({ message: 'Parsing symbols and resolving dependencies…' });
+        progress.report({ message: 'Parsing AST symbols, resolving call paths & dependencies…' });
         return runCodeBrain(this.runtime, ['init', folder.uri.fsPath], {
           cwd: folder.uri.fsPath,
           env: codeBrainEnvironment(),
         });
       },
     );
+
 
     this.logResult('init', result);
     this.refreshStatusBar();
