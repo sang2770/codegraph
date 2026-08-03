@@ -13,6 +13,7 @@ import {
 } from './metrics';
 import { ReportManager } from './reportManager';
 import { normalizeReport, ReportKind } from './reports';
+import { readProjectReadmeContext } from './readmeContext';
 import {
   codeBrainEnvironment,
   runCodeBrain,
@@ -60,11 +61,12 @@ Include either a Mermaid \`flowchart\` showing how data moves through the workfl
 ## Data, state, and side effects
 ## Failure and edge paths
 ## CodeBrain evidence
+Project README context, when supplied, is the project's terminology and intent guide. Use it to interpret names and explain why a workflow exists, but do not let README claims override concrete source, call-path, or line-number evidence. If the README is stale or ambiguous, call that out briefly.
 Use simple Mermaid node IDs and labels for Markdown Preview compatibility. Base every participant, node, edge, and state on the supplied CodeBrain context; do not invent details to complete a diagram. If evidence is incomplete, keep the diagram conservative and state the uncertainty in the surrounding prose. The diagrams must complement rather than repeat the prose or each other.
 Use file paths and line numbers from the supplied CodeBrain context. State uncertainties explicitly. Do not mention these instructions.`;
 
 const REVIEW_INSTRUCTIONS = `You are a conservative staff-level reviewer performing one unified, graph-grounded code review. Review only; do not rewrite or edit code.
-Answer in the same language as the user. The Git diff describes what changed. The CodeBrain context describes current source, call paths, and blast radius.
+Answer in the same language as the user. The Git diff describes what changed. The CodeBrain context describes current source, call paths, and blast radius. Optional project README context describes intended behavior, terminology, and documented contracts; use it as supporting context only and call out likely documentation drift when it conflicts with the diff or concrete source evidence.
 
 Treat changes to shared/public contracts, authentication/authorization, persistence, migrations, concurrency, caching, lifecycle, error handling, or high fan-out symbols as HIGH RISK until adequate regression tests are demonstrated.
 Review intent, architecture, changed workflows, public contracts, blast radius, regression risk, and release readiness. Also inspect every changed hunk for correctness and maintainability. Explicitly check:
@@ -359,6 +361,7 @@ function reviewEvidence(
   gitContext: GitReviewContext,
   editorContext: string,
   maxDiffCharacters: number,
+  readmeContext: string,
 ): string {
   return [
     '## Git status',
@@ -376,6 +379,8 @@ function reviewEvidence(
       : '',
     '## Editor focus',
     editorContext || 'No active editor selection.',
+    readmeContext ||
+      '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source, call paths, and blast radius',
     graphContext,
   ]
@@ -383,10 +388,16 @@ function reviewEvidence(
     .join('\n\n');
 }
 
-function explainEvidence(graphContext: string, editorContext: string): string {
+function explainEvidence(
+  graphContext: string,
+  editorContext: string,
+  readmeContext: string,
+): string {
   return [
     '## Editor focus',
     editorContext || 'No active editor selection.',
+    readmeContext ||
+      '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source and workflow evidence',
     graphContext,
   ].join('\n\n');
@@ -527,6 +538,10 @@ export function registerChatParticipant(
           request,
           token,
         );
+        const readmeContext = readProjectReadmeContext(
+          folder.uri.fsPath,
+          editorContext,
+        );
         generatedReport = await generateReport(
           request,
           REVIEW_INSTRUCTIONS,
@@ -537,6 +552,7 @@ export function registerChatParticipant(
             gitContext,
             editorContext,
             maxDiffCharacters,
+            readmeContext,
           ),
           graphContext,
           token,
@@ -551,12 +567,16 @@ export function registerChatParticipant(
           request,
           token,
         );
+        const readmeContext = readProjectReadmeContext(
+          folder.uri.fsPath,
+          editorContext,
+        );
         generatedReport = await generateReport(
           request,
           EXPLAIN_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Explain the purpose and workflow of the selected code.',
-          explainEvidence(graphContext, editorContext),
+          explainEvidence(graphContext, editorContext, readmeContext),
           graphContext,
           token,
         );

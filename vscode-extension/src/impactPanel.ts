@@ -21,6 +21,73 @@ function metric(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
+function riskScore(analysis?: ImpactAnalysis): string {
+  return analysis?.assessment
+    ? `${analysis.assessment.score}/${analysis.assessment.maxScore}`
+    : '—';
+}
+
+function coverageLabel(analysis?: ImpactAnalysis): string {
+  if (!analysis?.assessment) return 'Not analyzed';
+  return {
+    covered: 'Covered',
+    partial: 'Partial',
+    gap: 'Gap',
+    none: 'No dependents',
+  }[analysis.assessment.coverage];
+}
+
+function confidenceLabel(analysis?: ImpactAnalysis): string {
+  if (!analysis?.assessment) return '—';
+  return {
+    high: 'High',
+    medium: 'Medium',
+    low: 'Low',
+  }[analysis.assessment.confidence];
+}
+
+function assessmentSection(analysis?: ImpactAnalysis): string {
+  if (!analysis?.assessment) return '';
+  const assessment = analysis.assessment;
+  const signals = assessment.signals
+    .map((signal) => {
+      const percent = Math.round((signal.score / signal.maxScore) * 100);
+      return `<div class="signal">
+        <div class="signal-head"><span>${escapeHtml(signal.label)}</span><strong>${signal.score}/${signal.maxScore}</strong></div>
+        <div class="meter" role="img" aria-label="${escapeHtml(signal.label)} ${percent}%"><span style="width:${percent}%"></span></div>
+        <div class="signal-detail">${escapeHtml(signal.detail)}</div>
+      </div>`;
+    })
+    .join('');
+  return `<section class="assessment">
+    <div class="section-heading"><div><h2>Why this impact level?</h2><div class="note">The score is a transparent heuristic, not a release gate.</div></div><span class="confidence">Evidence confidence: <strong>${confidenceLabel(analysis)}</strong></span></div>
+    <div class="signals">${signals}</div>
+    <div class="recommendation"><span class="recommendation-icon">→</span><div><strong>Recommended next step</strong><div>${escapeHtml(assessment.recommendation)}</div></div></div>
+  </section>`;
+}
+
+function pathsSection(analysis?: ImpactAnalysis): string {
+  if (!analysis) return '';
+  const changed = analysis.changedFiles.slice(0, 8);
+  const dependents = analysis.nodes
+    .filter((node) => node.kind === 'dependent')
+    .slice(0, 8)
+    .map((node) => node.path);
+  const tests = analysis.affectedTests.slice(0, 8);
+  const list = (values: string[], empty: string) =>
+    values.length > 0
+      ? `<ul>${values.map((value) => `<li><code>${escapeHtml(value)}</code></li>`).join('')}</ul>`
+      : `<div class="muted">${empty}</div>`;
+  return `<section class="path-summary">
+    <div class="section-heading"><div><h2>What can be affected?</h2><div class="note">Showing the first 8 paths in each group. The counters above include the full result.</div></div></div>
+    <div class="path-columns">
+      <div class="path-group changed"><h3>Changed · ${metric(analysis.changedFiles.length)}</h3>${list(changed, 'No changed files')}</div>
+      <div class="path-group dependent"><h3>Dependent workflows · ${metric(analysis.totalDependentsTraversed)}</h3>${list(dependents, 'No dependent path surfaced in graph context')}</div>
+      <div class="path-group test"><h3>Affected tests · ${metric(analysis.affectedTests.length)}</h3>${list(tests, 'No indexed affected tests')}</div>
+    </div>
+  </section>`;
+}
+
 function graphSvg(analysis?: ImpactAnalysis): string {
   if (!analysis || analysis.nodes.length === 0) {
     return '<div class="empty">Run “Analyze Change Impact” to build the workflow graph.</div>';
@@ -89,6 +156,7 @@ function panelHtml(
 ): string {
   const scriptNonce = nonce();
   const risk = analysis?.risk ?? 'not analyzed';
+  const score = riskScore(analysis);
   const last = analysis?.metrics ?? snapshot.last;
   const latestRequest = snapshot.lastChatRequest;
   const latestRequestSection = latestRequest
@@ -120,8 +188,14 @@ function panelHtml(
     .actions { display:flex; flex-wrap:wrap; gap:8px; }
     .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:16px 0; }
     .card { border:1px solid var(--vscode-panel-border); border-radius:9px; padding:13px; background:var(--vscode-sideBar-background); }
-    .card .label { color:var(--vscode-descriptionForeground); font-size:12px; } .card .value { font-size:21px; font-weight:650; margin-top:6px; } .card .value.compact { font-size:15px; overflow-wrap:anywhere; }
+    .hero-card { border-color:var(--vscode-focusBorder); } .card .label { color:var(--vscode-descriptionForeground); font-size:12px; } .card .value { font-size:21px; font-weight:650; margin-top:6px; } .card .value.compact { font-size:15px; overflow-wrap:anywhere; } .score { color:var(--vscode-descriptionForeground); font-size:13px; font-weight:500; }
     .risk { text-transform:uppercase; } .risk.high,.risk.critical { color:var(--vscode-errorForeground); } .risk.medium { color:var(--vscode-editorWarning-foreground); } .risk.low { color:var(--vscode-testing-iconPassed); }
+    .assessment,.path-summary { margin:18px 0; padding:16px; border:1px solid var(--vscode-panel-border); border-radius:10px; background:var(--vscode-sideBar-background); }
+    .section-heading { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; } .section-heading h2 { margin:0; } .confidence { color:var(--vscode-descriptionForeground); font-size:12px; white-space:nowrap; }
+    .signals { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; margin-top:14px; } .signal-head { display:flex; justify-content:space-between; gap:8px; font-size:13px; } .signal-head strong { color:var(--vscode-foreground); }
+    .meter { height:5px; margin:7px 0 6px; border-radius:3px; background:var(--vscode-progressBar-background); opacity:.3; overflow:hidden; } .meter span { display:block; height:100%; border-radius:3px; background:var(--vscode-focusBorder); opacity:1; } .signal-detail { color:var(--vscode-descriptionForeground); font-size:11px; line-height:1.35; }
+    .recommendation { display:flex; gap:10px; align-items:flex-start; margin-top:16px; padding:11px 12px; border-left:3px solid var(--vscode-charts-blue); background:var(--vscode-editor-background); font-size:12px; line-height:1.45; } .recommendation-icon { color:var(--vscode-charts-blue); font-size:18px; line-height:1; }
+    .path-columns { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-top:14px; } .path-group { min-width:0; } .path-group h3 { margin:0 0 8px; font-size:12px; font-weight:650; } .path-group.changed h3 { color:var(--vscode-charts-orange); } .path-group.dependent h3 { color:var(--vscode-charts-blue); } .path-group.test h3 { color:var(--vscode-testing-iconPassed); } ul { list-style:none; padding:0; margin:0; } li { padding:4px 0; overflow-wrap:anywhere; font-size:11px; } code { font-family:var(--vscode-editor-font-family); color:var(--vscode-foreground); } .muted { color:var(--vscode-descriptionForeground); font-size:11px; }
     .surface { border:1px solid var(--vscode-panel-border); border-radius:10px; overflow:auto; background:var(--vscode-editorWidget-background); }
     .graph { min-width:760px; width:100%; max-height:720px; }
     .edge { fill:none; stroke:var(--vscode-descriptionForeground); stroke-width:1.2; opacity:.55; } marker path { fill:var(--vscode-descriptionForeground); }
@@ -142,8 +216,12 @@ function panelHtml(
     </div>
   </header>
   <section class="cards">
-    <div class="card"><div class="label">Risk</div><div class="value risk ${escapeHtml(risk)}">${escapeHtml(risk)}</div></div>
+    <div class="card hero-card"><div class="label">Impact level</div><div class="value risk ${escapeHtml(risk)}">${escapeHtml(risk)} <span class="score">${escapeHtml(score)}</span></div></div>
+    <div class="card"><div class="label">Changed files</div><div class="value">${metric(analysis?.changedFiles.length ?? 0)}</div></div>
+    <div class="card"><div class="label">Dependents traversed</div><div class="value">${metric(analysis?.totalDependentsTraversed ?? 0)}</div></div>
     <div class="card"><div class="label">Affected tests</div><div class="value">${metric(analysis?.affectedTests.length ?? last?.affectedTests ?? 0)}</div></div>
+    <div class="card"><div class="label">Test status</div><div class="value compact">${escapeHtml(coverageLabel(analysis))}</div></div>
+    <div class="card"><div class="label">Evidence confidence</div><div class="value compact">${escapeHtml(confidenceLabel(analysis))}</div></div>
     <div class="card"><div class="label">Tokens saved · estimated</div><div class="value">${metric(snapshot.totalTokensSaved)}</div></div>
     <div class="card"><div class="label">File reads avoided · estimated</div><div class="value">${metric(snapshot.totalFileReadsAvoided)}</div></div>
     <div class="card"><div class="label">Analyses</div><div class="value">${metric(snapshot.analyses)}</div></div>
@@ -151,8 +229,10 @@ function panelHtml(
     <div class="card"><div class="label">Extraction engine</div><div class="value">${nativeKernel ? 'Rust native' : 'WASM fallback'}</div></div>
   </section>
   ${latestRequestSection}
+  ${assessmentSection(analysis)}
+  ${pathsSection(analysis)}
   <section class="surface">${graphSvg(analysis)}</section>
-  <div class="note">Click a graph node to open its source file. Token values are estimates, not model billing data.</div>
+  <div class="note">Click a graph node to open its source file. Graph relationships are grouped from indexed evidence; token values are estimates, not model billing data.</div>
   <script nonce="${scriptNonce}">
     const vscode = acquireVsCodeApi();
     document.querySelectorAll('[data-command]').forEach((button) => button.addEventListener('click', () => vscode.postMessage({ command: button.dataset.command })));

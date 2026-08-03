@@ -1,249 +1,130 @@
 # CodeBrain for VS Code
 
-CodeBrain for VS Code packages the semantic code engine as a self-contained, platform-specific extension. It does not require a system Node.js installation at runtime.
+CodeBrain helps AI understand your codebase using a local semantic code graph, bypassing the need for tedious manual context gathering or repository-wide search loops. It integrates a native-accelerated runtime, Model Context Protocol (MCP) server, Agent Skill, custom Chat Participant, change impact analyzer, affected test finder, and interactive visualization dashboard right inside VS Code.
 
-Vietnamese usage guide: [README-VI.md](README-VI.md).
+---
 
-The extension combines the runtime, AI context, and visual analysis surfaces:
+## 🚀 Getting Started
 
-```mermaid
-flowchart LR
-  E[VS Code extension] --> R[Bundled CodeBrain runtime]
-  E --> M[MCP provider]
-  E --> S[Agent Skill]
-  E --> C[Chat participant]
-  E --> A[Read-only reviewer agent]
-  E --> W[Impact webview]
-  M --> X[codegraph_explore]
-  C --> X
-  W --> T[affected-test traversal]
-  X --> I[(.codegraph index)]
-  T --> I
-  R --> I
-```
+### 1. Installation
+CodeBrain is distributed as a platform-specific VS Code extension (`.vsix`) containing a bundled Node.js environment, the CodeBrain runtime, and a native Rust kernel. You do **not** need Node.js or any external CLI installed on your machine.
 
-- A bundled Node 24 + compiled CodeBrain runtime with a native Rust extraction kernel and safe WASM fallback.
-- An automatically registered stdio MCP server exposing `codegraph_explore`.
-- A contributed Agent Skill that teaches VS Code to query CodeBrain before repository-wide grep/read loops.
-- A `@codebrain` chat participant with `/explain`, `/review`, and `/impact`.
-- A read-only CodeBrain Reviewer custom agent.
-- A change-impact workflow graph, affected-test detector, and token-saving dashboard.
-- Lightweight Markdown report export with Mermaid preview.
+To install:
+1. Open VS Code.
+2. Open the Command Palette (`Ctrl+Shift+P` on Windows/Linux, `Cmd+Shift+P` on macOS).
+3. Run **Extensions: Install from VSIX...**
+4. Choose the `.vsix` file matching your operating system and architecture:
+   - `darwin-arm64`: macOS Apple Silicon
+   - `darwin-x64`: macOS Intel
+   - `linux-arm64` / `linux-x64`
+   - `win32-arm64` / `win32-x64`
+5. Reload VS Code when prompted.
 
-The participant detects the dominant language of each latest user message. It
-supports script-level detection (CJK, Japanese, Korean, Cyrillic, Arabic, Thai,
-and Devanagari) plus vocabulary and diacritic detection for common Latin-script
-languages, including Vietnamese with or without accents. Short symbol-only
-requests fall back to the VS Code display language. All headings, tables, prose,
-and Mermaid labels follow the detected language; code identifiers and paths keep
-their original spelling.
+### 2. Initializing Your Workspace
+Before querying CodeBrain, you must index your repository:
+1. Open your workspace folder in VS Code.
+2. Run the command **CodeBrain: Initialize Workspace** from the Command Palette.
+3. This creates a local `.codegraph/` directory in your workspace root.
+4. Check the Status Bar for progress. Once indexing finishes, the status bar will show `CodeBrain: Ready`.
 
-## Features
+> [!NOTE]
+> Initial indexing might take some time on large codebases. Subsequent updates are incremental and extremely fast.
 
-### MCP registration
+---
 
-`package.json` contributes `codebrain.runtime` through `mcpServerDefinitionProviders`. On activation, the extension resolves that provider to:
+## 🛠️ Main Features
 
+### 💬 VS Code Chat Participant (`@codebrain`)
+Interact directly with your codebase using the `@codebrain` participant. It automatically detects the language of your prompt (supporting English, Vietnamese, and others) and formats headings, explanations, and diagrams in that language.
+
+- **`/explain`**: Explains functions, files, or end-to-end workflows.
+  - *Example*: `@codebrain /explain How does the authentication middleware work?`
+  - It generates a structured Markdown report featuring a Mermaid flowchart of the code execution path.
+- **`/review`**: Reviews active changes or selection against codebase conventions and architecture.
+  - *Example*: `@codebrain /review Review my current changes`
+  - It analyzes Git diffs and call paths to return risk levels (Critical/High/Medium/Low), structural bugs, boundary cases, and release recommendations.
+- **`/impact`**: Analyzes the blast radius of changes.
+  - *Example*: `@codebrain /impact What is the impact of modifying refreshSession?`
+  - Automatically identifies affected workflows and dependent code paths.
+
+### 🔍 Change Impact & Affected Tests
+Analyze changes from tracked, staged, or untracked Git files (falling back to the active file if the repository is clean) using:
+- Command: **CodeBrain: Analyze Change Impact**
+- Chat: `@codebrain /impact`
+
+The engine will:
+1. Traverse call graphs to find affected dependencies up to a configurable depth.
+2. Locate affected test files (e.g., `.test.*`, `.spec.*`, `tests/`).
+3. Classify risk levels based on fan-out, public contracts, and test coverage gaps.
+
+### 📊 Interactive Workflow Graph
+Run **CodeBrain: Open Workflow Graph** to visualize the impact path:
 ```text
-<extension>/runtime/<platform>-<arch>/node
-  --liftoff-only
-  <extension>/runtime/<platform>-<arch>/lib/dist/bin/codegraph.js
-  serve --mcp
+Changed Files ──> Dependents / Workflows ──> Affected Tests
 ```
+- Click any node to open the corresponding source file and line.
+- The interface displays the active engine (`Rust native` or `WASM fallback`).
 
-The MCP process always uses the runtime shipped in the VSIX. The internal `codegraph.js` executable name remains unchanged for runtime compatibility.
+### 📈 Token Savings Dashboard
+Keep track of how much context (and API cost) CodeBrain is saving you by avoiding reading entire files.
+- Command: **CodeBrain: Token Savings Dashboard**
+- View metrics on avoided file reads, graph context tokens, baseline comparisons, and query latency.
 
-### Automatic index refresh
+> [!TIP]
+> All metrics are stored locally inside VS Code's workspace state. No telemetry or billing data is uploaded.
 
-`codebrain.autoRefresh.enabled` is enabled by default. The setting controls CodeBrain's native file watcher through the MCP runtime:
+### 🤖 Read-only CodeBrain Reviewer Agent
+Use the custom agent **CodeBrain Reviewer** in VS Code Chat. It is granted CodeBrain-specific graph query tools without write or terminal permissions—ideal for secure, evidence-based code reviews and release assessments.
 
-- `true`: normal debounced incremental sync.
-- `false`: starts the MCP server with `CODEGRAPH_NO_WATCH=1`.
-- `codebrain.autoRefresh.debounceMs`: maps to `CODEGRAPH_WATCH_DEBOUNCE_MS`.
+### 📄 Exportable Markdown Reports
+Save generated reviews or explanations using the command **CodeBrain: Export Latest Report as Markdown**. Keep a lightweight record of complex analysis to review, share, or feed back to other AI models.
 
-The status bar exposes Initialize, Refresh, and Status commands. Initial indexing remains an explicit one-time user action because it can be expensive on a large repository.
+---
 
-### Agent Skill
+## ⚙️ Configuration Settings
+Customize CodeBrain by editing your `.vscode/settings.json`:
 
-The extension contributes [`skills/codebrain/SKILL.md`](skills/codebrain/SKILL.md) through `contributes.chatSkills`. VS Code can load it on demand for structural questions, workflow tracing, blast-radius analysis, and code review.
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `codebrain.autoRefresh.enabled` | `true` | Keep the index fresh with CodeBrain's native file watcher. |
+| `codebrain.autoRefresh.debounceMs` | `1000` | Quiet period (ms) before sync triggering. |
+| `codebrain.chat.maxContextFiles` | `12` | Max files returned by CodeBrain for a chat report. |
+| `codebrain.chat.maxDiffCharacters`| `120000` | Max Git diff size supplied to code review commands. |
+| `codebrain.chat.showTokenUsage` | `true` | Show estimated token counts/latency in chat responses. |
+| `codebrain.impact.maxDepth` | `5` | Maximum dependency depth for affected-test detection. |
+| `codebrain.metrics.enabled` | `true` | Record local token savings and analytics. |
+| `codebrain.reports.openPreview` | `true` | Automatically open generated Markdown reports in preview mode. |
 
-It also contributes [`agents/codebrain-reviewer.agent.md`](agents/codebrain-reviewer.agent.md). This agent receives only CodeBrain tools: no edit or terminal tools. It is intended for read-only evidence gathering and conservative release-risk review.
+---
 
-### `@codebrain /explain`
+## 📋 Extension Commands
+- `CodeBrain: Initialize Workspace` — Index the workspace.
+- `CodeBrain: Refresh Index` — Force index update.
+- `CodeBrain: Show Index Status` — Inspect the index state.
+- `CodeBrain: Analyze Change Impact` — Check the change impact.
+- `CodeBrain: Open Workflow Graph` — Open the interactive visual graph.
+- `CodeBrain: Token Savings Dashboard` — Open the savings metrics UI.
+- `CodeBrain: Reset Token Savings` — Clear metrics history.
+- `CodeBrain: Export Latest Report as Markdown` — Export findings.
 
-`/explain` is designed for questions such as:
+---
 
-- What is this used for?
-- How does this function work?
-- What is the end-to-end workflow?
-- Why does this component exist?
+## ⚠️ Requirements & Limitations
+- **VS Code Version**: `^1.100.0` or newer.
+- **Trusted Workspace**: CodeBrain runs a local runtime and reads local workspace files; it requires workspace trust to be enabled.
+- **Filesystem Workspace**: Virtual workspaces are not supported.
+- **Chat Models**: Chat commands (`/explain`, `/review`, `/impact` from chat) require an active model available through VS Code Chat. Local commands (e.g. Workflow Graph, Index status, export) work entirely offline without a chat model.
 
-The participant:
+---
 
-1. Invokes the registered `codegraph_explore` MCP tool when VS Code exposes it to the participant, with a direct bundled-runtime fallback that returns the same CodeBrain output.
-2. Uses the model selected in VS Code Chat to produce a structured explanation.
-3. Writes the result to a temporary Markdown file.
-4. Adds a Mermaid flowchart if the model omitted one.
-5. Opens the built-in Markdown preview when `codebrain.reports.openPreview` is enabled.
+## 🛠️ Troubleshooting
 
-### `@codebrain /review`
+- **Workspace Index Missing**: Make sure you have run **CodeBrain: Initialize Workspace** first.
+- **Index Not Updating**: Check if `codebrain.autoRefresh.enabled` is `true`. You can also trigger a manual refresh using **CodeBrain: Refresh Index**.
+- **No Affected Tests Detected**: Make sure tests follow standard patterns (e.g., in a `tests/` directory or ending in `.test.*` / `.spec.*`) and that CodeBrain can resolve dependencies between the test files and the target source code.
+- **WASM Fallback Warning**: If you see a warning that CodeBrain is using WASM fallback, your installed `.vsix` may not match your system architecture. The extension will still work but without the performance acceleration of the native Rust kernel.
+- **Logs**: Open VS Code Output view and select **CodeBrain** from the dropdown menu to inspect stdout, stderr, and execution logs.
 
-`/review` is one unified review pass. It combines:
+---
 
-- Git status, stat, and diff.
-- Active editor selection.
-- CodeBrain source, callers, dependencies, and blast radius.
-- Architecture, workflow, and public-contract analysis.
-- Changed-hunk correctness, null/undefined boundaries, edge cases, and concrete convention checks.
-
-It returns one structured verdict with severity-ranked findings, an impact diagram, a regression test matrix, and a release recommendation. There is no overview/code-level mode choice: the command checks both layers so important cross-file risks and local defects appear in the same report. The participant is review-only; it does not modify files. Shared contracts, security, persistence, concurrency, lifecycle, and high fan-out changes are treated conservatively as high risk.
-
-### `@codebrain /impact` and Analyze Change Impact
-
-The command and chat route share one analysis pipeline:
-
-1. Determine scope from tracked, staged, and untracked Git files; fall back to the active file.
-2. Invoke `codegraph affected --json` with configurable dependency depth.
-3. Query CodeBrain call paths and blast radius through MCP, with the bundled CLI as a local fallback.
-4. Classify risk using fan-out, sensitive contracts, change width, and missing test evidence.
-5. Open an interactive workflow graph. Clicking a node opens the corresponding source location.
-
-The affected-test list is index evidence. Zero detected tests is reported as a regression gap, not as proof that no regression can occur.
-
-### Token Saving Dashboard
-
-The dashboard stores workspace-local aggregate estimates for:
-
-- CodeBrain context tokens;
-- a candidate-file reading baseline;
-- tokens saved;
-- file reads avoided;
-- query latency and analysis count.
-
-Each `/explain`, `/review`, and `/impact` response also includes a compact
-per-request footer with model-specific estimates for CodeBrain graph context,
-total model input, model output, total request tokens, and end-to-end latency.
-The latest request is stored in workspace state and shown in the dashboard.
-Set `codebrain.chat.showTokenUsage` to `false` to hide the response footer.
-
-The UI and exported report explicitly label these values as estimates. They are not model billing or telemetry data, and nothing is uploaded by the metrics store.
-
-### Markdown reports
-
-Explain, review, and impact outputs become the latest report. Export it as lightweight Markdown that preserves headings, tables, code blocks, Unicode text, and Mermaid diagrams. Markdown can be previewed directly in VS Code, reviewed through Git diffs, or passed back to an AI agent without PDF extraction.
-
-## Commands
-
-- `CodeBrain: Initialize Workspace`
-- `CodeBrain: Refresh Index`
-- `CodeBrain: Show Index Status`
-- `CodeBrain: Analyze Change Impact`
-- `CodeBrain: Open Workflow Graph`
-- `CodeBrain: Token Savings Dashboard`
-- `CodeBrain: Export Latest Report as Markdown`
-
-## Development
-
-Prerequisites:
-
-- Node.js 24.
-- Rust stable to include the native kernel. Without Rust, local development builds keep the WASM fallback unless `CODEGRAPH_REQUIRE_NATIVE_KERNEL=1`.
-- `bash`, `curl`, and `tar`.
-- `unzip` when building a Windows runtime on Unix.
-
-Install both projects:
-
-```bash
-cd ..
-npm ci
-cd vscode-extension
-npm ci
-```
-
-Build the extension code only:
-
-```bash
-npm run build
-```
-
-Build and stage the runtime for the current machine:
-
-```bash
-npm run build:runtime
-```
-
-Build both:
-
-```bash
-npm run build:all
-```
-
-The runtime builder delegates to the repository's canonical `scripts/build-bundle.sh`, then extracts the resulting self-contained bundle into:
-
-```text
-runtime/<target>/
-  node | node.exe
-  lib/dist/
-  lib/kernel/codegraph-kernel.node
-  lib/node_modules/
-  bin/
-```
-
-## Testing
-
-```bash
-npm test
-```
-
-This type-checks the VS Code integration and tests language detection, impact reporting, token estimates, and runtime-target handling.
-
-A packaged-runtime smoke test can be run with:
-
-```bash
-runtime/<target>/node \
-  --liftoff-only \
-  --disable-warning=ExperimentalWarning \
-  runtime/<target>/lib/dist/bin/codegraph.js \
-  --version
-```
-
-## Packaging
-
-Build a platform-specific VSIX for the current host:
-
-```bash
-npm run package
-```
-
-Build one explicit target:
-
-```bash
-npm run package -- --target linux-x64
-```
-
-Build all supported targets:
-
-```bash
-npm run package:all
-```
-
-Supported targets:
-
-- `darwin-arm64`
-- `darwin-x64`
-- `linux-arm64`
-- `linux-x64`
-- `win32-arm64`
-- `win32-x64`
-
-Each VSIX contains one runtime target. This avoids shipping six complete Node + CodeBrain runtimes to every user.
-
-## Requirements and boundaries
-
-- VS Code `1.125.0` or newer.
-- A filesystem-backed trusted workspace.
-- A chat model available in VS Code for `/explain` and `/review`.
-- `/impact` uses a chat model when invoked from chat; the Analyze Change Impact command, graph, affected-test detector, index operations, metrics, and exports work without one.
-- The index lives inside the project as `.codegraph/` and is not uploaded by the extension.
-
-The APIs used here follow the official VS Code guides for [MCP server providers](https://code.visualstudio.com/api/extension-guides/ai/mcp), [Chat Participants](https://code.visualstudio.com/api/extension-guides/ai/chat), and [extension-contributed Agent Skills](https://code.visualstudio.com/api/references/contribution-points#contributes.chatSkills).
+For extension development, building, and packaging instructions, please refer to [DEVELOPMENT.md](./DEVELOPMENT.md).

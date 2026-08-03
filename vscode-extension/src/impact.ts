@@ -11,6 +11,24 @@ import { activeEditorContext } from './workspace';
 
 export type ImpactRisk = 'critical' | 'high' | 'medium' | 'low';
 export type ImpactNodeKind = 'changed' | 'dependent' | 'test';
+export type ImpactCoverage = 'covered' | 'partial' | 'gap' | 'none';
+
+export interface ImpactSignal {
+  key: 'sensitivity' | 'blastRadius' | 'changeSize' | 'testCoverage';
+  label: string;
+  score: number;
+  maxScore: number;
+  detail: string;
+}
+
+export interface ImpactAssessment {
+  score: number;
+  maxScore: number;
+  confidence: 'high' | 'medium' | 'low';
+  coverage: ImpactCoverage;
+  signals: ImpactSignal[];
+  recommendation: string;
+}
 
 export interface ImpactNode {
   id: string;
@@ -45,6 +63,7 @@ export interface ImpactAnalysis {
   edges: ImpactEdge[];
   risk: ImpactRisk;
   riskReasons: string[];
+  assessment: ImpactAssessment;
   metrics: TokenSavingSample;
 }
 
@@ -143,58 +162,113 @@ function buildGraph(
 
   for (const source of changed) {
     for (const target of dependents.slice(0, 12)) {
-      edges.push({ source: source.id, target: target.id, label: 'may affect' });
+      edges.push({ source: source.id, target: target.id, label: 'candidate impact' });
     }
   }
   const testSources = dependents.length > 0 ? dependents.slice(0, 12) : changed;
   for (const test of tests) {
     for (const source of testSources.slice(0, 4)) {
-      edges.push({ source: source.id, target: test.id, label: 'covered by' });
+      edges.push({ source: source.id, target: test.id, label: 'test evidence' });
     }
   }
 
   return { nodes: [...nodes.values()], edges };
 }
 
-function classifyRisk(
+export function classifyImpactRisk(
   changedFiles: string[],
   affectedTests: string[],
   dependents: number,
   graphContext: string,
-): { risk: ImpactRisk; reasons: string[] } {
+): { risk: ImpactRisk; reasons: string[]; assessment: ImpactAssessment } {
   const scope = `${changedFiles.join(' ')} ${graphContext.slice(0, 20_000)}`;
   const sensitive =
-    /\b(auth|permission|security|payment|billing|migration|schema|crypto|credential|token)\b/i.test(
+    /\b(auth|permission|security|payment|billing|migration|schema|crypto|credential|token|public\s+api|external\s+api|endpoint)\b/i.test(
       scope,
     );
+  const hasDependents = dependents > 0;
+  const hasTests = affectedTests.length > 0;
   const reasons: string[] = [];
+  const signals: ImpactSignal[] = [];
   let score = 0;
 
+  const sensitivityScore = sensitive ? 3 : 0;
+  signals.push({
+    key: 'sensitivity',
+    label: 'Sensitive or contract surface',
+    score: sensitivityScore,
+    maxScore: 3,
+    detail: sensitive
+      ? 'The changed scope contains security-, data-, payment-, or contract-sensitive terms.'
+      : 'No sensitive or contract-sensitive terms were found in the indexed scope.',
+  });
   if (sensitive) {
-    score += 3;
-    reasons.push('The change touches a security-, data-, or payment-sensitive area.');
+    score += sensitivityScore;
+    reasons.push('The change touches a security-, data-, payment-, or public-contract-sensitive area.');
   }
+
+  const blastRadiusScore = dependents >= 15 ? 3 : dependents >= 5 ? 2 : dependents > 0 ? 1 : 0;
+  signals.push({
+    key: 'blastRadius',
+    label: 'Blast radius',
+    score: blastRadiusScore,
+    maxScore: 3,
+    detail:
+      dependents > 0
+        ? `${dependents} transitive dependent(s) were traversed.`
+        : 'No dependent workflow was found in the current index.',
+  });
   if (dependents >= 15) {
-    score += 3;
+    score += blastRadiusScore;
     reasons.push(`${dependents} transitive dependents were traversed.`);
   } else if (dependents >= 5) {
-    score += 2;
+    score += blastRadiusScore;
     reasons.push(`${dependents} transitive dependents were traversed.`);
   } else if (dependents > 0) {
-    score += 1;
+    score += blastRadiusScore;
     reasons.push(`${dependents} dependent workflow(s) may be affected.`);
   }
+
+  const changeSizeScore = changedFiles.length >= 8 ? 2 : changedFiles.length >= 3 ? 1 : 0;
+  signals.push({
+    key: 'changeSize',
+    label: 'Change size',
+    score: changeSizeScore,
+    maxScore: 2,
+    detail: `The change spans ${changedFiles.length} file(s).`,
+  });
   if (changedFiles.length >= 8) {
-    score += 2;
+    score += changeSizeScore;
     reasons.push(`The change spans ${changedFiles.length} files.`);
   } else if (changedFiles.length >= 3) {
-    score += 1;
+    score += changeSizeScore;
     reasons.push(`The change spans ${changedFiles.length} files.`);
   }
-  if (dependents > 0 && affectedTests.length === 0) {
-    score += 2;
+
+  const coverageScore = hasDependents && !hasTests ? 2 : 0;
+  const coverage: ImpactCoverage = hasDependents
+    ? hasTests
+      ? affectedTests.length >= Math.min(dependents, 3)
+        ? 'covered'
+        : 'partial'
+      : 'gap'
+    : 'none';
+  signals.push({
+    key: 'testCoverage',
+    label: 'Test evidence',
+    score: coverageScore,
+    maxScore: 2,
+    detail:
+      coverage === 'gap'
+        ? 'No indexed affected tests were detected for the dependent paths.'
+        : hasTests
+          ? `${affectedTests.length} affected test file(s) were detected (${coverage} coverage signal).`
+          : 'There is no dependent workflow requiring affected-test evidence.',
+  });
+  if (coverage === 'gap') {
+    score += coverageScore;
     reasons.push('No indexed affected tests were detected for the dependent paths.');
-  } else if (affectedTests.length > 0) {
+  } else if (hasTests) {
     reasons.push(`${affectedTests.length} affected test file(s) were detected.`);
   }
   if (reasons.length === 0) {
@@ -203,7 +277,33 @@ function classifyRisk(
 
   const risk: ImpactRisk =
     score >= 7 ? 'critical' : score >= 4 ? 'high' : score >= 2 ? 'medium' : 'low';
-  return { risk, reasons };
+  const confidence: ImpactAssessment['confidence'] =
+    graphContext.length >= 500 && (hasDependents || hasTests)
+      ? 'high'
+      : graphContext.length > 0
+        ? 'medium'
+        : 'low';
+  const recommendation =
+    coverage === 'gap'
+      ? 'Run or add tests for the affected workflows before merging.'
+      : risk === 'critical' || risk === 'high'
+        ? 'Review the highest-fan-out workflows and run the affected test set before merging.'
+        : risk === 'medium'
+          ? 'Review the listed dependents and run the affected tests before merging.'
+          : 'Run the affected tests and confirm the narrow blast radius in review.';
+
+  return {
+    risk,
+    reasons,
+    assessment: {
+      score,
+      maxScore: 10,
+      confidence,
+      coverage,
+      signals,
+      recommendation,
+    },
+  };
 }
 
 function exploreQuery(changedFiles: string[]): string {
@@ -307,7 +407,7 @@ export class ImpactAnalysisService {
       affected.affectedTests,
       graphContext,
     );
-    const classification = classifyRisk(
+    const classification = classifyImpactRisk(
       changedFiles,
       affected.affectedTests,
       affected.totalDependentsTraversed,
@@ -335,6 +435,7 @@ export class ImpactAnalysisService {
       edges: graph.edges,
       risk: classification.risk,
       riskReasons: classification.reasons,
+      assessment: classification.assessment,
       metrics,
     };
   }
@@ -376,20 +477,97 @@ function listOrNone(values: string[], empty: string): string {
     : `- ${empty}`;
 }
 
+function assessmentFor(analysis: ImpactAnalysis): ImpactAssessment {
+  if (analysis.assessment) {
+    return analysis.assessment;
+  }
+  const scoreByRisk: Record<ImpactRisk, number> = {
+    low: 1,
+    medium: 3,
+    high: 6,
+    critical: 9,
+  };
+  return {
+    score: scoreByRisk[analysis.risk],
+    maxScore: 10,
+    confidence: 'low',
+    coverage:
+      analysis.totalDependentsTraversed === 0
+        ? 'none'
+        : analysis.affectedTests.length > 0
+          ? 'partial'
+          : 'gap',
+    signals: analysis.riskReasons.map((detail, index) => ({
+      key: index === 0 ? 'sensitivity' : 'blastRadius',
+      label: 'Risk signal',
+      score: 1,
+      maxScore: 1,
+      detail,
+    })),
+    recommendation: 'Validate the affected workflows with tests and human review.',
+  };
+}
+
+function coverageLabel(coverage: ImpactCoverage, vi: boolean): string {
+  if (vi) {
+    return {
+      covered: 'Có test bao phủ',
+      partial: 'Bao phủ một phần',
+      gap: 'Thiếu test ảnh hưởng',
+      none: 'Không có dependent',
+    }[coverage];
+  }
+  return {
+    covered: 'Covered by indexed tests',
+    partial: 'Partially covered',
+    gap: 'Test coverage gap',
+    none: 'No dependent workflow',
+  }[coverage];
+}
+
+function confidenceLabel(confidence: ImpactAssessment['confidence'], vi: boolean): string {
+  if (vi) {
+    return { high: 'Cao', medium: 'Trung bình', low: 'Thấp' }[confidence];
+  }
+  return { high: 'High', medium: 'Medium', low: 'Low' }[confidence];
+}
+
+function signalTable(assessment: ImpactAssessment, vi: boolean): string {
+  const header = vi
+    ? '| Tín hiệu | Điểm đóng góp | Bằng chứng |\n|---|---:|---|'
+    : '| Signal | Contribution | Evidence |\n|---|---:|---|';
+  const rows = assessment.signals.map(
+    (signal) => `| ${signal.label} | **${signal.score}/${signal.maxScore}** | ${signal.detail} |`,
+  );
+  return [header, ...rows].join('\n');
+}
+
 export function buildImpactMarkdown(
   analysis: ImpactAnalysis,
   languageCode: string,
 ): string {
   const vi = languageCode === 'vi';
+  const assessment = assessmentFor(analysis);
   const risk = analysis.risk.toUpperCase();
   if (vi) {
     return `# Phân tích ảnh hưởng thay đổi
 
 ## Kết luận
 
-**Mức rủi ro: ${risk}.** CodeBrain đã duyệt ${analysis.totalDependentsTraversed} thành phần phụ thuộc và phát hiện ${analysis.affectedTests.length} tệp test bị ảnh hưởng.
+**Mức độ ảnh hưởng: ${risk} (${assessment.score}/${assessment.maxScore}).** CodeBrain đã duyệt ${analysis.totalDependentsTraversed} thành phần phụ thuộc và phát hiện ${analysis.affectedTests.length} tệp test bị ảnh hưởng.
+
+- Độ tin cậy bằng chứng: **${confidenceLabel(assessment.confidence, true)}**
+- Tình trạng test: **${coverageLabel(assessment.coverage, true)}**
 
 ${analysis.riskReasons.map((reason) => `- ${reason}`).join('\n')}
+
+## Vì sao có mức độ này?
+
+${signalTable(assessment, true)}
+
+## Khuyến nghị
+
+${assessment.recommendation}
 
 ## Workflow graph
 
@@ -405,7 +583,9 @@ ${listOrNone(analysis.affectedTests, 'Không phát hiện test bị ảnh hưở
 
 ## Phạm vi ảnh hưởng
 
+- Tệp thay đổi: **${analysis.changedFiles.length}**
 - Thành phần phụ thuộc đã duyệt: **${analysis.totalDependentsTraversed}**
+- Test bị ảnh hưởng: **${analysis.affectedTests.length}**
 - Nút hiển thị trên graph: **${analysis.nodes.length}**
 - Độ trễ phân tích: **${analysis.metrics.latencyMs} ms**
 - Runtime: **${analysis.runtimeTarget} · ${analysis.nativeKernel ? 'Rust native kernel' : 'WASM fallback'}**
@@ -431,9 +611,20 @@ Kết quả test và dependency được lấy từ index CodeBrain hiện tại
 
 ## Verdict
 
-**Risk: ${risk}.** CodeBrain traversed ${analysis.totalDependentsTraversed} dependents and detected ${analysis.affectedTests.length} affected test file(s).
+**Impact level: ${risk} (${assessment.score}/${assessment.maxScore}).** CodeBrain traversed ${analysis.totalDependentsTraversed} dependents and detected ${analysis.affectedTests.length} affected test file(s).
+
+- Evidence confidence: **${confidenceLabel(assessment.confidence, false)}**
+- Test status: **${coverageLabel(assessment.coverage, false)}**
 
 ${analysis.riskReasons.map((reason) => `- ${reason}`).join('\n')}
+
+## Why this level?
+
+${signalTable(assessment, false)}
+
+## Recommendation
+
+${assessment.recommendation}
 
 ## Workflow graph
 
@@ -449,7 +640,9 @@ ${listOrNone(analysis.affectedTests, 'No affected tests were detected in the ind
 
 ## Blast radius
 
+- Changed files: **${analysis.changedFiles.length}**
 - Dependents traversed: **${analysis.totalDependentsTraversed}**
+- Affected tests: **${analysis.affectedTests.length}**
 - Nodes shown in graph: **${analysis.nodes.length}**
 - Analysis latency: **${analysis.metrics.latencyMs} ms**
 - Runtime: **${analysis.runtimeTarget} · ${analysis.nativeKernel ? 'Rust native kernel' : 'WASM fallback'}**
