@@ -2,7 +2,7 @@
   "name": "codebrain",
   "displayName": "CodeBrain",
   "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
-  "version": "0.3.1",
+  "version": "1.1.0",
   "publisher": "codebrain",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -38,6 +38,10 @@
     "onCommand:codebrain.syncIndex",
     "onCommand:codebrain.showStatus",
     "onCommand:codebrain.analyzeImpact",
+    "onCommand:codebrain.reviewChanges",
+    "onCommand:codebrain.selectModel",
+    "onCommand:codebrain.nextReviewFinding",
+    "onCommand:codebrain.previousReviewFinding",
     "onCommand:codebrain.openWorkflowGraph",
     "onCommand:codebrain.showTokenSavings",
     "onCommand:codebrain.exportLatestMarkdown"
@@ -144,6 +148,26 @@
         "icon": "$(type-hierarchy-sub)"
       },
       {
+        "command": "codebrain.reviewChanges",
+        "title": "CodeBrain: Review Changes",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "codebrain.selectModel",
+        "title": "CodeBrain: Choose AI Model",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "codebrain.nextReviewFinding",
+        "title": "CodeBrain: Next Review Finding",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "codebrain.previousReviewFinding",
+        "title": "CodeBrain: Previous Review Finding",
+        "icon": "$(arrow-up)"
+      },
+      {
         "command": "codebrain.openWorkflowGraph",
         "title": "CodeBrain: Open Workflow Graph",
         "icon": "$(graph)"
@@ -171,9 +195,37 @@
           "when": "resourceScheme == file"
         }
       ],
+      "editor/title": [
+        {
+          "command": "codebrain.previousReviewFinding",
+          "group": "navigation@98",
+          "when": "resourceScheme == file && codebrain.reviewFindings"
+        },
+        {
+          "command": "codebrain.nextReviewFinding",
+          "group": "navigation@99",
+          "when": "resourceScheme == file && codebrain.reviewFindings"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "codebrain.previousReviewFinding",
+          "group": "navigation@98",
+          "when": "commentThread == codebrainReview"
+        },
+        {
+          "command": "codebrain.nextReviewFinding",
+          "group": "navigation@99",
+          "when": "commentThread == codebrainReview"
+        }
+      ],
       "scm/title": [
         {
           "command": "codebrain.analyzeImpact",
+          "group": "navigation"
+        },
+        {
+          "command": "codebrain.reviewChanges",
           "group": "navigation"
         }
       ],
@@ -229,6 +281,12 @@
           "type": "boolean",
           "default": true,
           "description": "Store workspace-local estimates of context tokens and file reads saved by impact analysis."
+        },
+        "codebrain.ai.model": {
+          "type": "string",
+          "default": "",
+          "description": "Language model id for CodeBrain-owned AI commands such as Review Changes. Leave empty to use the first available model. This does not override the model selected for CodeBrain ChatParticipant requests.",
+          "scope": "window"
         },
         "codebrain.reports.openPreview": {
           "type": "boolean",

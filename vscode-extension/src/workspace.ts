@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import * as vscode from 'vscode';
 
 export function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
@@ -7,10 +7,32 @@ export function getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
   if (editorUri) {
     const folder = vscode.workspace.getWorkspaceFolder(editorUri);
     if (folder) {
+      const repositoryRoot = nearestGitRoot(editorUri.fsPath, folder.uri.fsPath);
+      if (repositoryRoot && repositoryRoot !== folder.uri.fsPath) {
+        return {
+          uri: vscode.Uri.file(repositoryRoot),
+          name: basename(repositoryRoot),
+          index: folder.index,
+        };
+      }
       return folder;
     }
   }
   return vscode.workspace.workspaceFolders?.[0];
+}
+
+function nearestGitRoot(filePath: string, workspaceRoot: string): string | undefined {
+  let current = dirname(filePath);
+  const boundary = workspaceRoot.replace(/[\\/]$/, '').toLowerCase();
+  while (current.toLowerCase().startsWith(boundary)) {
+    if (existsSync(join(current, '.git'))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return undefined;
 }
 
 export function hasIndex(folder: vscode.WorkspaceFolder): boolean {
@@ -30,14 +52,22 @@ export function activeEditorContext(
     return '';
   }
   const editorFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-  if (editorFolder?.uri.toString() !== folder.uri.toString()) {
+  const editorPath = editor.document.uri.fsPath;
+  const folderPath = folder.uri.fsPath.replace(/[\\/]$/, '');
+  const relativePath = relative(folderPath, editorPath);
+  if (
+    !editorFolder ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${sep}`) ||
+    relativePath.includes(`..${sep}..`)
+  ) {
     return '';
   }
 
-  const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
+  const displayPath = relativePath || basename(editorPath);
   const selection = editor.document.getText(editor.selection);
   if (!selection) {
-    return `Active file: ${relativePath}`;
+    return `Active file: ${displayPath}`;
   }
 
   const truncated =
@@ -45,7 +75,7 @@ export function activeEditorContext(
       ? `${selection.slice(0, maxCharacters)}\n[selection truncated]`
       : selection;
   return [
-    `Active file: ${relativePath}`,
+    `Active file: ${displayPath}`,
     `Selected lines: ${editor.selection.start.line + 1}-${editor.selection.end.line + 1}`,
     'Selected code:',
     truncated,

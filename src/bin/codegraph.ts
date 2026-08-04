@@ -2165,6 +2165,8 @@ program
       // BFS to find all transitive dependents of changed files, filtered to test files
       const affectedTests = new Set<string>();
       const allDependents = new Set<string>();
+      const dependentFiles = new Set<string>();
+      const dependencyEdges = new Map<string, { source: string; target: string }>();
 
       for (const file of changedFiles) {
         // If the changed file is itself a test file, include it
@@ -2184,6 +2186,10 @@ program
 
           const dependents = cg.getFileDependents(current.file);
           for (const dep of dependents) {
+            const edgeKey = `${current.file}\0${dep}`;
+            if (!dependencyEdges.has(edgeKey)) {
+              dependencyEdges.set(edgeKey, { source: current.file, target: dep });
+            }
             if (visited.has(dep)) continue;
             visited.add(dep);
             allDependents.add(dep);
@@ -2191,6 +2197,7 @@ program
             if (isTestFile(dep)) {
               affectedTests.add(dep);
             } else {
+              dependentFiles.add(dep);
               queue.push({ file: dep, depth: current.depth + 1 });
             }
           }
@@ -2198,12 +2205,24 @@ program
       }
 
       const sortedTests = Array.from(affectedTests).sort();
+      const directDependentFiles = new Set<string>();
+      for (const edge of dependencyEdges.values()) {
+        if (changedFiles.includes(edge.source) && dependentFiles.has(edge.target)) {
+          directDependentFiles.add(edge.target);
+        }
+      }
 
       // Output
       if (options.json) {
         console.log(JSON.stringify({
           changedFiles,
           affectedTests: sortedTests,
+          dependentFiles: Array.from(dependentFiles).sort(),
+          dependencyEdges: Array.from(dependencyEdges.values()).sort((a, b) =>
+            `${a.source}\0${a.target}`.localeCompare(`${b.source}\0${b.target}`),
+          ),
+          directDependents: directDependentFiles.size,
+          transitiveDependents: Math.max(0, dependentFiles.size - directDependentFiles.size),
           totalDependentsTraversed: allDependents.size,
         }, null, 2));
       } else if (options.quiet) {

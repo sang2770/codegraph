@@ -13,6 +13,14 @@ export type ImpactRisk = 'critical' | 'high' | 'medium' | 'low';
 export type ImpactNodeKind = 'changed' | 'dependent' | 'test';
 export type ImpactCoverage = 'covered' | 'partial' | 'gap' | 'none';
 
+/** Shared risk thresholds used by classification and the impact explanation UI. */
+export const IMPACT_RISK_THRESHOLDS: Readonly<Record<ImpactRisk, number>> = {
+  low: 0,
+  medium: 2,
+  high: 4,
+  critical: 7,
+};
+
 export interface ImpactSignal {
   key: 'sensitivity' | 'blastRadius' | 'changeSize' | 'testCoverage';
   label: string;
@@ -47,7 +55,12 @@ export interface ImpactEdge {
 export interface AffectedTestResult {
   changedFiles: string[];
   affectedTests: string[];
+  dependentFiles?: string[];
+  dependencyEdges?: Array<{ source: string; target: string }>;
   totalDependentsTraversed: number;
+  directDependents?: number;
+  transitiveDependents?: number;
+  topWorkflows?: Array<{ path: string; fanOut: number }>;
 }
 
 export interface ImpactAnalysis {
@@ -57,7 +70,12 @@ export interface ImpactAnalysis {
   nativeKernel: boolean;
   changedFiles: string[];
   affectedTests: string[];
+  dependentFiles?: string[];
+  dependencyEdges?: Array<{ source: string; target: string }>;
   totalDependentsTraversed: number;
+  directDependents?: number;
+  transitiveDependents?: number;
+  topWorkflows?: Array<{ path: string; fanOut: number }>;
   graphContext: string;
   nodes: ImpactNode[];
   edges: ImpactEdge[];
@@ -81,10 +99,37 @@ function parseAffectedJson(text: string): AffectedTestResult {
     affectedTests: Array.isArray(value.affectedTests)
       ? value.affectedTests.filter((item): item is string => typeof item === 'string')
       : [],
+    dependentFiles: Array.isArray(value.dependentFiles)
+      ? value.dependentFiles.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    dependencyEdges: Array.isArray(value.dependencyEdges)
+      ? value.dependencyEdges.filter(
+          (item): item is { source: string; target: string } =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as { source?: unknown }).source === 'string' &&
+            typeof (item as { target?: unknown }).target === 'string',
+        )
+      : undefined,
     totalDependentsTraversed:
       typeof value.totalDependentsTraversed === 'number'
         ? value.totalDependentsTraversed
         : 0,
+    directDependents:
+      typeof value.directDependents === 'number' ? value.directDependents : undefined,
+    transitiveDependents:
+      typeof value.transitiveDependents === 'number'
+        ? value.transitiveDependents
+        : undefined,
+    topWorkflows: Array.isArray(value.topWorkflows)
+      ? value.topWorkflows.filter(
+          (item): item is { path: string; fanOut: number } =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as { path?: unknown }).path === 'string' &&
+            typeof (item as { fanOut?: unknown }).fanOut === 'number',
+        )
+      : undefined,
   };
 }
 
@@ -115,10 +160,12 @@ function graphFileLocations(graphContext: string): Array<{
   return [...locations].map(([path, line]) => ({ path, line }));
 }
 
-function buildGraph(
+export function buildGraph(
   changedFiles: string[],
   affectedTests: string[],
   graphContext: string,
+  dependentFiles?: string[],
+  dependencyEdges?: Array<{ source: string; target: string }>,
 ): { nodes: ImpactNode[]; edges: ImpactEdge[] } {
   const nodes = new Map<string, ImpactNode>();
   const edges: ImpactEdge[] = [];
@@ -133,7 +180,10 @@ function buildGraph(
       kind: 'changed',
     });
   }
-  for (const { path, line } of graphFileLocations(graphContext)) {
+  const dependentLocations = dependentFiles
+    ? dependentFiles.map((path) => ({ path, line: undefined }))
+    : graphFileLocations(graphContext);
+  for (const { path, line } of dependentLocations) {
     if (changedSet.has(path) || testSet.has(path)) {
       continue;
     }
@@ -160,15 +210,19 @@ function buildGraph(
   );
   const tests = [...nodes.values()].filter((node) => node.kind === 'test');
 
-  for (const source of changed) {
-    for (const target of dependents.slice(0, 12)) {
-      edges.push({ source: source.id, target: target.id, label: 'candidate impact' });
-    }
-  }
-  const testSources = dependents.length > 0 ? dependents.slice(0, 12) : changed;
-  for (const test of tests) {
-    for (const source of testSources.slice(0, 4)) {
-      edges.push({ source: source.id, target: test.id, label: 'test evidence' });
+  if (dependencyEdges) {
+    const changedByPath = new Map(changed.map((node) => [node.path, node]));
+    const dependentByPath = new Map(dependents.map((node) => [node.path, node]));
+    const testByPath = new Map(tests.map((node) => [node.path, node]));
+    for (const edge of dependencyEdges) {
+      const source = changedByPath.get(edge.source) ?? dependentByPath.get(edge.source);
+      const target = testByPath.get(edge.target) ?? dependentByPath.get(edge.target);
+      if (!source || !target || source.id === target.id) continue;
+      edges.push({
+        source: source.id,
+        target: target.id,
+        label: target.kind === 'test' ? 'test evidence' : 'dependency',
+      });
     }
   }
 
@@ -255,7 +309,7 @@ export function classifyImpactRisk(
     : 'none';
   signals.push({
     key: 'testCoverage',
-    label: 'Test evidence',
+    label: 'Missing test evidence',
     score: coverageScore,
     maxScore: 2,
     detail:
@@ -276,7 +330,13 @@ export function classifyImpactRisk(
   }
 
   const risk: ImpactRisk =
-    score >= 7 ? 'critical' : score >= 4 ? 'high' : score >= 2 ? 'medium' : 'low';
+    score >= IMPACT_RISK_THRESHOLDS.critical
+      ? 'critical'
+      : score >= IMPACT_RISK_THRESHOLDS.high
+        ? 'high'
+        : score >= IMPACT_RISK_THRESHOLDS.medium
+          ? 'medium'
+          : 'low';
   const confidence: ImpactAssessment['confidence'] =
     graphContext.length >= 500 && (hasDependents || hasTests)
       ? 'high'
@@ -406,17 +466,20 @@ export class ImpactAnalysisService {
       affected.changedFiles.length > 0 ? affected.changedFiles : changedFiles,
       affected.affectedTests,
       graphContext,
+      affected.dependentFiles,
+      affected.dependencyEdges,
     );
+    const dependentCount = affected.dependentFiles?.length ?? affected.totalDependentsTraversed;
     const classification = classifyImpactRisk(
       changedFiles,
       affected.affectedTests,
-      affected.totalDependentsTraversed,
+      dependentCount,
       graphContext,
     );
     const metrics = estimateTokenSaving(
       graphContext.length + affectedResult.stdout.length,
       changedFiles.length,
-      affected.totalDependentsTraversed,
+      dependentCount,
       affected.affectedTests.length,
       Date.now() - startedAt,
     );
@@ -429,7 +492,12 @@ export class ImpactAnalysisService {
       nativeKernel: this.runtime.nativeKernel,
       changedFiles,
       affectedTests: affected.affectedTests,
+      dependentFiles: affected.dependentFiles,
+      dependencyEdges: affected.dependencyEdges,
       totalDependentsTraversed: affected.totalDependentsTraversed,
+      directDependents: affected.directDependents,
+      transitiveDependents: affected.transitiveDependents,
+      topWorkflows: affected.topWorkflows,
       graphContext,
       nodes: graph.nodes,
       edges: graph.edges,
