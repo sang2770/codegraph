@@ -83,7 +83,7 @@
         "commands": [
           {
             "name": "explain",
-            "description": "Explain purpose, functions, and workflow; create a Markdown report with a Mermaid preview."
+            "description": "Explain the business workflow and show the concrete code flow with a developer-friendly Markdown and Mermaid report."
           },
           {
             "name": "review",
@@ -92,6 +92,14 @@
           {
             "name": "impact",
             "description": "Analyze change impact, detect affected tests, classify risk, and report estimated token savings."
+          },
+          {
+            "name": "fix",
+            "description": "Analyze a bug, trace its root cause through the code graph, and propose a concrete solution and validation plan."
+          },
+          {
+            "name": "guide",
+            "description": "Generate a user-facing Markdown guide for using a feature, including prerequisites, steps, examples, and troubleshooting."
           }
         ],
         "disambiguation": [
@@ -151,6 +159,16 @@
         "command": "codebrain.reviewChanges",
         "title": "CodeBrain: Review Changes",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "codebrain.editReviewInstructions",
+        "title": "CodeBrain: Customize Review Instructions",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "codebrain.selectReviewProfile",
+        "title": "CodeBrain: Choose Review Profile",
+        "icon": "$(list-selection)"
       },
       {
         "command": "codebrain.selectModel",
@@ -287,6 +305,44 @@
           "default": "",
           "description": "Language model id for CodeBrain-owned AI commands such as Review Changes. Leave empty to use the first available model. This does not override the model selected for CodeBrain ChatParticipant requests.",
           "scope": "window"
+        },
+        "codebrain.review.instructionFile": {
+          "type": "string",
+          "default": ".codebrain/review-instructions.md",
+          "description": "Workspace-relative Markdown file with additional CodeBrain review priorities. Core review safety rules cannot be overridden.",
+          "scope": "resource"
+        },
+        "codebrain.review.profile": {
+          "type": "string",
+          "enum": [
+            "general",
+            "web-frontend",
+            "web-backend",
+            "fullstack",
+            "embedded-c-cpp",
+            "security",
+            "performance-reliability",
+            "tests-release"
+          ],
+          "enumDescriptions": [
+            "Balanced software review.",
+            "UI behavior, state, accessibility, browser security, and frontend performance.",
+            "API contracts, security, persistence, reliability, and operations.",
+            "End-to-end UI, API, persistence, and contract consistency.",
+            "Memory safety, concurrency, real-time behavior, and embedded recovery.",
+            "Threat boundaries, authorization, data exposure, and abuse cases.",
+            "Latency, throughput, resource usage, and failure recovery.",
+            "Regression matrix, migration safety, and release readiness."
+          ],
+          "default": "general",
+          "description": "Built-in review priorities for this workspace. Extend them with codebrain.review.instructionFile when needed.",
+          "scope": "resource"
+        },
+        "codebrain.review.refreshIndexBeforeRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "Refresh the CodeBrain index before impact analysis and independent review. Reviews stop if the refresh fails instead of using stale graph data.",
+          "scope": "resource"
         },
         "codebrain.reports.openPreview": {
           "type": "boolean",

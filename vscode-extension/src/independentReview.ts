@@ -1,9 +1,11 @@
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import * as vscode from 'vscode';
 import { collectGitReviewContext } from './gitContext';
 import { ImpactAnalysis, ImpactAnalysisService } from './impact';
 import { selectCodeBrainModel } from './modelSelection';
 import { ReportManager } from './reportManager';
+import { customReviewPrompt } from './reviewInstructions';
+import { buildReviewContext } from './reviewContext';
 import { getWorkspaceFolder, hasIndex } from './workspace';
 
 const MAX_REVIEW_EVIDENCE = 100_000;
@@ -131,17 +133,39 @@ export function navigateReviewFinding(direction: 1 | -1): void {
   });
 }
 
-function trimEvidence(value: string, limit: number): string {
-  return value.length <= limit
-    ? value
-    : `${value.slice(0, limit)}\n\n[Evidence truncated by CodeBrain.]`;
+function workspaceRelativeFile(
+  folder: vscode.WorkspaceFolder,
+  file: string,
+  allowedFiles?: Set<string>,
+): { path: string; uri: vscode.Uri } | undefined {
+  const root = resolve(folder.uri.fsPath);
+  const target = resolve(root, file);
+  if (target !== root && !target.startsWith(`${root}${sep}`)) {
+    return undefined;
+  }
+  const path = target.slice(root.length + 1).replaceAll('\\', '/');
+  if (allowedFiles && !allowedFiles.has(path)) {
+    return undefined;
+  }
+  return { path, uri: vscode.Uri.file(target) };
 }
 
-function reviewPrompt(analysis: ImpactAnalysis, diff: string): string {
+function reviewPrompt(
+  analysis: ImpactAnalysis,
+  diff: string,
+  diffTruncated: boolean,
+  folder: vscode.WorkspaceFolder,
+): string {
   const signals = analysis.assessment.signals
     .map((signal) => `- ${signal.label}: ${signal.score}/${signal.maxScore} — ${signal.detail}`)
     .join('\n');
-  return `You are CodeBrain Review, an independent code review engine. Review the current Git changes using both the diff and the semantic graph evidence below.
+  const reviewContext = buildReviewContext(
+    analysis,
+    diff,
+    diffTruncated,
+    MAX_REVIEW_EVIDENCE,
+  );
+  return customReviewPrompt(`You are CodeBrain Review, an independent code review engine. Review the current Git changes using both the diff and the semantic graph evidence below.
 
 Return a concise Markdown review with exactly these sections:
 # CodeBrain Review
@@ -159,22 +183,15 @@ Give one actionable next step.
 Risk signals:
 ${signals}
 
-Changed files: ${analysis.changedFiles.join(', ') || 'none'}
-Affected tests: ${analysis.affectedTests.join(', ') || 'none detected'}
-Dependent workflows: ${analysis.totalDependentsTraversed}
+${reviewContext}
 
-## Git diff
-${trimEvidence(diff || 'No Git diff was returned.', MAX_REVIEW_EVIDENCE)}
-
-## CodeBrain graph evidence
-${trimEvidence(analysis.graphContext || 'No graph evidence was returned.', MAX_REVIEW_EVIDENCE)}
-
-Treat the Git diff as the source of truth for what changed. Treat graph evidence as supporting context. Be explicit about uncertainty.`;
+Treat the Git diff as the source of truth for what changed. Treat graph evidence as supporting context. Only report a finding when the diff and surrounding source provide concrete evidence. Findings must point to a changed file and a relevant changed line; do not report speculative style preferences, hypothetical issues, or findings based only on file names. Be explicit about uncertainty.${diffTruncated ? '\n\nImportant: The Git diff was truncated before it reached the model. Lower confidence, avoid claiming the full change was reviewed, and call this out in the review limits.' : ''}`, folder);
 }
 
 function publishInlineFindings(
   folder: vscode.WorkspaceFolder,
   markdown: string,
+  allowedFiles?: Set<string>,
 ): void {
   reviewDiagnostics?.clear();
   reviewLocations = [];
@@ -205,7 +222,11 @@ function publishInlineFindings(
   for (const match of matches) {
     const severity = match.severity.toLowerCase();
     const line = Math.max(1, Number.parseInt(match.line, 10));
-    const uri = vscode.Uri.file(resolve(folder.uri.fsPath, match.file));
+    const file = workspaceRelativeFile(folder, match.file, allowedFiles);
+    if (!file) {
+      continue;
+    }
+    const uri = file.uri;
     const diagnosticSeverity =
       severity === 'critical' || severity === 'high'
         ? vscode.DiagnosticSeverity.Error
@@ -224,7 +245,7 @@ function publishInlineFindings(
       uri,
       diagnostic.range,
       severity,
-      match.file,
+      file.path,
       match.body.split(/^##\s+/m, 1)[0] ?? '',
     );
     const existing = byFile.get(uri.toString()) ?? [];
@@ -241,11 +262,17 @@ function publishInlineFindings(
   }
 }
 
-function addFindingLinks(folder: vscode.WorkspaceFolder, markdown: string): string {
+function addFindingLinks(
+  folder: vscode.WorkspaceFolder,
+  markdown: string,
+  allowedFiles?: Set<string>,
+): string {
   return markdown.replace(
     /<!--\s*codebrain-finding\s+severity="(?:critical|high|medium|low)"\s+file="([^"]+)"\s+line="(\d+)"\s*-->/gi,
-    (_marker, file: string, line: string) => {
-      const uri = vscode.Uri.file(resolve(folder.uri.fsPath, file)).with({
+    (marker, file: string, line: string) => {
+      const target = workspaceRelativeFile(folder, file, allowedFiles);
+      if (!target) return marker;
+      const uri = target.uri.with({
         fragment: `L${line}`,
       });
       return `[Open ${file}:${line}](${uri.toString(true)})`;
@@ -285,7 +312,7 @@ export async function runIndependentReview(
   const analysis = await impactService.analyze(folder, token);
   const gitContext = await collectGitReviewContext(folder.uri.fsPath, maxDiffCharacters);
   const request = await model.sendRequest(
-    [vscode.LanguageModelChatMessage.User(reviewPrompt(analysis, gitContext.diff))],
+    [vscode.LanguageModelChatMessage.User(reviewPrompt(analysis, gitContext.diff, gitContext.truncated, folder))],
     {},
     token,
   );
@@ -297,8 +324,9 @@ export async function runIndependentReview(
     throw new Error('The selected language model returned an empty review.');
   }
 
-  publishInlineFindings(folder, markdown);
-  markdown = addFindingLinks(folder, markdown);
+  const changedFiles = new Set(analysis.changedFiles.map((file) => file.replaceAll('\\', '/')));
+  publishInlineFindings(folder, markdown, changedFiles);
+  markdown = addFindingLinks(folder, markdown, changedFiles);
   await reports.setLatest(
     {
       kind: 'review',

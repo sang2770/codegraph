@@ -13,11 +13,13 @@ One focused query should name the question, relevant symbols, file paths, or wor
 
 For explanations:
 
-1. State what the code is for and why it exists.
-2. Trace the workflow through concrete functions and files.
-3. Separate control flow, data flow, side effects, and failure paths.
-4. Include a compact Mermaid chart when it improves the explanation.
-5. Identify uncertainties instead of inventing missing edges.
+1. Start with the business purpose: what triggers the workflow, what it does, and what result it produces.
+2. Trace the ordered business steps through concrete functions, files, and line numbers.
+3. Include a compact code-like walkthrough that maps each business step to the implementing function.
+4. Separate control flow, data flow, side effects, and failure paths.
+5. Include Mermaid diagrams when they make the execution sequence easier to follow.
+6. Use plain language such as entry point, next function, and downstream dependency; avoid caller/callee/calling terminology.
+7. Identify uncertainties instead of inventing missing edges.
 
 For reviews:
 

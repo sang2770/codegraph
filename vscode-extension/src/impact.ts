@@ -393,6 +393,31 @@ export class ImpactAnalysisService {
     );
     const maxFiles = config.get<number>('chat.maxContextFiles', 12);
     const depth = config.get<number>('impact.maxDepth', 5);
+    const refreshBeforeAnalysis = config.get<boolean>(
+      'review.refreshIndexBeforeRun',
+      true,
+    );
+    // Chat impact requests refresh while collecting their graph context and
+    // pass it back as an override. Avoid running the same refresh twice for
+    // that path; all standalone analyses still refresh here.
+    if (refreshBeforeAnalysis && !graphContextOverride) {
+      const refreshResult = await runCodeBrain(
+        this.runtime,
+        ['sync', folder.uri.fsPath],
+        {
+          cwd: folder.uri.fsPath,
+          env: codeBrainEnvironment(),
+          token,
+        },
+      );
+      if (refreshResult.code !== 0) {
+        throw new Error(
+          refreshResult.stderr.trim() ||
+            refreshResult.stdout.trim() ||
+            'CodeBrain index refresh failed; review was not started against a stale index.',
+        );
+      }
+    }
     const gitContext = await collectGitReviewContext(
       folder.uri.fsPath,
       maxDiffCharacters,

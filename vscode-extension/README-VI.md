@@ -99,13 +99,14 @@ Bạn có thể chọn code trong editor trước khi gửi câu hỏi. CodeBrai
 
 Báo cáo `/explain` gồm:
 
-- Mục đích của workflow hoặc function
-- Các function và trách nhiệm chính
+- Mục đích nghiệp vụ: workflow được kích hoạt khi nào, xử lý gì và trả về kết quả nào
+- Các bước nghiệp vụ theo đúng thứ tự thực thi, gắn với function, file và line cụ thể
+- Code-flow illustration dạng pseudo-code để developer dễ đối chiếu business step với code
 - Control flow và data flow
 - State, side effect và failure path
 - Bằng chứng file và line từ CodeBrain
 - Mermaid workflow flowchart cho đường thực thi chính
-- Mermaid sequence diagram cho thứ tự gọi giữa các thành phần
+- Mermaid execution sequence cho thứ tự chạy giữa các function hoặc thành phần
 - Mermaid data-flow hoặc state lifecycle diagram tùy theo bản chất của code
 
 Kết quả được lưu thành file Markdown tạm và mở bằng Markdown Preview.

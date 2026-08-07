@@ -11,6 +11,7 @@ import { IndexManager } from './indexManager';
 import { MetricsStore } from './metrics';
 import { registerMcpProvider, validateBundledRuntime } from './mcpProvider';
 import { ReportManager } from './reportManager';
+import { editReviewInstructions, selectReviewProfile } from './reviewInstructions';
 
 export function activate(context: vscode.ExtensionContext): void {
   try {
@@ -40,8 +41,14 @@ export function activate(context: vscode.ExtensionContext): void {
             runIndependentReview(impactController.analysisService, reports, token),
         ),
       ),
-      vscode.commands.registerCommand('codebrain.selectModel', () =>
+      vscode.commands.registerCommand('codebrain.selectModel', () => 
         chooseCodeBrainModel(),
+      ),
+      vscode.commands.registerCommand('codebrain.editReviewInstructions', () =>
+        editReviewInstructions(),
+      ),
+      vscode.commands.registerCommand('codebrain.selectReviewProfile', () =>
+        selectReviewProfile(),
       ),
       vscode.commands.registerCommand('codebrain.nextReviewFinding', () =>
         navigateReviewFinding(1),

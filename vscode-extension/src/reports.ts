@@ -2,7 +2,7 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 
-export type ReportKind = 'explain' | 'review' | 'impact';
+export type ReportKind = 'explain' | 'review' | 'impact' | 'fix' | 'guide';
 
 interface MermaidBlock {
   source: string;
@@ -10,7 +10,17 @@ interface MermaidBlock {
 }
 
 function fallbackDiagram(kind: ReportKind): string {
-  if (kind === 'review' || kind === 'impact') {
+  if (kind === 'guide') {
+    return [
+      '```mermaid',
+      'flowchart LR',
+      '  P[Prerequisites] --> S[User steps]',
+      '  S --> R[Expected result]',
+      '  R --> T[Troubleshooting]',
+      '```',
+    ].join('\n');
+  }
+  if (kind === 'review' || kind === 'impact' || kind === 'fix') {
     return [
       '```mermaid',
       'flowchart LR',
@@ -24,9 +34,9 @@ function fallbackDiagram(kind: ReportKind): string {
   return [
     '```mermaid',
     'flowchart LR',
-    '  Q[Question] --> G[CodeBrain symbols]',
-    '  G --> F[Function calls]',
-    '  F --> W[Workflow and side effects]',
+    '  E[Entry point or trigger] --> B[Business steps]',
+    '  B --> D[Data and decisions]',
+    '  D --> R[Result or side effects]',
     '```',
   ].join('\n');
 }
@@ -35,15 +45,15 @@ function fallbackSequenceDiagram(): string {
   return [
     '```mermaid',
     'sequenceDiagram',
-    '  participant U as User or caller',
+    '  participant U as User or system trigger',
     '  participant E as Entry point',
-    '  participant C as Core workflow',
-    '  participant D as Dependency',
+    '  participant C as Business workflow',
+    '  participant D as Data or external dependency',
     '  U->>E: Start request',
-    '  E->>C: Invoke workflow',
-    '  C->>D: Read or update dependency',
+    '  E->>C: Start business workflow',
+    '  C->>D: Read or update data',
     '  D-->>C: Return result',
-    '  C-->>E: Complete workflow',
+    '  C-->>E: Produce business result',
     '  E-->>U: Return response',
     '```',
   ].join('\n');
@@ -127,7 +137,7 @@ function missingExplainDiagrams(report: string): string[] {
     missing.push(`### Workflow flowchart\n\n${fallbackDiagram('explain')}`);
   }
   if (!hasSequence) {
-    missing.push(`### Call sequence\n\n${fallbackSequenceDiagram()}`);
+    missing.push(`### Execution sequence\n\n${fallbackSequenceDiagram()}`);
   }
   if (!hasStateOrData) {
     missing.push(`### State lifecycle\n\n${fallbackStateDiagram()}`);
@@ -146,6 +156,10 @@ export function normalizeReport(
       ? `# Code review: ${subject || 'workspace changes'}`
       : kind === 'impact'
         ? `# Change impact: ${subject || 'workspace changes'}`
+        : kind === 'fix'
+          ? `# Bug analysis and solution: ${subject || 'reported issue'}`
+        : kind === 'guide'
+          ? `# User guide: ${subject || 'feature'}`
       : `# Workflow explanation: ${subject || 'selected code'}`;
 
   if (!report.startsWith('# ')) {

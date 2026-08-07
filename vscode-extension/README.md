@@ -37,20 +37,26 @@ Before querying CodeBrain, you must index your repository:
 ### 💬 VS Code Chat Participant (`@codebrain`)
 Interact directly with your codebase using the `@codebrain` participant. It automatically detects the language of your prompt (supporting English, Vietnamese, and others) and formats headings, explanations, and diagrams in that language.
 
-- **`/explain`**: Explains functions, files, or end-to-end workflows.
+- **`/explain`**: Explains the business workflow and maps each step to a concrete, developer-readable code flow.
   - *Example*: `@codebrain /explain How does the authentication middleware work?`
-  - It generates a structured Markdown report featuring a Mermaid flowchart of the code execution path.
+  - It generates a structured Markdown report with business steps, a pseudo-code walkthrough, and Mermaid diagrams of the execution path.
 - **`/review`**: Reviews active changes or selection against codebase conventions and architecture.
   - *Example*: `@codebrain /review Review my current changes`
   - It analyzes Git diffs and call paths to return risk levels (Critical/High/Medium/Low), structural bugs, boundary cases, and release recommendations.
 - **`/impact`**: Analyzes the blast radius of changes.
   - *Example*: `@codebrain /impact What is the impact of modifying refreshSession?`
+
+- **`/fix`**: Analyzes a reported bug, traces the failure path and root cause, and proposes a safe solution with a focused validation plan. It is analysis-only and does not edit files.
+  - *Example*: `@codebrain /fix Login returns 401 after the token refresh succeeds`
+
+- **`/guide`**: Generates a user-facing Markdown guide for a feature, including prerequisites, permissions, numbered usage steps, examples, expected states, troubleshooting, and a validation checklist. The generated report can be previewed and exported as an `.md` file.
+  - *Example*: `@codebrain /guide How do users configure automatic index refresh?`
   - Automatically identifies affected workflows and dependent code paths.
 
 ### 🔍 Change Impact & Affected Tests
 Analyze changes from tracked, staged, or untracked Git files (falling back to the active file if the repository is clean) using:
 - Command: **CodeBrain: Analyze Change Impact**
-- Chat: `@codebrain /impact`
+- Chat: `@codebrain /impact`, `@codebrain /fix`, or `@codebrain /guide`
 
 The engine will:
 1. Traverse call graphs to find affected dependencies up to a configurable depth.
@@ -132,7 +138,7 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - **VS Code Version**: `^1.100.0` or newer.
 - **Trusted Workspace**: CodeBrain runs a local runtime and reads local workspace files; it requires workspace trust to be enabled.
 - **Filesystem Workspace**: Virtual workspaces are not supported.
-- **Chat Models**: Chat commands (`/explain`, `/review`, `/impact` from chat) require an active model available through VS Code Chat. **CodeBrain: Review Changes** requires a model available through the VS Code Language Model API and uses `codebrain.ai.model` when configured. Deterministic local commands (e.g. Impact scoring, Workflow Graph, Index status, export) work offline without a chat model.
+- **Chat Models**: Chat commands (`/explain`, `/review`, `/impact`, `/fix`, `/guide` from chat) require an active model available through VS Code Chat. **CodeBrain: Review Changes** requires a model available through the VS Code Language Model API and uses `codebrain.ai.model` when configured. Deterministic local commands (e.g. Impact scoring, Workflow Graph, Index status, export) work offline without a chat model.
 
 ---
 

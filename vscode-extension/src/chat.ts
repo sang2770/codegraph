@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { collectGitReviewContext, GitReviewContext } from './gitContext';
+import {
+  collectGitCommitReviewContext,
+  collectGitReviewContext,
+  GitReviewContext,
+  listGitCommits,
+} from './gitContext';
 import { buildImpactMarkdown } from './impact';
 import { ImpactController } from './impactController';
 import { IndexManager } from './indexManager';
@@ -14,6 +19,7 @@ import {
 import { ReportManager } from './reportManager';
 import { normalizeReport, ReportKind } from './reports';
 import { readProjectReadmeContext } from './readmeContext';
+import { customReviewPrompt } from './reviewInstructions';
 import {
   codeBrainEnvironment,
   runCodeBrain,
@@ -43,26 +49,31 @@ interface GeneratedReport {
 const EXPLAIN_INSTRUCTIONS = `You are a senior software architect using a precomputed semantic code graph.
 Answer the user's question in the same language as the user.
 
-Your purpose is to explain what the code is for, why it exists, and how its workflow operates. Focus on concrete functions, files, call edges, state transitions, data flow, side effects, and failure paths. Do not propose edits unless needed to clarify behavior.
+Your purpose is to help a developer understand the business workflow and then connect each business step to the code that implements it. Start with what happens from a user's or system's point of view, why the workflow exists, and what result it produces. Then show how the code executes that workflow through concrete functions, files, line numbers, data transformations, state changes, side effects, and failure paths. Do not produce a generic symbol inventory and do not propose edits unless needed to clarify behavior.
+
+Translate graph terminology into plain developer language. Do not use the words "caller", "callee", or "calling" in the explanation. Say "entry point", "function that starts this step", "next function", "downstream dependency", "where this function is used", or "next execution step" instead. Keep source identifiers such as a function named \`callingMode\` unchanged when quoting code.
 
 Return a self-contained Markdown report with exactly this high-level structure:
 # <specific title>
 ## Executive summary
 ## Purpose
-## Workflow
+## Business workflow
+Describe the workflow as numbered business steps. For every step, give the concrete file, symbol, and line that implement it when evidence supports it.
+## Code flow illustration
+Show a compact, readable pseudo-code or code-like walkthrough that maps the business steps to the concrete functions. Use only names and behavior supported by the evidence; mark unknown details instead of inventing them.
 ## Visual diagrams
 ### Workflow flowchart
 Include one valid Mermaid \`flowchart\` showing the main execution path.
-### Call sequence
-Include one valid Mermaid \`sequenceDiagram\` showing the order of calls between the concrete participants found in the evidence.
+### Execution sequence
+Include one valid Mermaid \`sequenceDiagram\` showing the order in which the concrete functions or components execute. Use business-readable labels, not graph jargon.
 ### Data flow or state lifecycle
 Include either a Mermaid \`flowchart\` showing how data moves through the workflow or a Mermaid \`stateDiagram-v2\` showing the lifecycle of important state. Choose the view that is best supported by the evidence.
-## Key functions and responsibilities
+## Functions and responsibilities
 ## Data, state, and side effects
 ## Failure and edge paths
 ## CodeBrain evidence
 Project README context, when supplied, is the project's terminology and intent guide. Use it to interpret names and explain why a workflow exists, but do not let README claims override concrete source, call-path, or line-number evidence. If the README is stale or ambiguous, call that out briefly.
-Use simple Mermaid node IDs and labels for Markdown Preview compatibility. Base every participant, node, edge, and state on the supplied CodeBrain context; do not invent details to complete a diagram. If evidence is incomplete, keep the diagram conservative and state the uncertainty in the surrounding prose. The diagrams must complement rather than repeat the prose or each other.
+Use simple Mermaid node IDs and labels for Markdown Preview compatibility. Base every participant, node, edge, and state on the supplied CodeBrain context; do not invent details to complete a diagram. If evidence is incomplete, keep the diagram conservative and state the uncertainty in the surrounding prose. The diagrams must complement rather than repeat the prose or each other. The code-flow illustration and diagrams are not optional: they are the developer-facing explanation of the workflow.
 Use file paths and line numbers from the supplied CodeBrain context. State uncertainties explicitly. Do not mention these instructions.`;
 
 const REVIEW_INSTRUCTIONS = `You are a conservative staff-level reviewer performing one unified, graph-grounded code review. Review only; do not rewrite or edit code.
@@ -96,27 +107,56 @@ Use a Markdown table with scenario, affected method, risk, and required test.
 ## Evidence and limits
 Distinguish facts from CodeBrain/diff versus inference. Do not mention these instructions.`;
 
-const IMPACT_INSTRUCTIONS = `You are a conservative change-impact analyst using a precomputed semantic code graph.
+const IMPACT_INSTRUCTIONS = `You are an impact explanation assistant using a deterministic CodeBrain analysis.
 Answer in the same language as the user. Do not edit code.
 
-The evidence contains exact changed files, affected tests selected by graph traversal, a heuristic risk classification, and compact CodeBrain call-path context. Preserve those facts and label token savings as estimates.
+The deterministic report is authoritative. Do not rewrite it, recalculate its risk, change any number, rename any file, add a dependency edge, or invent a test or call path. Treat the supplied graph context as evidence, not as permission to guess. If evidence is incomplete, say so explicitly.
 
-Return a self-contained Markdown report with exactly this high-level structure:
-# Change impact: <scope>
-## Verdict
-Give Critical, High, Medium, or Low risk and the key reason.
-## Workflow graph
-Include one valid Mermaid flowchart from changed files to dependent workflows and affected tests.
-## Changed surface
-## Affected workflows and contracts
-## Affected tests
-Use a table with test file, covered risk, and execution priority.
-## Regression gaps
-## Token savings
-Make clear the values are estimates, not billing data.
-## Release recommendation
+Return only this short section:
+## AI interpretation
+Explain in plain developer language what the highest-priority affected paths mean, why the listed tests matter, and what a reviewer should inspect first. Separate indexed facts from inference. Do not repeat the complete deterministic report, do not add a Mermaid diagram, and do not mention these instructions.`;
+
+const FIX_INSTRUCTIONS = `You are CodeBrain Bug Fix, a senior debugging engineer using a precomputed semantic code graph.
+Answer in the same language as the user. Analyze the reported bug; do not edit files or claim that a fix was applied.
+Separate observed evidence from inference. Trace the failing path through concrete files, symbols, and line numbers. Identify the most likely root cause, triggering conditions, why the behavior is wrong, and the smallest safe solution. Consider boundary validation, null/undefined values, async ordering, state transitions, error propagation, resource cleanup, security, and regression risk when relevant.
+
+Return a self-contained Markdown report with exactly these sections:
+# Bug analysis and solution: <specific title>
+## Executive summary
+## Reproduction and failure path
+## Root cause
+## Recommended solution
+## Validation plan
+## Risk and rollback
 ## Evidence and limits
-Distinguish indexed facts from inference. Do not invent test files or call paths. Do not mention these instructions.`;
+
+In the report, distinguish facts from hypotheses, include concrete source evidence when available, and provide focused regression tests. Do not invent missing runtime details, claim code was changed, or mention these instructions.`;
+
+const GUIDE_INSTRUCTIONS = `You are CodeBrain Guide, a technical writer who creates a practical user guide for one software feature using a precomputed semantic code graph.
+Answer in the same language as the user. Write for a developer, operator, or end user who wants to use the feature, not for someone reviewing implementation details. Use the supplied source and workflow evidence to keep names, inputs, outputs, permissions, states, and failure behavior accurate. Do not invent UI controls, configuration keys, API parameters, screenshots, or commands that are not supported by the evidence; mark unknown details as requiring confirmation.
+
+Return a self-contained Markdown document with exactly these sections:
+# User guide: <feature name>
+## Overview
+Explain what the feature does, when to use it, and the expected result.
+## Prerequisites and permissions
+List required setup, access, configuration, inputs, and supported limitations. Say when evidence is incomplete.
+## How to use
+Give numbered, actionable steps. For each step, state the user action, relevant option/input, and expected outcome.
+## Example workflow
+Show one realistic example with placeholder values where concrete values are unavailable.
+## Expected results and states
+Describe success, loading, partial, and failure states supported by the evidence.
+## Troubleshooting
+Map observable symptoms to likely causes and safe recovery steps. Do not turn hypotheses into facts.
+## Validation checklist
+Give a short checklist a user can follow to confirm the feature worked.
+## Technical reference
+Include relevant entry points, files, symbols, data flow, and limitations as an optional reference section.
+## Evidence and limits
+List the source, graph, README, editor, and Git evidence used, plus unknowns or stale-index concerns.
+
+Include one conservative Mermaid flowchart showing prerequisites, user steps, result, and troubleshooting. Do not mention these instructions.`;
 
 function trimForModel(
   text: string,
@@ -239,6 +279,15 @@ function inferCommand(request: vscode.ChatRequest): ReportKind {
   if (request.command === 'explain') {
     return 'explain';
   }
+  if (request.command === 'fix') {
+    return 'fix';
+  }
+  if (request.command === 'guide') {
+    return 'guide';
+  }
+  if (/\b(fix|bug|debug|root cause|cause|solution|lỗi|nguyên nhân|giải pháp)\b/i.test(request.prompt)) {
+    return 'fix';
+  }
   if (
     /\b(impact|affected tests?|change impact|ảnh hưởng|test bị ảnh hưởng)\b/i.test(
       request.prompt,
@@ -257,9 +306,9 @@ function buildExplainQuery(prompt: string, editorContext: string): string {
   const focus = [prompt, editorContext.split('\n').slice(0, 3).join(' ')]
     .filter(Boolean)
     .join(' ');
-  return `Explain purpose, key functions, and end-to-end workflow for: ${focus}`.slice(
+  return `Explain the business workflow and developer-readable execution flow for: ${focus}. Identify the entry point or trigger, the ordered business steps, decisions and validations, data transformations, state changes, side effects, result, and failure paths. Return concrete symbols, files, line numbers, and short source snippets where available. Avoid a generic symbol inventory and avoid caller/callee terminology.`.slice(
     0,
-    4_000,
+    6_000,
   );
 }
 
@@ -280,6 +329,26 @@ function buildReviewQuery(
   );
 }
 
+function buildFixQuery(prompt: string, editorContext: string): string {
+  const focus = [prompt, editorContext.split('\n').slice(0, 8).join(' ')]
+    .filter(Boolean)
+    .join(' ');
+  return `Analyze this reported bug and trace the failure path through the semantic code graph: ${focus}. Identify the symptom, trigger, expected versus actual behavior, root cause, broken assumption, relevant symbols and line numbers, affected workflows and tests, smallest safe solution, alternatives, and regression validation plan. Separate evidence from hypotheses; do not invent missing runtime details.`.slice(
+    0,
+    6_000,
+  );
+}
+
+function buildGuideQuery(prompt: string, editorContext: string): string {
+  const focus = [prompt, editorContext.split('\n').slice(0, 8).join(' ')]
+    .filter(Boolean)
+    .join(' ');
+  return `Create a user-facing guide for this feature: ${focus}. Trace the complete supported workflow from entry point to result. Identify prerequisites, permissions, configuration, inputs, user-visible states, success and failure outcomes, recovery paths, examples, validation checks, relevant tests, and implementation reference points. Prefer concrete evidence and explicitly mark unknown user-facing details.`.slice(
+    0,
+    6_000,
+  );
+}
+
 async function explore(
   runtime: RuntimeCommand,
   root: string,
@@ -288,6 +357,27 @@ async function explore(
   request: vscode.ChatRequest,
   token: vscode.CancellationToken,
 ): Promise<string> {
+  const refreshBeforeAnalysis = vscode.workspace
+    .getConfiguration('codebrain')
+    .get<boolean>('review.refreshIndexBeforeRun', true);
+  if (refreshBeforeAnalysis) {
+    const refreshResult = await runCodeBrain(
+      runtime,
+      ['sync', root],
+      {
+        cwd: root,
+        env: codeBrainEnvironment(),
+        token,
+      },
+    );
+    if (refreshResult.code !== 0) {
+      throw new Error(
+        refreshResult.stderr.trim() ||
+          refreshResult.stdout.trim() ||
+          'CodeBrain index refresh failed; analysis was not started against a stale index.',
+      );
+    }
+  }
   const mcpTool = vscode.lm.tools.find(
     (tool) =>
       /(^|[._/-])codegraph_explore$/i.test(tool.name) ||
@@ -364,6 +454,9 @@ function reviewEvidence(
   readmeContext: string,
 ): string {
   return [
+    gitContext.target
+      ? `## Review target\nCommit ${gitContext.target.hash} — ${gitContext.target.subject}`
+      : '## Review target\nCurrent workspace changes compared with HEAD.',
     '## Git status',
     gitContext.status,
     '## Diff stat',
@@ -388,6 +481,37 @@ function reviewEvidence(
     .join('\n\n');
 }
 
+async function selectReviewCommit(
+  root: string,
+  prompt: string,
+): Promise<string | undefined> {
+  const explicit = prompt.match(
+    /(?:commit|changeset|sha)\s+([0-9a-f]{7,40})\b/i,
+  )?.[1] ?? prompt.match(/^\s*([0-9a-f]{7,40})\s*$/i)?.[1];
+  if (explicit) return explicit;
+
+  const commits = await listGitCommits(root);
+  const items: vscode.QuickPickItem[] = [
+    {
+      label: '$(git-compare) Current workspace changes',
+      description: 'Review staged, unstaged, and untracked changes',
+      detail: 'No commit selected',
+    },
+    ...commits.map((commit) => ({
+      label: `$(git-commit) ${commit.shortHash} ${commit.subject}`,
+      description: commit.hash,
+      detail: 'Review this committed change against its first parent',
+    })),
+  ];
+  const selected = await vscode.window.showQuickPick(items, {
+    title: 'CodeBrain Review: Choose changes to review',
+    placeHolder: 'Select current changes or a commit',
+    ignoreFocusOut: true,
+  });
+  if (!selected || selected === items[0]) return undefined;
+  return selected.description || undefined;
+}
+
 function explainEvidence(
   graphContext: string,
   editorContext: string,
@@ -399,6 +523,46 @@ function explainEvidence(
     readmeContext ||
       '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source and workflow evidence',
+    graphContext,
+  ].join('\n\n');
+}
+
+function fixEvidence(
+  graphContext: string,
+  editorContext: string,
+  readmeContext: string,
+  gitContext: GitReviewContext,
+  maxDiffCharacters: number,
+): string {
+  return [
+    '## Reported bug and editor focus',
+    editorContext || 'No active editor selection or runtime error was supplied.',
+    '## Git status and recent changes',
+    gitContext.status,
+    gitContext.stat || 'No diff stat available.',
+    trimForModel(
+      gitContext.diff || 'No tracked diff was returned. Do not infer a regression from the absence of a diff.',
+      maxDiffCharacters,
+      'Git diff',
+    ),
+    readmeContext ||
+      '## Project README context\nNo README.md was found in the project or near the active file.',
+    '## CodeBrain source, failure path, and blast radius',
+    graphContext,
+  ].join('\n\n');
+}
+
+function guideEvidence(
+  graphContext: string,
+  editorContext: string,
+  readmeContext: string,
+): string {
+  return [
+    '## Feature requested and editor focus',
+    editorContext || 'No active editor selection was supplied.',
+    readmeContext ||
+      '## Project README context\nNo README.md was found in the project or near the active file.',
+    '## CodeBrain source and feature workflow evidence',
     graphContext,
   ].join('\n\n');
 }
@@ -479,6 +643,10 @@ export function registerChatParticipant(
           ? 'Tracing change impact and detecting affected tests…'
           : command === 'review'
           ? 'Reviewing changed code, contracts, call paths, boundaries, and blast radius…'
+          : command === 'fix'
+          ? 'Tracing the bug, root cause, affected workflows, and safe solution…'
+          : command === 'guide'
+          ? 'Tracing the feature workflow and preparing a user guide…'
           : 'Tracing the workflow through CodeBrain…',
       );
 
@@ -511,22 +679,55 @@ export function registerChatParticipant(
           analysis,
           responseLanguage.code,
         );
-        generatedReport = await generateReport(
-          request,
-          IMPACT_INSTRUCTIONS,
-          languageInstruction,
-          request.prompt || 'Analyze the current change impact.',
-          `${deterministicReport}\n\n## CodeBrain context\n\n${graphContext}`,
-          graphContext,
-          token,
-        );
+        try {
+          const aiExplanation = await generateReport(
+            request,
+            IMPACT_INSTRUCTIONS,
+            languageInstruction,
+            request.prompt || 'Explain the deterministic change impact result.',
+            `${deterministicReport}\n\n## CodeBrain context\n\n${graphContext}`,
+            graphContext,
+            token,
+          );
+          // Keep deterministic facts authoritative. The model contributes an
+          // interpretation section instead of rewriting the impact score,
+          // paths, tests, or evidence reported by the engine.
+          generatedReport = {
+            text: `${deterministicReport.trim()}\n\n${aiExplanation.text.trim()}`,
+            codeBrainContextTokens: aiExplanation.codeBrainContextTokens,
+            inputTokens: aiExplanation.inputTokens,
+            outputTokens: aiExplanation.outputTokens,
+          };
+        } catch (error) {
+          if (token.isCancellationRequested) throw error;
+          // Impact facts remain useful when no chat model is available or the
+          // optional explanation request fails.
+          generatedReport = {
+            text: deterministicReport,
+            codeBrainContextTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+          };
+        }
       } else if (command === 'review') {
-        const gitContext = await collectGitReviewContext(
+        const selectedCommit = await selectReviewCommit(
           folder.uri.fsPath,
-          maxDiffCharacters,
-        );
-        const query = buildReviewQuery(
           request.prompt,
+        );
+        const gitContext = selectedCommit
+          ? await collectGitCommitReviewContext(
+              folder.uri.fsPath,
+              selectedCommit,
+              maxDiffCharacters,
+            )
+          : await collectGitReviewContext(
+              folder.uri.fsPath,
+              maxDiffCharacters,
+            );
+        const query = buildReviewQuery(
+          selectedCommit
+            ? `${request.prompt} Review selected commit ${selectedCommit}.`
+            : request.prompt,
           gitContext,
           editorContext,
         );
@@ -544,7 +745,7 @@ export function registerChatParticipant(
         );
         generatedReport = await generateReport(
           request,
-          REVIEW_INSTRUCTIONS,
+          customReviewPrompt(REVIEW_INSTRUCTIONS, folder),
           languageInstruction,
           request.prompt || 'Review the current workspace changes or selected code.',
           reviewEvidence(
@@ -553,6 +754,60 @@ export function registerChatParticipant(
             editorContext,
             maxDiffCharacters,
             readmeContext,
+          ),
+          graphContext,
+          token,
+        );
+      } else if (command === 'guide') {
+        const graphContext = await explore(
+          runtime,
+          folder.uri.fsPath,
+          buildGuideQuery(request.prompt, editorContext),
+          maxFiles,
+          request,
+          token,
+        );
+        const readmeContext = readProjectReadmeContext(
+          folder.uri.fsPath,
+          editorContext,
+        );
+        generatedReport = await generateReport(
+          request,
+          GUIDE_INSTRUCTIONS,
+          languageInstruction,
+          request.prompt || 'Generate a user guide for the selected feature.',
+          guideEvidence(graphContext, editorContext, readmeContext),
+          graphContext,
+          token,
+        );
+      } else if (command === 'fix') {
+        const gitContext = await collectGitReviewContext(
+          folder.uri.fsPath,
+          maxDiffCharacters,
+        );
+        const graphContext = await explore(
+          runtime,
+          folder.uri.fsPath,
+          buildFixQuery(request.prompt, editorContext),
+          maxFiles,
+          request,
+          token,
+        );
+        const readmeContext = readProjectReadmeContext(
+          folder.uri.fsPath,
+          editorContext,
+        );
+        generatedReport = await generateReport(
+          request,
+          FIX_INSTRUCTIONS,
+          languageInstruction,
+          request.prompt || 'Analyze the bug in the selected code and propose a safe solution.',
+          fixEvidence(
+            graphContext,
+            editorContext,
+            readmeContext,
+            gitContext,
+            maxDiffCharacters,
           ),
           graphContext,
           token,
@@ -680,6 +935,34 @@ export function registerChatParticipant(
             prompt: 'Re-check the highest-risk finding across its contract, callers, boundary conditions, and missing tests.',
             label: 'Deepen highest-risk finding',
             command: 'review',
+          },
+        ];
+      }
+      if (result.metadata.command === 'fix') {
+        return [
+          {
+            prompt: 'Review the proposed solution for regression risk and missing tests.',
+            label: 'Review solution risk',
+            command: 'review',
+          },
+          {
+            prompt: 'Explain the failing workflow and root cause with more code-level detail.',
+            label: 'Deepen root-cause analysis',
+            command: 'explain',
+          },
+        ];
+      }
+      if (result.metadata.command === 'guide') {
+        return [
+          {
+            prompt: 'Review this guide for missing prerequisites, permissions, and troubleshooting steps.',
+            label: 'Review guide completeness',
+            command: 'guide',
+          },
+          {
+            prompt: 'Explain the implementation workflow behind this feature.',
+            label: 'Explain implementation workflow',
+            command: 'explain',
           },
         ];
       }

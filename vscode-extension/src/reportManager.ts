@@ -79,7 +79,7 @@ export class ReportManager {
   private requireLatest(): StoredReport | undefined {
     if (!this.latest) {
       void vscode.window.showWarningMessage(
-        'Run CodeBrain Explain, Review, or Analyze Change Impact before exporting.',
+        'Run CodeBrain Explain, Review, Fix, Guide, or Analyze Change Impact before exporting.',
       );
     }
     return this.latest;
