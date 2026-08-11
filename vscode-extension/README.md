@@ -53,6 +53,21 @@ Interact directly with your codebase using the `@codebrain` participant. It auto
   - *Example*: `@codebrain /guide How do users configure automatic index refresh?`
   - Automatically identifies affected workflows and dependent code paths.
 
+### ⚡ Blast Radius CodeLens
+Every file shows its blast radius above line 1 — no command needed:
+
+```text
+⚡ CodeBrain: 23 dependents · 2 affected tests
+🧪 Run 2 affected tests
+```
+
+Click the first lens to run a full impact analysis, or the second to run just those tests. Turn it off with `codebrain.codeLens.enabled`.
+
+### 🧪 Run Affected Tests
+CodeBrain finds which tests matter, then runs them. Available from the CodeLens, the Source Control title bar, the impact panel, or **CodeBrain: Run Affected Tests**.
+
+It detects your project's runner — Vitest, Jest, Playwright, Mocha, pytest, `go test`, RSpec, PHPUnit, Cargo, Maven, Gradle, `dotnet test` — and **always shows the command for confirmation** before running it, because the detected runner can be wrong. Set `codebrain.tests.command` (with `${files}`) to skip detection.
+
 ### 🔍 Change Impact & Affected Tests
 Analyze changes from tracked, staged, or untracked Git files (falling back to the active file if the repository is clean) using:
 - Command: **CodeBrain: Analyze Change Impact**
@@ -62,6 +77,7 @@ The engine will:
 1. Traverse call graphs to find affected dependencies up to a configurable depth.
 2. Locate affected test files (e.g., `.test.*`, `.spec.*`, `tests/`).
 3. Classify risk levels based on fan-out, public contracts, and test coverage gaps.
+4. Check whether the traversal stopped at its depth limit. If it did, the dependent counts are reported as a **lower bound** (`≥ N`) with a visible warning, instead of being presented as the full blast radius.
 
 ### 🧠 Independent AI Code Review
 Run **CodeBrain: Review Changes** from the Source Control title menu or Command Palette for a review that is independent of Copilot Review.
@@ -75,6 +91,10 @@ The command combines the current Git diff with CodeGraph evidence and calls a mo
 - Affected tests and missing test coverage.
 - Inline diagnostics in the reviewed files and the Problems panel.
 
+Findings persist across window reloads, and re-anchor to the reviewed line's content after you edit a file — telling you when a finding moved, and admitting when the reviewed line no longer exists rather than pointing at the wrong code.
+
+**Disagreeing with a finding.** Use the lightbulb to *dismiss* a false positive (it stays hidden in future reviews too) or to *explain* it in chat. You can also reply directly in the finding's comment thread to ask CodeBrain about it. Restore everything with **CodeBrain: Restore Dismissed Review Findings**.
+
 The report is also stored as the latest CodeBrain report and can be exported with **CodeBrain: Export Latest Report as Markdown**. This workflow does not read or depend on Copilot Review comments. The configured CodeBrain model is used by extension-owned AI commands; ChatParticipant requests continue using the model selected in VS Code Chat.
 
 Use **CodeBrain: Choose AI Model** to select the model used by **CodeBrain: Review Changes** and future extension-owned AI commands. Leave the setting empty to use the first available provider model.
@@ -87,13 +107,25 @@ Changed Files ──> Dependents / Workflows ──> Affected Tests
 - Click any node to open the corresponding source file and line.
 - The interface displays the active engine (`Rust native` or `WASM fallback`).
 
-### 📈 Token Savings Dashboard
-Keep track of how much context (and API cost) CodeBrain is saving you by avoiding reading entire files.
+### 📈 Context Cost Dashboard
+See what the graph context cost versus reading the same files in full.
 - Command: **CodeBrain: Token Savings Dashboard**
-- View metrics on avoided file reads, graph context tokens, baseline comparisons, and query latency.
+- Shows measured baselines, avoided file reads, and query latency.
+
+**How the comparison is measured.** CodeBrain takes the files it actually drew evidence from, reads their real sizes on disk, and converts both sides at the same ratio (4 bytes ≈ 1 token). When no candidate file can be measured, it reports the saving as **unknown** rather than showing a number.
 
 > [!TIP]
-> All metrics are stored locally inside VS Code's workspace state. No telemetry or billing data is uploaded.
+> All metrics are stored locally inside VS Code's workspace state. No telemetry or billing data is uploaded. These are context-size estimates, not model billing data.
+
+### 🩺 Index Status & Coverage
+**CodeBrain: Show Index Status** opens a panel showing:
+- Files, symbols, and relationships indexed, broken down by language.
+- **Tracked only** files — indexed for change detection but with no symbols extracted, so they cannot appear inside a call path.
+- **Coverage gaps** — workspace files missing from the index. This matters: a source language the parsers do not support is simply absent from the graph, so any impact analysis that should have crossed it is incomplete with no error to tell you.
+- Warnings when the last index run dropped files, left references unresolved, or was built by an older engine.
+
+### 🗂️ Monorepo Support
+When a workspace holds several indexed projects, **CodeBrain: Choose Project** pins which one CodeBrain answers for. By default it follows the nearest indexed project above whichever file is open.
 
 ### 🤖 Read-only CodeBrain Reviewer Agent
 Use the custom agent **CodeBrain Reviewer** in VS Code Chat. It is granted CodeBrain-specific graph query tools without write or terminal permissions—ideal for secure, evidence-based code reviews and release assessments.
@@ -115,6 +147,9 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 | `codebrain.chat.showTokenUsage` | `true` | Show estimated token counts/latency in chat responses. |
 | `codebrain.ai.model` | `""` | Model id for CodeBrain-owned AI commands such as **CodeBrain: Review Changes**. Empty uses the first available model; it does not override ChatParticipant model selection. |
 | `codebrain.impact.maxDepth` | `5` | Maximum dependency depth for affected-test detection. |
+| `codebrain.impact.detectDepthTruncation` | `true` | Detect whether the traversal was cut short by `maxDepth` and report counts as a lower bound when it was. |
+| `codebrain.codeLens.enabled` | `true` | Show each file's blast radius as a CodeLens above line 1. |
+| `codebrain.tests.command` | `""` | Command for **Run Affected Tests**, using `${files}`. Empty detects the runner and confirms first. |
 | `codebrain.metrics.enabled` | `true` | Record local token savings and analytics. |
 | `codebrain.reports.openPreview` | `true` | Automatically open generated Markdown reports in preview mode. |
 
@@ -123,13 +158,17 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 ## 📋 Extension Commands
 - `CodeBrain: Initialize Workspace` — Index the workspace.
 - `CodeBrain: Refresh Index` — Force index update.
-- `CodeBrain: Show Index Status` — Inspect the index state.
+- `CodeBrain: Rebuild Index` — Full rebuild, for a partial or outdated index.
+- `CodeBrain: Show Index Status` — Open the index status and coverage panel.
+- `CodeBrain: Choose Project` — Pin which indexed project to analyze (monorepos).
+- `CodeBrain: Run Affected Tests` — Run the tests affected by your changes.
 - `CodeBrain: Analyze Change Impact` — Check the change impact.
 - `CodeBrain: Review Changes` — Run an independent AI review using Git diff and CodeGraph context, then publish inline diagnostics and a temporary Markdown report.
 - `CodeBrain: Choose AI Model` — Select the model used by CodeBrain-owned AI commands.
 - `CodeBrain: Open Workflow Graph` — Open the interactive visual graph.
 - `CodeBrain: Token Savings Dashboard` — Open the savings metrics UI.
 - `CodeBrain: Reset Token Savings` — Clear metrics history.
+- `CodeBrain: Restore Dismissed Review Findings` — Bring back dismissed findings.
 - `CodeBrain: Export Latest Report as Markdown` — Export findings.
 
 ---
@@ -145,7 +184,9 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 ## 🛠️ Troubleshooting
 
 - **Workspace Index Missing**: Make sure you have run **CodeBrain: Initialize Workspace** first.
-- **Index Not Updating**: Check if `codebrain.autoRefresh.enabled` is `true`. You can also trigger a manual refresh using **CodeBrain: Refresh Index**.
+- **Index Not Updating**: Check if `codebrain.autoRefresh.enabled` is `true`. You can also trigger a manual refresh using **CodeBrain: Refresh Index**. CodeBrain skips the refresh before an analysis when nothing in the workspace has changed since the last one.
+- **Impact Results Look Too Small**: Open **CodeBrain: Show Index Status** and check the coverage gaps section — files in an unsupported language are absent from the graph. Also check whether the report says the traversal was truncated; if so, raise `codebrain.impact.maxDepth`.
+- **A Finding Is Wrong**: Dismiss it from the lightbulb menu. It stays hidden in future reviews; **CodeBrain: Restore Dismissed Review Findings** undoes this.
 - **No Affected Tests Detected**: Make sure tests follow standard patterns (e.g., in a `tests/` directory or ending in `.test.*` / `.spec.*`) and that CodeBrain can resolve dependencies between the test files and the target source code.
 - **No Language Model Available**: Sign in to or enable a VS Code Language Model provider before running **CodeBrain: Review Changes**. Use **CodeBrain: Choose AI Model** to select an available model.
 - **Configured Model Unavailable**: Clear `codebrain.ai.model` or replace it with the model id shown by **CodeBrain: Choose AI Model**.

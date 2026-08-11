@@ -1,26 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import vm from 'node:vm';
-import ts from 'typescript';
+import { loadTypeScript } from './helpers/load.mjs';
 
-const require = createRequire(import.meta.url);
-const source = readFileSync(new URL('../src/language.ts', import.meta.url), 'utf8');
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2022,
-  },
-}).outputText;
-const module = { exports: {} };
-vm.runInNewContext(compiled, {
-  exports: module.exports,
-  module,
-  require,
-});
-
-const { detectResponseLanguage, responseLanguageInstruction } = module.exports;
+const { detectResponseLanguage, detectConversationLanguage, responseLanguageInstruction } =
+  loadTypeScript('language.ts');
 
 test('detects Vietnamese with accents', () => {
   assert.equal(
@@ -53,4 +36,32 @@ test('builds an explicit whole-report language constraint', () => {
   const instruction = responseLanguageInstruction(language);
   assert.match(instruction, /entire report in Vietnamese/);
   assert.match(instruction, /diagram label/);
+});
+
+test('keeps one conversation in one language when a follow-up carries no signal', () => {
+  // "more detail" has no language marker; without the earlier turns the report
+  // would silently switch to the VS Code display language mid-thread.
+  assert.equal(
+    detectConversationLanguage(
+      ['Giải thích workflow đăng nhập này', 'more detail'],
+      'en',
+    ).code,
+    'vi',
+  );
+});
+
+test('follows the most recent turn that did carry a language signal', () => {
+  assert.equal(
+    detectConversationLanguage(
+      ['Giải thích workflow này', 'Now explain how the review workflow works', 'ok'],
+      'vi',
+    ).code,
+    'en',
+  );
+});
+
+test('falls back to the VS Code language when no turn carries a signal', () => {
+  const language = detectConversationLanguage(['refreshSession', 'x'], 'ko');
+  assert.equal(language.code, 'ko');
+  assert.equal(language.source, 'vscode');
 });

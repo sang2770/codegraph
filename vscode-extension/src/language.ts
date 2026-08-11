@@ -146,6 +146,29 @@ export function detectResponseLanguage(
   return bestScore > 0 ? messageLanguage(bestCode) : fallback;
 }
 
+/**
+ * Language for a multi-turn conversation.
+ *
+ * A short follow-up like “more detail” carries no language signal, so detecting
+ * per message would silently switch a Vietnamese conversation to English
+ * mid-thread. Walking back to the most recent message that *did* carry a signal
+ * keeps one conversation in one language.
+ *
+ * @param prompts User messages oldest to newest.
+ */
+export function detectConversationLanguage(
+  prompts: readonly string[],
+  vscodeLocale: string,
+): ResponseLanguage {
+  for (let index = prompts.length - 1; index >= 0; index -= 1) {
+    const detected = detectResponseLanguage(prompts[index] ?? '', vscodeLocale);
+    if (detected.source === 'message') {
+      return detected;
+    }
+  }
+  return fromLocale(vscodeLocale);
+}
+
 export function responseLanguageInstruction(language: ResponseLanguage): string {
   return [
     `Response language: ${language.name} (${language.code}).`,

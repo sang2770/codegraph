@@ -1,58 +1,76 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
-import ts from 'typescript';
+import { loadTypeScript } from './helpers/load.mjs';
 
-function loadTypeScript(relativePath, stubs = {}) {
-  const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: {
-      esModuleInterop: true,
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
+test('reports measured savings and never invents a baseline', () => {
+  const { measureTokenSaving, savingsPercent } = loadTypeScript('metrics.ts');
+
+  const measured = measureTokenSaving({
+    contextCharacters: 4_000,
+    baseline: {
+      measuredFiles: 12,
+      unmeasuredFiles: 0,
+      bytes: 48_000,
+      tokens: 12_000,
+      measured: true,
     },
-  }).outputText;
-  const module = { exports: {} };
-  const localRequire = (name) => {
-    if (name === 'node:path') return { basename: (path) => path.split('/').at(-1) };
-    if (name === 'node:crypto') return { randomBytes: () => ({ toString: () => 'test-nonce' }) };
-    if (name in stubs) return stubs[name];
-    throw new Error(`Unexpected dependency: ${name}`);
-  };
-  vm.runInNewContext(compiled, {
-    exports: module.exports,
-    module,
-    require: localRequire,
-    Buffer,
-    console,
-    process,
-    setTimeout,
-    clearTimeout,
+    changedFiles: 2,
+    affectedTests: 3,
+    latencyMs: 125,
   });
-  return module.exports;
-}
+  assert.equal(measured.contextTokens, 1_000);
+  assert.equal(measured.baselineTokens, 12_000);
+  assert.equal(measured.tokensSaved, 11_000);
+  assert.equal(measured.baselineFiles, 12);
+  assert.equal(measured.baselineMeasured, true);
+  assert.equal(measured.fileReadsAvoided, 12);
+  assert.equal(savingsPercent(measured), 92);
+});
 
-test('estimates token savings conservatively and labels baseline', () => {
-  const { estimateTokenSaving } = loadTypeScript('../src/metrics.ts', {
-    vscode: {},
+test('treats an unmeasurable baseline as unknown rather than as zero savings', () => {
+  const { measureTokenSaving, savingsPercent } = loadTypeScript('metrics.ts');
+
+  const sample = measureTokenSaving({
+    contextCharacters: 4_000,
+    baseline: {
+      measuredFiles: 0,
+      unmeasuredFiles: 4,
+      bytes: 0,
+      tokens: 0,
+      measured: false,
+    },
+    changedFiles: 1,
+    affectedTests: 0,
+    latencyMs: 10,
   });
-  const sample = estimateTokenSaving(4_000, 2, 8, 3, 125);
-  assert.equal(sample.contextTokens, 1_000);
-  assert.equal(sample.baselineTokens, 11_700);
-  assert.equal(sample.tokensSaved, 10_700);
-  assert.equal(sample.fileReadsAvoided, 11);
-  assert.equal(sample.latencyMs, 125);
+  assert.equal(sample.baselineMeasured, false);
+  assert.equal(sample.baselineTokens, 0);
+  assert.equal(sample.tokensSaved, 0);
+  // The caller must be able to tell "unknown" from "no savings".
+  assert.equal(savingsPercent(sample), undefined);
+});
+
+test('never reports a saving when the graph context is larger than the files', () => {
+  const { measureTokenSaving } = loadTypeScript('metrics.ts');
+
+  const sample = measureTokenSaving({
+    contextCharacters: 100_000,
+    baseline: {
+      measuredFiles: 1,
+      unmeasuredFiles: 0,
+      bytes: 400,
+      tokens: 100,
+      measured: true,
+    },
+    changedFiles: 1,
+    affectedTests: 0,
+    latencyMs: 10,
+  });
+  assert.equal(sample.tokensSaved, 0);
 });
 
 test('classifies impact with explainable signals and a test-coverage gap', () => {
-  const { classifyImpactRisk } = loadTypeScript('../src/impact.ts', {
-    vscode: {},
-    './gitContext': {},
-    './metrics': {},
-    './runtime': {},
-    './workspace': {},
-  });
+  const { classifyImpactRisk } = loadTypeScript('impact.ts');
   const result = classifyImpactRisk(
     ['src/auth.ts', 'src/session.ts', 'src/token.ts'],
     [],
@@ -73,13 +91,7 @@ test('classifies impact with explainable signals and a test-coverage gap', () =>
 });
 
 test('classifies every configured impact level at its shared thresholds', () => {
-  const { classifyImpactRisk, IMPACT_RISK_THRESHOLDS } = loadTypeScript('../src/impact.ts', {
-    vscode: {},
-    './gitContext': {},
-    './metrics': {},
-    './runtime': {},
-    './workspace': {},
-  });
+  const { classifyImpactRisk, IMPACT_RISK_THRESHOLDS } = loadTypeScript('impact.ts');
   assert.equal(IMPACT_RISK_THRESHOLDS.medium, 2);
   assert.equal(classifyImpactRisk([], [], 0, '').risk, 'low');
   assert.equal(classifyImpactRisk(['a.ts', 'b.ts', 'c.ts'], ['a.test.ts'], 1, '').risk, 'medium');
@@ -88,13 +100,7 @@ test('classifies every configured impact level at its shared thresholds', () => 
 });
 
 test('builds workflow edges from indexed dependency paths instead of a cross-product', () => {
-  const { buildGraph } = loadTypeScript('../src/impact.ts', {
-    vscode: {},
-    './gitContext': {},
-    './metrics': {},
-    './runtime': {},
-    './workspace': {},
-  });
+  const { buildGraph } = loadTypeScript('impact.ts');
   const graph = buildGraph(
     ['src/SdkManager.ts', 'src/other.ts'],
     ['test/sdk.spec.ts'],
@@ -130,13 +136,7 @@ test('builds workflow edges from indexed dependency paths instead of a cross-pro
 });
 
 test('renders a decision-focused summary and collapsed analysis details', () => {
-  const { panelHtml } = loadTypeScript('../src/impactPanel.ts', {
-    vscode: {},
-    './impact': {
-      IMPACT_RISK_THRESHOLDS: { low: 0, medium: 2, high: 4, critical: 7 },
-    },
-    './metrics': {},
-  });
+  const { panelHtml } = loadTypeScript('impactPanel.ts');
   const analysis = {
     risk: 'high',
     changedFiles: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'],
@@ -203,13 +203,7 @@ test('builds a deterministic impact report with graph and affected tests', () =>
     }),
     MetricsStore: class {},
   };
-  const { buildImpactMarkdown } = loadTypeScript('../src/impact.ts', {
-    vscode: {},
-    './gitContext': {},
-    './metrics': metrics,
-    './runtime': {},
-    './workspace': {},
-  });
+  const { buildImpactMarkdown } = loadTypeScript('impact.ts');
   const analysis = {
     root: '/repo',
     generatedAt: '2026-01-01T00:00:00.000Z',
@@ -237,11 +231,15 @@ test('builds a deterministic impact report with graph and affected tests', () =>
         },
       ],
     },
+    depthLimit: 5,
+    depthTruncated: false,
     metrics: {
       latencyMs: 125,
       contextCharacters: 400,
       contextTokens: 100,
       baselineTokens: 1000,
+      baselineFiles: 4,
+      baselineMeasured: true,
       tokensSaved: 900,
       fileReadsAvoided: 4,
       changedFiles: 1,
@@ -274,5 +272,70 @@ test('builds a deterministic impact report with graph and affected tests', () =>
   assert.match(report, /^# Phân tích ảnh hưởng thay đổi/m);
   assert.match(report, /```mermaid/);
   assert.match(report, /test\/auth\.test\.ts/);
-  assert.match(report, /ước tính/);
+  // The baseline is described as measured, and names how many files back it.
+  assert.match(report, /Đọc đầy đủ 4 tệp đó/);
+  assert.match(report, /đo thật/);
+  assert.equal(/ước tính/.test(report), false);
+  // An untruncated traversal must not be hedged.
+  assert.equal(report.includes('Kết quả bị cắt'), false);
+});
+
+test('marks dependent counts as a lower bound when the traversal was truncated', () => {
+  const { classifyImpactRisk, buildImpactMarkdown } = loadTypeScript('impact.ts');
+
+  const truncated = classifyImpactRisk(['src/a.ts'], ['a.test.ts'], 4, 'x'.repeat(600), {
+    depthTruncated: true,
+    depthLimit: 5,
+  });
+  const complete = classifyImpactRisk(['src/a.ts'], ['a.test.ts'], 4, 'x'.repeat(600), {
+    depthTruncated: false,
+    depthLimit: 5,
+  });
+
+  // Unvisited graph is exactly what could change the conclusion, so a truncated
+  // traversal cannot claim high confidence.
+  assert.equal(complete.assessment.confidence, 'high');
+  assert.equal(truncated.assessment.confidence, 'medium');
+  assert.match(truncated.reasons.join(' '), /lower bound/);
+  assert.match(truncated.assessment.recommendation, /maxDepth/);
+  assert.match(
+    truncated.assessment.signals.find((signal) => signal.key === 'blastRadius').detail,
+    /At least 4/,
+  );
+
+  const report = buildImpactMarkdown(
+    {
+      root: '/repo',
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      runtimeTarget: 'linux-x64',
+      nativeKernel: true,
+      changedFiles: ['src/a.ts'],
+      affectedTests: [],
+      totalDependentsTraversed: 4,
+      graphContext: '',
+      risk: 'high',
+      riskReasons: truncated.reasons,
+      assessment: truncated.assessment,
+      depthLimit: 5,
+      depthTruncated: true,
+      nodes: [],
+      edges: [],
+      metrics: {
+        latencyMs: 1,
+        contextCharacters: 0,
+        contextTokens: 0,
+        baselineTokens: 0,
+        baselineFiles: 0,
+        baselineMeasured: false,
+        tokensSaved: 0,
+        fileReadsAvoided: 0,
+        changedFiles: 1,
+        affectedTests: 0,
+      },
+    },
+    'en',
+  );
+  assert.match(report, /This result is truncated/);
+  assert.match(report, /at least 4 dependents/);
+  assert.match(report, /Not measurable/);
 });

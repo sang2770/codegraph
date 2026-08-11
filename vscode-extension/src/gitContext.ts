@@ -54,15 +54,15 @@ export async function collectGitReviewContext(
   const [status, stat, trackedFiles, stagedFiles, untrackedFiles] =
     await Promise.all([
       git(cwd, ['status', '--short', '--untracked-files=all'], 100_000),
-      git(cwd, ['diff', '--stat', 'HEAD', '--'], 100_000),
-      git(cwd, ['diff', '--name-only', 'HEAD', '--'], 100_000),
-      git(cwd, ['diff', '--name-only', '--cached', '--'], 100_000),
+      git(cwd, ['diff', '--relative', '--stat', 'HEAD', '--'], 100_000),
+      git(cwd, ['diff', '--relative', '--name-only', 'HEAD', '--'], 100_000),
+      git(cwd, ['diff', '--relative', '--name-only', '--cached', '--'], 100_000),
       git(cwd, ['ls-files', '--others', '--exclude-standard'], 100_000),
     ]);
 
   let diff = await git(
     cwd,
-    ['diff', '--no-ext-diff', '--no-color', '--unified=12', 'HEAD', '--'],
+    ['diff', '--relative', '--no-ext-diff', '--no-color', '--unified=12', 'HEAD', '--'],
     maxDiffCharacters,
   );
 
@@ -70,12 +70,12 @@ export async function collectGitReviewContext(
     const [stagedDiff, worktreeDiff] = await Promise.all([
       git(
         cwd,
-        ['diff', '--cached', '--no-ext-diff', '--no-color', '--unified=12', '--'],
+        ['diff', '--relative', '--cached', '--no-ext-diff', '--no-color', '--unified=12', '--'],
         Math.ceil(maxDiffCharacters / 2),
       ),
       git(
         cwd,
-        ['diff', '--no-ext-diff', '--no-color', '--unified=12', '--'],
+        ['diff', '--relative', '--no-ext-diff', '--no-color', '--unified=12', '--'],
         Math.ceil(maxDiffCharacters / 2),
       ),
     ]);
@@ -175,15 +175,18 @@ export async function collectGitCommitReviewContext(
     subject: metadataParts.slice(2).join('\t') || `Commit ${hash.slice(0, 12)}`,
     parent,
   };
+  // `--relative` keeps every path relative to `cwd`, matching the project the
+  // analysis targets. Without it a sub-project analysis receives repo-root
+  // paths that no later step can resolve.
   const diffArgs = parent
-    ? ['diff', '--no-ext-diff', '--no-color', '--unified=12', parent, hash, '--']
-    : ['show', '--no-ext-diff', '--no-color', '--format=', '--unified=12', '--root', hash, '--'];
+    ? ['diff', '--relative', '--no-ext-diff', '--no-color', '--unified=12', parent, hash, '--']
+    : ['show', '--relative', '--no-ext-diff', '--no-color', '--format=', '--unified=12', '--root', hash, '--'];
   const statArgs = parent
-    ? ['diff', '--stat', parent, hash, '--']
-    : ['show', '--stat', '--format=', '--root', hash, '--'];
+    ? ['diff', '--relative', '--stat', parent, hash, '--']
+    : ['show', '--relative', '--stat', '--format=', '--root', hash, '--'];
   const filesArgs = parent
-    ? ['diff', '--name-only', parent, hash, '--']
-    : ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', hash];
+    ? ['diff', '--relative', '--name-only', parent, hash, '--']
+    : ['diff-tree', '--relative', '--root', '--no-commit-id', '--name-only', '-r', hash];
   const [diff, stat, files] = await Promise.all([
     git(cwd, diffArgs, maxDiffCharacters),
     git(cwd, statArgs, 100_000),

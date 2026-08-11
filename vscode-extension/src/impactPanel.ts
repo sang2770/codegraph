@@ -63,6 +63,11 @@ function evidenceBanner(analysis?: ImpactAnalysis): string {
   return `<div class="evidence-banner warn"><strong>Partial evidence</strong><span>This runtime returned paths but not dependency edges. Refresh the bundled runtime before relying on graph relationships.</span></div>`;
 }
 
+function truncationBanner(analysis?: ImpactAnalysis): string {
+  if (analysis?.depthTruncated !== true) return '';
+  return `<div class="evidence-banner warn"><strong>Counts are a lower bound</strong><span>The dependency traversal stopped at its depth limit of ${analysis.depthLimit} while more of the graph was still reachable. Raise <code>codebrain.impact.maxDepth</code> to see the full blast radius.</span></div>`;
+}
+
 function impactDescription(analysis?: ImpactAnalysis): string {
   if (!analysis?.assessment) return 'Run an analysis to calculate the impact level.';
   const blast = analysis.assessment.signals.find((signal) => signal.key === 'blastRadius');
@@ -225,6 +230,9 @@ export function panelHtml(
   const risk = analysis?.risk ?? 'not analyzed';
   const score = riskScore(analysis);
   const last = analysis?.metrics ?? snapshot.last;
+  // Older stored snapshots predate this counter; treat a missing value as none
+  // measured rather than rendering NaN.
+  const measuredAnalyses = snapshot.measuredAnalyses ?? 0;
   const latestRequest = snapshot.lastChatRequest;
   const latestRequestSection = latestRequest
     ? `<h2>Latest chat request · estimated</h2>
@@ -284,6 +292,7 @@ export function panelHtml(
     <div><h1>CodeBrain Change Impact</h1><div class="subtitle">Risk and evidence summary for review and merge decisions</div></div>
     <div class="actions">
       <button data-command="analyze">Analyze Change Impact</button>
+      ${(analysis?.affectedTests.length ?? 0) > 0 ? `<button data-command="runTests">Run ${metric(analysis?.affectedTests.length ?? 0)} Affected Test${(analysis?.affectedTests.length ?? 0) === 1 ? '' : 's'}</button>` : ''}
       <button class="secondary" data-command="markdown">Export Markdown</button>
     </div>
   </header>
@@ -296,6 +305,7 @@ export function panelHtml(
     <div class="card"><div class="label">Evidence confidence</div><div class="value compact">${escapeHtml(confidenceLabel(analysis))}</div></div>
   </section>
   <div class="impact-description">${escapeHtml(impactDescription(analysis))}</div>
+  ${truncationBanner(analysis)}
   ${evidenceBanner(analysis)}
   ${assessmentSection(analysis)}
   ${pathsSection(analysis)}
@@ -306,10 +316,12 @@ export function panelHtml(
     <div class="cards">
       <div class="card"><div class="label">Extraction engine</div><div class="value compact">${nativeKernel ? 'Rust native' : 'WASM fallback'}</div></div>
       <div class="card"><div class="label">Last latency</div><div class="value">${metric(last?.latencyMs ?? 0)} ms</div></div>
-      <div class="card"><div class="label">File reads avoided · estimated</div><div class="value">${metric(snapshot.totalFileReadsAvoided)}</div></div>
-      <div class="card"><div class="label">Tokens saved · estimated</div><div class="value">${metric(snapshot.totalTokensSaved)}</div></div>
+      <div class="card"><div class="label">File reads avoided · measured</div><div class="value">${measuredAnalyses > 0 ? metric(snapshot.totalFileReadsAvoided) : 'n/a'}</div></div>
+      <div class="card"><div class="label">Tokens saved · measured</div><div class="value">${measuredAnalyses > 0 ? metric(snapshot.totalTokensSaved) : 'n/a'}</div></div>
       <div class="card"><div class="label">Analyses</div><div class="value">${metric(snapshot.analyses)}</div></div>
-    </div>${latestRequestSection || ''}
+      <div class="card"><div class="label">Of those, measurable</div><div class="value">${metric(measuredAnalyses)}</div></div>
+    </div>
+    <div class="note">Totals cover only the ${metric(measuredAnalyses)} analyses whose baseline could be measured from real file sizes on disk (4 bytes &asymp; 1 token). They are not model billing data.</div>${latestRequestSection || ''}
   </details>
   <script nonce="${scriptNonce}">
     const vscode = acquireVsCodeApi();
@@ -415,6 +427,15 @@ export class WorkflowGraphPanel implements vscode.Disposable {
     }
     if (message.command === 'markdown') {
       await vscode.commands.executeCommand('codebrain.exportLatestMarkdown');
+      return;
+    }
+    if (message.command === 'runTests') {
+      await vscode.commands.executeCommand(
+        'codebrain.runAffectedTests',
+        this.analysis
+          ? { root: this.analysis.root, tests: this.analysis.affectedTests }
+          : undefined,
+      );
       return;
     }
     if (

@@ -2,7 +2,7 @@
   "name": "codebrain",
   "displayName": "CodeBrain",
   "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "codebrain",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -36,12 +36,16 @@
     "onChatParticipant:codebrain.chat",
     "onCommand:codebrain.initializeWorkspace",
     "onCommand:codebrain.syncIndex",
+    "onCommand:codebrain.rebuildIndex",
     "onCommand:codebrain.showStatus",
+    "onCommand:codebrain.selectProject",
     "onCommand:codebrain.analyzeImpact",
     "onCommand:codebrain.reviewChanges",
+    "onCommand:codebrain.runAffectedTests",
     "onCommand:codebrain.selectModel",
     "onCommand:codebrain.nextReviewFinding",
     "onCommand:codebrain.previousReviewFinding",
+    "onCommand:codebrain.restoreDismissedFindings",
     "onCommand:codebrain.openWorkflowGraph",
     "onCommand:codebrain.showTokenSavings",
     "onCommand:codebrain.exportLatestMarkdown"
@@ -203,6 +207,44 @@
         "command": "codebrain.exportLatestMarkdown",
         "title": "CodeBrain: Export Latest Report as Markdown",
         "icon": "$(markdown)"
+      },
+      {
+        "command": "codebrain.rebuildIndex",
+        "title": "CodeBrain: Rebuild Index",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "codebrain.selectProject",
+        "title": "CodeBrain: Choose Project",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "codebrain.runAffectedTests",
+        "title": "CodeBrain: Run Affected Tests",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "codebrain.dismissReviewFinding",
+        "title": "CodeBrain: Dismiss Review Finding",
+        "icon": "$(check)"
+      },
+      {
+        "command": "codebrain.dismissFileReviewFindings",
+        "title": "CodeBrain: Dismiss All Review Findings in File"
+      },
+      {
+        "command": "codebrain.restoreDismissedFindings",
+        "title": "CodeBrain: Restore Dismissed Review Findings",
+        "icon": "$(history)"
+      },
+      {
+        "command": "codebrain.explainReviewFinding",
+        "title": "CodeBrain: Explain Review Finding"
+      },
+      {
+        "command": "codebrain.replyToFinding",
+        "title": "Ask CodeBrain about this finding",
+        "icon": "$(comment-discussion)"
       }
     ],
     "menus": {
@@ -235,6 +277,11 @@
           "command": "codebrain.nextReviewFinding",
           "group": "navigation@99",
           "when": "commentThread == codebrainReview"
+        },
+        {
+          "command": "codebrain.dismissReviewFinding",
+          "group": "inline@1",
+          "when": "commentThread == codebrainReview"
         }
       ],
       "scm/title": [
@@ -245,12 +292,39 @@
         {
           "command": "codebrain.reviewChanges",
           "group": "navigation"
+        },
+        {
+          "command": "codebrain.runAffectedTests",
+          "group": "navigation"
         }
       ],
       "commandPalette": [
         {
           "command": "codebrain.resetTokenSavings",
           "when": "codebrain.tokenSavings.hasData"
+        },
+        {
+          "command": "codebrain.dismissReviewFinding",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.dismissFileReviewFindings",
+          "when": "codebrain.reviewFindings"
+        },
+        {
+          "command": "codebrain.explainReviewFinding",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.replyToFinding",
+          "when": "false"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "codebrain.replyToFinding",
+          "group": "inline@1",
+          "when": "commentThread == codebrainReview"
         }
       ]
     },
@@ -341,13 +415,29 @@
         "codebrain.review.refreshIndexBeforeRun": {
           "type": "boolean",
           "default": true,
-          "description": "Refresh the CodeBrain index before impact analysis and independent review. Reviews stop if the refresh fails instead of using stale graph data.",
+          "description": "Refresh the CodeBrain index before impact analysis and review when the workspace has changed since the last refresh. Analyses stop if a needed refresh fails instead of using stale graph data.",
           "scope": "resource"
         },
         "codebrain.reports.openPreview": {
           "type": "boolean",
           "default": true,
           "description": "Automatically open generated Markdown reports in VS Code's preview."
+        },
+        "codebrain.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show each file's blast radius (dependents and affected tests) as a CodeLens above line 1."
+        },
+        "codebrain.impact.detectDepthTruncation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Probe one level past codebrain.impact.maxDepth to detect whether the dependency traversal was cut short. When it was, CodeBrain reports the dependent counts as a lower bound instead of presenting them as complete."
+        },
+        "codebrain.tests.command": {
+          "type": "string",
+          "default": "",
+          "description": "Command used by \"CodeBrain: Run Affected Tests\". Use ${files} where the affected test paths should go (for example: npx vitest run ${files}). Leave empty to detect the project's test runner and confirm before running.",
+          "scope": "resource"
         }
       }
     }

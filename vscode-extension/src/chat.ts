@@ -1,20 +1,29 @@
 import * as vscode from 'vscode';
 import {
+  CHARACTERS_PER_TOKEN,
+  extractContextFilePaths,
+  measureFileReadBaseline,
+} from './baseline';
+import {
   collectGitCommitReviewContext,
   collectGitReviewContext,
   GitReviewContext,
   listGitCommits,
 } from './gitContext';
+import { GraphCache } from './graphCache';
 import { buildImpactMarkdown } from './impact';
 import { ImpactController } from './impactController';
+import { IndexFreshness } from './indexFreshness';
 import { IndexManager } from './indexManager';
 import {
+  detectConversationLanguage,
   detectResponseLanguage,
   responseLanguageInstruction,
 } from './language';
 import {
   ChatRequestTokenSample,
   MetricsStore,
+  savingsPercent,
 } from './metrics';
 import { ReportManager } from './reportManager';
 import { normalizeReport, ReportKind } from './reports';
@@ -236,36 +245,129 @@ async function generateReport(
   };
 }
 
-function tokenUsageFooter(
+/**
+ * Footer reporting what the graph context cost versus what reading the same
+ * files would have cost.
+ *
+ * Both sides of the comparison are derived the same way — real byte counts at
+ * the same bytes-per-token ratio — so the ratio between them means something.
+ * The previous version multiplied the context size by a hard-coded 6.5, which
+ * made the reported saving a fixed ~85% no matter what the repository or the
+ * question was.
+ */
+export function tokenUsageFooter(
   sample: ChatRequestTokenSample,
   languageCode: string,
+  comparison: { contextCharacters: number },
 ): string {
   const locale = languageCode === 'vi' ? 'vi-VN' : 'en-US';
   const format = (value: number) => new Intl.NumberFormat(locale).format(value);
-  const baselineTokens = Math.round(sample.codeBrainContextTokens * 6.5);
-  const savedTokens = Math.max(0, baselineTokens - sample.codeBrainContextTokens);
-  const percentSaved = baselineTokens > 0 ? Math.round((savedTokens / baselineTokens) * 100) : 0;
+  const vi = languageCode === 'vi';
+  const requestLine = vi
+    ? `> * ⏱️ **Request:** input **${format(sample.inputTokens)}** + output **${format(sample.outputTokens)}** tokens (do ${sample.model} đếm) · **${format(sample.latencyMs)} ms**`
+    : `> * ⏱️ **Request:** input **${format(sample.inputTokens)}** + output **${format(sample.outputTokens)}** tokens (counted by ${sample.model}) · **${format(sample.latencyMs)} ms**`;
 
-  if (languageCode === 'vi') {
+  if (!sample.baselineMeasured) {
     return [
       '---',
-      `> 📊 **Báo cáo Hiệu năng CodeBrain (Ước tính)**`,
-      `> * 🟢 **Token nạp bởi CodeBrain:** **${format(sample.codeBrainContextTokens)}**`,
-      `> * 🔴 **Token nếu đọc thô (Grep/Read):** **${format(baselineTokens)}**`,
-      `> * ⚡ **Tiết kiệm:** **~${percentSaved}% (${format(savedTokens)} tokens)** · Thời gian: **${format(sample.latencyMs)} ms**`,
+      vi ? '> 📊 **Chi phí context CodeBrain**' : '> 📊 **CodeBrain context cost**',
+      requestLine,
+      vi
+        ? '> * ℹ️ Không có tệp ứng viên nào để đo, nên phần tiết kiệm là **không xác định**.'
+        : '> * ℹ️ No candidate file was available to measure, so savings are **unknown**.',
+    ].join('\n');
+  }
+
+  // Compare like with like: the model's tokenizer and a byte-ratio estimate are
+  // not the same unit, so the ratio uses the byte ratio on both sides.
+  const contextTokens = Math.ceil(comparison.contextCharacters / CHARACTERS_PER_TOKEN);
+  const percent = savingsPercent({
+    baselineMeasured: true,
+    baselineTokens: sample.baselineTokens,
+    contextTokens,
+  });
+  const saved = Math.max(0, sample.baselineTokens - contextTokens);
+
+  if (vi) {
+    return [
+      '---',
+      '> 📊 **Chi phí context CodeBrain (đo thật)**',
+      `> * 🟢 **Context đồ thị trả về:** **${format(contextTokens)}** tokens`,
+      `> * 🔴 **Đọc đầy đủ ${format(sample.baselineFiles)} tệp đó:** **${format(sample.baselineTokens)}** tokens`,
+      `> * ⚡ **Chênh lệch:** **${format(saved)}** tokens${percent !== undefined ? ` (~${percent}%)` : ''}`,
+      requestLine,
       '>',
-      '> Không phải dữ liệu billing; số token do model provider đếm và có thể không gồm hidden/system overhead.',
+      '> Baseline đo từ kích thước thật trên đĩa của các tệp CodeBrain lấy bằng chứng; cả hai phía dùng cùng tỉ lệ 4 byte ≈ 1 token. Không phải dữ liệu billing.',
     ].join('\n');
   }
   return [
     '---',
-    `> 📊 **CodeBrain Performance Summary (Estimated)**`,
-    `> * 🟢 **CodeBrain Context Tokens:** **${format(sample.codeBrainContextTokens)}**`,
-    `> * 🔴 **Unindexed Grep/Read Baseline:** **${format(baselineTokens)}**`,
-    `> * ⚡ **Savings:** **~${percentSaved}% (${format(savedTokens)} tokens)** · Latency: **${format(sample.latencyMs)} ms**`,
+    '> 📊 **CodeBrain context cost (measured)**',
+    `> * 🟢 **Graph context returned:** **${format(contextTokens)}** tokens`,
+    `> * 🔴 **Reading those ${format(sample.baselineFiles)} files in full:** **${format(sample.baselineTokens)}** tokens`,
+    `> * ⚡ **Difference:** **${format(saved)}** tokens${percent !== undefined ? ` (~${percent}%)` : ''}`,
+    requestLine,
     '>',
-    '> Not billing data; counts come from the model provider and may exclude hidden/system overhead.',
+    '> The baseline is measured from the real on-disk size of the files CodeBrain drew evidence from; both sides use the same 4 bytes ≈ 1 token ratio. Not billing data.',
   ].join('\n');
+}
+
+/**
+ * Recent turns of this chat thread, so a follow-up like “what about the other
+ * one?” has something to refer to.
+ *
+ * Responses are truncated hard: CodeBrain reports are long, and the useful part
+ * for continuity is which subject was discussed, not the whole document.
+ */
+export function conversationContext(
+  history: readonly unknown[],
+  maxTurns = 4,
+  maxResponseCharacters = 700,
+): string {
+  const lines: string[] = [];
+  for (const turn of history.slice(-maxTurns)) {
+    if (turn instanceof vscode.ChatRequestTurn) {
+      const command = turn.command ? `/${turn.command} ` : '';
+      lines.push(`User: ${command}${turn.prompt.trim()}`.slice(0, 1_000));
+      continue;
+    }
+    if (turn instanceof vscode.ChatResponseTurn) {
+      const text = turn.response
+        .filter(
+          (part): part is vscode.ChatResponseMarkdownPart =>
+            part instanceof vscode.ChatResponseMarkdownPart,
+        )
+        .map((part) => part.value.value)
+        .join('\n')
+        .replace(/```mermaid[\s\S]*?```/g, '[diagram]')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (text) {
+        lines.push(
+          `CodeBrain (previous answer, abbreviated): ${text.slice(0, maxResponseCharacters)}`,
+        );
+      }
+    }
+  }
+  if (lines.length === 0) {
+    return '';
+  }
+  return [
+    '## Earlier in this conversation',
+    ...lines,
+    'Resolve pronouns and references such as "it", "that function", or "the other one" against the turns above.',
+  ].join('\n');
+}
+
+/** User prompts from this thread, oldest first, including the current one. */
+export function historyPrompts(
+  history: readonly unknown[],
+  currentPrompt: string,
+): string[] {
+  const prompts = history
+    .filter((turn): turn is vscode.ChatRequestTurn => turn instanceof vscode.ChatRequestTurn)
+    .map((turn) => turn.prompt);
+  return [...prompts, currentPrompt];
 }
 
 
@@ -349,35 +451,42 @@ function buildGuideQuery(prompt: string, editorContext: string): string {
   );
 }
 
+interface ExploreDeps {
+  runtime: RuntimeCommand;
+  freshness: IndexFreshness;
+  cache: GraphCache<string>;
+  log: (message: string) => void;
+}
+
 async function explore(
-  runtime: RuntimeCommand,
-  root: string,
+  deps: ExploreDeps,
+  folder: vscode.WorkspaceFolder,
   query: string,
   maxFiles: number,
   request: vscode.ChatRequest,
   token: vscode.CancellationToken,
 ): Promise<string> {
-  const refreshBeforeAnalysis = vscode.workspace
-    .getConfiguration('codebrain')
-    .get<boolean>('review.refreshIndexBeforeRun', true);
-  if (refreshBeforeAnalysis) {
-    const refreshResult = await runCodeBrain(
-      runtime,
-      ['sync', root],
-      {
-        cwd: root,
-        env: codeBrainEnvironment(),
-        token,
-      },
-    );
-    if (refreshResult.code !== 0) {
-      throw new Error(
-        refreshResult.stderr.trim() ||
-          refreshResult.stdout.trim() ||
-          'CodeBrain index refresh failed; analysis was not started against a stale index.',
-      );
-    }
+  const { runtime, freshness, cache, log } = deps;
+  const root = folder.uri.fsPath;
+  // Refresh only when the workspace changed since the last one, instead of
+  // paying a full sync on every question.
+  await freshness.ensureFresh(folder, token);
+
+  const generation = freshness.generation(root);
+  // The MCP path truncates output to a budget derived from the model's context
+  // window, so a result fetched for a small-context model must not be reused
+  // for a larger one.
+  const cacheKey = {
+    root,
+    kind: 'explore:chat',
+    parts: [query, maxFiles, request.model.id, request.model.maxInputTokens],
+  };
+  const cached = cache.get(cacheKey, generation);
+  if (cached !== undefined) {
+    log(`[explore] served from cache (generation ${generation}).`);
+    return cached;
   }
+
   const mcpTool = vscode.lm.tools.find(
     (tool) =>
       /(^|[._/-])codegraph_explore$/i.test(tool.name) ||
@@ -415,12 +524,23 @@ async function explore(
         .map((part) => part.value)
         .join('\n');
       if (text.trim()) {
+        cache.set(cacheKey, generation, text);
         return text;
       }
-    } catch {
-      // MCP discovery/activation is best-effort here. The bundled CLI below is
-      // the same CodeBrain engine and output surface, so reports still work.
+      log('[explore] MCP tool returned no text; falling back to the bundled CLI.');
+    } catch (error) {
+      // MCP discovery/activation is best-effort: the bundled CLI below is the
+      // same engine, so reports still work. But swallowing this silently means
+      // a permanently broken MCP connection looks like "CodeBrain is just slow"
+      // forever, so it is always recorded.
+      log(
+        `[explore] MCP tool ${mcpTool.name} failed, falling back to the bundled CLI: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
+  } else {
+    log('[explore] no CodeBrain MCP tool is registered; using the bundled CLI.');
   }
 
   const result = await runCodeBrain(
@@ -443,6 +563,7 @@ async function explore(
   if (result.code !== 0) {
     throw new Error(result.stderr.trim() || result.stdout.trim() || 'CodeBrain explore failed.');
   }
+  cache.set(cacheKey, generation, result.stdout);
   return result.stdout;
 }
 
@@ -481,14 +602,21 @@ function reviewEvidence(
     .join('\n\n');
 }
 
+interface ReviewTargetChoice {
+  /** Commit to review, or undefined for the current working tree. */
+  commit?: string;
+  /** True when the user dismissed the picker without choosing. */
+  cancelled: boolean;
+}
+
 async function selectReviewCommit(
   root: string,
   prompt: string,
-): Promise<string | undefined> {
+): Promise<ReviewTargetChoice> {
   const explicit = prompt.match(
     /(?:commit|changeset|sha)\s+([0-9a-f]{7,40})\b/i,
   )?.[1] ?? prompt.match(/^\s*([0-9a-f]{7,40})\s*$/i)?.[1];
-  if (explicit) return explicit;
+  if (explicit) return { commit: explicit, cancelled: false };
 
   const commits = await listGitCommits(root);
   const items: vscode.QuickPickItem[] = [
@@ -508,8 +636,11 @@ async function selectReviewCommit(
     placeHolder: 'Select current changes or a commit',
     ignoreFocusOut: true,
   });
-  if (!selected || selected === items[0]) return undefined;
-  return selected.description || undefined;
+  // Escaping the picker is a decision to stop, not a request to review the
+  // whole working tree.
+  if (!selected) return { cancelled: true };
+  if (selected === items[0]) return { cancelled: false };
+  return { commit: selected.description || undefined, cancelled: false };
 }
 
 function explainEvidence(
@@ -574,10 +705,14 @@ export function registerChatParticipant(
   impactController: ImpactController,
   metrics: MetricsStore,
   reports: ReportManager,
+  freshness: IndexFreshness,
+  exploreCache: GraphCache<string>,
+  log: (message: string) => void,
 ): void {
+  const exploreDeps: ExploreDeps = { runtime, freshness, cache: exploreCache, log };
   const handler: vscode.ChatRequestHandler = async (
     request,
-    _chatContext,
+    chatContext,
     stream,
     token,
   ): Promise<CodeBrainChatResult> => {
@@ -625,12 +760,19 @@ export function registerChatParticipant(
     );
     const showTokenUsage = config.get<boolean>('chat.showTokenUsage', true);
     const editorContext = activeEditorContext(folder);
-    const responseLanguage = detectResponseLanguage(
-      request.prompt,
+    const history = chatContext.history ?? [];
+    // Take the language from the conversation, not just this message, so a bare
+    // follow-up does not flip the report to another language mid-thread.
+    const responseLanguage = detectConversationLanguage(
+      historyPrompts(history, request.prompt),
       vscode.env.language,
     );
     const languageInstruction =
       responseLanguageInstruction(responseLanguage);
+    const priorTurns = conversationContext(history);
+    /** Prepend the thread's earlier turns so follow-up questions resolve. */
+    const withHistory = (evidence: string): string =>
+      priorTurns ? `${priorTurns}\n\n${evidence}` : evidence;
     const subject =
       request.prompt.trim() ||
       editorContext.split('\n')[0]?.replace(/^Active file:\s*/, '') ||
@@ -651,6 +793,8 @@ export function registerChatParticipant(
       );
 
       let generatedReport: GeneratedReport;
+      // Graph output backing the measured context-cost comparison in the footer.
+      let evidenceContext = '';
       if (command === 'impact') {
         const gitContext = await collectGitReviewContext(
           folder.uri.fsPath,
@@ -662,13 +806,14 @@ export function registerChatParticipant(
           editorContext,
         );
         const graphContext = await explore(
-          runtime,
-          folder.uri.fsPath,
+          exploreDeps,
+          folder,
           query,
           maxFiles,
           request,
           token,
         );
+        evidenceContext = graphContext;
         const analysis = await impactController.analysisService.analyze(
           folder,
           token,
@@ -685,7 +830,7 @@ export function registerChatParticipant(
             IMPACT_INSTRUCTIONS,
             languageInstruction,
             request.prompt || 'Explain the deterministic change impact result.',
-            `${deterministicReport}\n\n## CodeBrain context\n\n${graphContext}`,
+            withHistory(`${deterministicReport}\n\n## CodeBrain context\n\n${graphContext}`),
             graphContext,
             token,
           );
@@ -710,10 +855,12 @@ export function registerChatParticipant(
           };
         }
       } else if (command === 'review') {
-        const selectedCommit = await selectReviewCommit(
-          folder.uri.fsPath,
-          request.prompt,
-        );
+        const choice = await selectReviewCommit(folder.uri.fsPath, request.prompt);
+        if (choice.cancelled) {
+          stream.markdown('CodeBrain review cancelled.');
+          return { metadata: { command } };
+        }
+        const selectedCommit = choice.commit;
         const gitContext = selectedCommit
           ? await collectGitCommitReviewContext(
               folder.uri.fsPath,
@@ -732,13 +879,14 @@ export function registerChatParticipant(
           editorContext,
         );
         const graphContext = await explore(
-          runtime,
-          folder.uri.fsPath,
+          exploreDeps,
+          folder,
           query,
           maxFiles,
           request,
           token,
         );
+        evidenceContext = graphContext;
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
           editorContext,
@@ -748,25 +896,28 @@ export function registerChatParticipant(
           customReviewPrompt(REVIEW_INSTRUCTIONS, folder),
           languageInstruction,
           request.prompt || 'Review the current workspace changes or selected code.',
-          reviewEvidence(
-            graphContext,
-            gitContext,
-            editorContext,
-            maxDiffCharacters,
-            readmeContext,
+          withHistory(
+            reviewEvidence(
+              graphContext,
+              gitContext,
+              editorContext,
+              maxDiffCharacters,
+              readmeContext,
+            ),
           ),
           graphContext,
           token,
         );
       } else if (command === 'guide') {
         const graphContext = await explore(
-          runtime,
-          folder.uri.fsPath,
+          exploreDeps,
+          folder,
           buildGuideQuery(request.prompt, editorContext),
           maxFiles,
           request,
           token,
         );
+        evidenceContext = graphContext;
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
           editorContext,
@@ -776,7 +927,7 @@ export function registerChatParticipant(
           GUIDE_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Generate a user guide for the selected feature.',
-          guideEvidence(graphContext, editorContext, readmeContext),
+          withHistory(guideEvidence(graphContext, editorContext, readmeContext)),
           graphContext,
           token,
         );
@@ -786,13 +937,14 @@ export function registerChatParticipant(
           maxDiffCharacters,
         );
         const graphContext = await explore(
-          runtime,
-          folder.uri.fsPath,
+          exploreDeps,
+          folder,
           buildFixQuery(request.prompt, editorContext),
           maxFiles,
           request,
           token,
         );
+        evidenceContext = graphContext;
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
           editorContext,
@@ -802,12 +954,14 @@ export function registerChatParticipant(
           FIX_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Analyze the bug in the selected code and propose a safe solution.',
-          fixEvidence(
-            graphContext,
-            editorContext,
-            readmeContext,
-            gitContext,
-            maxDiffCharacters,
+          withHistory(
+            fixEvidence(
+              graphContext,
+              editorContext,
+              readmeContext,
+              gitContext,
+              maxDiffCharacters,
+            ),
           ),
           graphContext,
           token,
@@ -815,13 +969,14 @@ export function registerChatParticipant(
       } else {
         const query = buildExplainQuery(request.prompt, editorContext);
         const graphContext = await explore(
-          runtime,
-          folder.uri.fsPath,
+          exploreDeps,
+          folder,
           query,
           maxFiles,
           request,
           token,
         );
+        evidenceContext = graphContext;
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
           editorContext,
@@ -831,12 +986,18 @@ export function registerChatParticipant(
           EXPLAIN_INSTRUCTIONS,
           languageInstruction,
           request.prompt || 'Explain the purpose and workflow of the selected code.',
-          explainEvidence(graphContext, editorContext, readmeContext),
+          withHistory(explainEvidence(graphContext, editorContext, readmeContext)),
           graphContext,
           token,
         );
       }
 
+      // Measure what reading the cited files in full would actually have cost,
+      // instead of multiplying the context by a constant.
+      const baseline = measureFileReadBaseline(
+        folder.uri.fsPath,
+        extractContextFilePaths(evidenceContext),
+      );
       const tokenSample: ChatRequestTokenSample = {
         command,
         model: request.model.name,
@@ -846,6 +1007,9 @@ export function registerChatParticipant(
         outputTokens: generatedReport.outputTokens,
         totalTokens: generatedReport.inputTokens + generatedReport.outputTokens,
         latencyMs: Date.now() - requestStartedAt,
+        baselineTokens: baseline.tokens,
+        baselineFiles: baseline.measuredFiles,
+        baselineMeasured: baseline.measured,
       };
       try {
         await metrics.recordChatRequest(tokenSample);
@@ -861,6 +1025,7 @@ export function registerChatParticipant(
         ? `${normalizedReport.trim()}\n\n${tokenUsageFooter(
             tokenSample,
             responseLanguage.code,
+            { contextCharacters: evidenceContext.length },
           )}\n`
         : normalizedReport;
       const reportUri = await reports.setLatest({

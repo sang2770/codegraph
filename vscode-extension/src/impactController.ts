@@ -5,6 +5,8 @@ import {
   ImpactAnalysisService,
 } from './impact';
 import { WorkflowGraphPanel } from './impactPanel';
+import { GraphCache } from './graphCache';
+import { IndexFreshness } from './indexFreshness';
 import { detectResponseLanguage } from './language';
 import { MetricsStore } from './metrics';
 import { ReportManager } from './reportManager';
@@ -21,8 +23,15 @@ export class ImpactController implements vscode.Disposable {
     private readonly runtime: RuntimeCommand,
     private readonly metrics: MetricsStore,
     private readonly reports: ReportManager,
+    freshness: IndexFreshness,
+    exploreCache: GraphCache<string>,
   ) {
-    this.service = new ImpactAnalysisService(this.runtime, metrics);
+    this.service = new ImpactAnalysisService(
+      this.runtime,
+      metrics,
+      freshness,
+      exploreCache,
+    );
     this.disposables.push(
       vscode.commands.registerCommand('codebrain.analyzeImpact', () =>
         this.analyze(),
@@ -50,6 +59,14 @@ export class ImpactController implements vscode.Disposable {
 
   public setLatest(analysis: ImpactAnalysis): void {
     this.latest = analysis;
+  }
+
+  /** Affected tests from the most recent analysis, for “Run Affected Tests”. */
+  public latestTestTarget(): { root: string; tests: string[] } | undefined {
+    if (!this.latest || this.latest.affectedTests.length === 0) {
+      return undefined;
+    }
+    return { root: this.latest.root, tests: [...this.latest.affectedTests] };
   }
 
   public dispose(): void {

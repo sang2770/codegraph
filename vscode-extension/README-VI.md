@@ -174,6 +174,51 @@ Setting độ sâu dependency:
 
 > Không phát hiện test bị ảnh hưởng không có nghĩa là không có regression. Extension sẽ ghi trường hợp này là một khoảng trống kiểm thử.
 
+## 6b. Blast radius ngay trong editor (CodeLens)
+
+Mỗi file hiển thị mức ảnh hưởng ngay trên dòng 1, không cần gõ lệnh:
+
+```text
+⚡ CodeBrain: 23 dependents · 2 affected tests
+🧪 Run 2 affected tests
+```
+
+Bấm lens đầu để chạy phân tích ảnh hưởng đầy đủ, lens sau để chạy đúng các test đó.
+
+Tắt bằng:
+
+```json
+{ "codebrain.codeLens.enabled": false }
+```
+
+## 6c. Chạy test bị ảnh hưởng
+
+CodeBrain tìm ra test nào liên quan, và chạy luôn giúp bạn. Gọi từ CodeLens, thanh Source Control, panel impact, hoặc:
+
+```text
+CodeBrain: Run Affected Tests
+```
+
+Extension tự nhận diện test runner của project — Vitest, Jest, Playwright, Mocha, pytest, `go test`, RSpec, PHPUnit, Cargo, Maven, Gradle, `dotnet test` — và **luôn hiển thị lệnh để bạn xác nhận trước khi chạy**, vì việc nhận diện có thể sai.
+
+Muốn bỏ qua bước nhận diện, đặt sẵn lệnh của bạn:
+
+```json
+{ "codebrain.tests.command": "npx vitest run ${files}" }
+```
+
+## 6d. Khi blast radius bị cắt
+
+Nếu việc duyệt phụ thuộc dừng ở giới hạn `codebrain.impact.maxDepth` trong khi vẫn còn phần đồ thị chưa đi tới, báo cáo sẽ ghi rõ:
+
+```text
+⚠️ Kết quả bị cắt. Mọi con số dependent bên dưới là giới hạn dưới.
+```
+
+Lúc đó các con số hiển thị dạng `≥ N`, và độ tin cậy bằng chứng bị hạ xuống. Tăng `codebrain.impact.maxDepth` để thấy toàn bộ.
+
+Tắt kiểm tra này bằng `codebrain.impact.detectDepthTruncation: false`.
+
 ## 7. Workflow Graph
 
 Mở graph bằng:
@@ -195,7 +240,7 @@ Dashboard cũng hiển thị extraction engine:
 - `Rust native`: đang sử dụng native Rust kernel
 - `WASM fallback`: runtime không tìm thấy kernel tương thích
 
-## 8. Token Saving Dashboard
+## 8. Dashboard chi phí context
 
 Mở:
 
@@ -205,14 +250,42 @@ CodeBrain: Token Savings Dashboard
 
 Dashboard hiển thị:
 
-- Số lần phân tích
+- Số lần phân tích, và trong đó bao nhiêu lần **đo được**
 - Context token từ CodeBrain
-- Baseline đọc file
-- Token tiết kiệm
+- Baseline đọc file (đo thật)
+- Chênh lệch
 - Số lượt đọc file tránh được
 - Độ trễ lần phân tích gần nhất
 
-Các số token là **ước tính**, không phải dữ liệu billing của model.
+**Cách đo.** CodeBrain lấy đúng các file mà nó đã trích bằng chứng, đọc **kích thước thật trên đĩa** của chúng, rồi quy đổi cả hai phía theo cùng tỉ lệ 4 byte ≈ 1 token. Khi không đo được file nào, dashboard ghi **không xác định** thay vì hiển thị một con số.
+
+Đây là ước tính kích thước context, **không phải** dữ liệu billing của model.
+
+## 8b. Trạng thái index và vùng thiếu bao phủ
+
+```text
+CodeBrain: Show Index Status
+```
+
+Panel hiển thị:
+
+- Số file, symbol, quan hệ đã index, chia theo ngôn ngữ
+- **Tracked only**: file có trong index nhưng không trích được symbol nào — chúng không thể xuất hiện trong call path
+- **Coverage gaps**: file trong workspace nhưng không có trong index
+
+Phần cuối quan trọng nhất: file thuộc ngôn ngữ chưa được hỗ trợ sẽ **vắng mặt hoàn toàn** khỏi đồ thị, nên mọi phân tích ảnh hưởng lẽ ra phải đi qua chúng đều bị thiếu — mà không có lỗi nào báo cho bạn biết.
+
+Panel cũng cảnh báo khi lần index gần nhất bị rớt file, còn reference chưa resolve, hoặc được build bởi engine cũ.
+
+## 8c. Monorepo nhiều project
+
+Khi workspace có nhiều project đã index:
+
+```text
+CodeBrain: Choose Project
+```
+
+Mặc định CodeBrain dùng project đã index gần nhất phía trên file đang mở.
 
 Tắt lưu metrics:
 
@@ -239,6 +312,22 @@ CodeBrain Reviewer
 ```
 
 Reviewer agent chỉ được cấp các tool thuộc MCP server CodeBrain. Agent không có tool sửa file hoặc terminal.
+
+### Phản hồi lại finding
+
+Findings được giữ lại qua các lần reload cửa sổ, và tự bám lại đúng dòng sau khi bạn sửa code — báo rõ khi finding đã dịch chuyển, và thừa nhận khi dòng được review không còn tồn tại thay vì chỉ sai chỗ.
+
+Khi một finding sai:
+
+- Bấm bóng đèn (lightbulb) → **dismiss** — finding đó sẽ bị ẩn cả trong các lần review sau
+- Bấm bóng đèn → **explain** — hỏi CodeBrain giải thích thêm trong Chat
+- Trả lời trực tiếp trong comment thread của finding để hỏi lại
+
+Khôi phục tất cả:
+
+```text
+CodeBrain: Restore Dismissed Review Findings
+```
 
 Ví dụ:
 
@@ -297,6 +386,8 @@ Thêm vào `.vscode/settings.json`:
   "codebrain.chat.maxContextFiles": 12,
   "codebrain.chat.maxDiffCharacters": 120000,
   "codebrain.impact.maxDepth": 5,
+  "codebrain.impact.detectDepthTruncation": true,
+  "codebrain.codeLens.enabled": true,
   "codebrain.metrics.enabled": true,
   "codebrain.reports.openPreview": true
 }
@@ -338,6 +429,20 @@ Chạy:
 
 ```text
 CodeBrain: Refresh Index
+```
+
+Trước mỗi lần phân tích, CodeBrain chỉ refresh khi workspace thật sự có thay đổi kể từ lần refresh trước — nên câu hỏi thứ hai liên tiếp sẽ nhanh hơn.
+
+### Index bị thiếu file hoặc hỏng một phần
+
+```text
+CodeBrain: Show Index Status
+```
+
+Xem phần **Coverage gaps**. Nếu index bị báo là partial hoặc được build bởi engine cũ:
+
+```text
+CodeBrain: Rebuild Index
 ```
 
 ### Không tìm thấy affected tests

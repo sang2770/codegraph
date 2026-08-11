@@ -1,7 +1,18 @@
 import { basename } from 'node:path';
 import * as vscode from 'vscode';
+import {
+  extractContextFilePaths,
+  measureFileReadBaseline,
+} from './baseline';
 import { collectGitReviewContext } from './gitContext';
-import { estimateTokenSaving, MetricsStore, TokenSavingSample } from './metrics';
+import { GraphCache } from './graphCache';
+import { IndexFreshness } from './indexFreshness';
+import {
+  measureTokenSaving,
+  MetricsStore,
+  savingsPercent,
+  TokenSavingSample,
+} from './metrics';
 import {
   codeBrainEnvironment,
   runCodeBrain,
@@ -83,6 +94,14 @@ export interface ImpactAnalysis {
   riskReasons: string[];
   assessment: ImpactAssessment;
   metrics: TokenSavingSample;
+  /** Traversal depth this analysis used (`codebrain.impact.maxDepth`). */
+  depthLimit: number;
+  /**
+   * Whether the traversal hit `depthLimit` and stopped with more of the graph
+   * still reachable. `true` means every dependent count here is a *lower
+   * bound*; `undefined` means the check did not run.
+   */
+  depthTruncated?: boolean;
 }
 
 function activeFile(folder: vscode.WorkspaceFolder): string | undefined {
@@ -234,6 +253,7 @@ export function classifyImpactRisk(
   affectedTests: string[],
   dependents: number,
   graphContext: string,
+  traversal: { depthTruncated?: boolean; depthLimit?: number } = {},
 ): { risk: ImpactRisk; reasons: string[]; assessment: ImpactAssessment } {
   const scope = `${changedFiles.join(' ')} ${graphContext.slice(0, 20_000)}`;
   const sensitive =
@@ -262,6 +282,7 @@ export function classifyImpactRisk(
   }
 
   const blastRadiusScore = dependents >= 15 ? 3 : dependents >= 5 ? 2 : dependents > 0 ? 1 : 0;
+  const depthLimit = traversal.depthLimit ?? 0;
   signals.push({
     key: 'blastRadius',
     label: 'Blast radius',
@@ -269,7 +290,9 @@ export function classifyImpactRisk(
     maxScore: 3,
     detail:
       dependents > 0
-        ? `${dependents} transitive dependent(s) were traversed.`
+        ? traversal.depthTruncated
+          ? `At least ${dependents} transitive dependent(s); traversal stopped at depth ${depthLimit} with more of the graph still reachable.`
+          : `${dependents} transitive dependent(s) were traversed, and the traversal reached the end of the dependency chain.`
         : 'No dependent workflow was found in the current index.',
   });
   if (dependents >= 15) {
@@ -325,6 +348,11 @@ export function classifyImpactRisk(
   } else if (hasTests) {
     reasons.push(`${affectedTests.length} affected test file(s) were detected.`);
   }
+  if (traversal.depthTruncated) {
+    reasons.push(
+      `The dependency traversal stopped at its depth limit of ${depthLimit}, so every dependent count above is a lower bound rather than the full blast radius.`,
+    );
+  }
   if (reasons.length === 0) {
     reasons.push('The indexed blast radius is narrow.');
   }
@@ -337,14 +365,21 @@ export function classifyImpactRisk(
         : score >= IMPACT_RISK_THRESHOLDS.medium
           ? 'medium'
           : 'low';
-  const confidence: ImpactAssessment['confidence'] =
+  const measuredConfidence: ImpactAssessment['confidence'] =
     graphContext.length >= 500 && (hasDependents || hasTests)
       ? 'high'
       : graphContext.length > 0
         ? 'medium'
         : 'low';
-  const recommendation =
-    coverage === 'gap'
+  // A truncated traversal cannot support high confidence: the part of the graph
+  // we never visited is exactly the part that could change the conclusion.
+  const confidence: ImpactAssessment['confidence'] =
+    traversal.depthTruncated && measuredConfidence === 'high'
+      ? 'medium'
+      : measuredConfidence;
+  const recommendation = traversal.depthTruncated
+    ? `Raise codebrain.impact.maxDepth above ${depthLimit} to see the full blast radius before merging; the current result is a lower bound.`
+    : coverage === 'gap'
       ? 'Run or add tests for the affected workflows before merging.'
       : risk === 'critical' || risk === 'high'
         ? 'Review the highest-fan-out workflows and run the affected test set before merging.'
@@ -378,7 +413,43 @@ export class ImpactAnalysisService {
   public constructor(
     private readonly runtime: RuntimeCommand,
     private readonly metrics: MetricsStore,
+    private readonly freshness: IndexFreshness,
+    private readonly exploreCache = new GraphCache<string>(),
   ) {}
+
+  /** One `affected` run at a given traversal depth. */
+  private async runAffected(
+    root: string,
+    changedFiles: readonly string[],
+    depth: number,
+    token?: vscode.CancellationToken,
+  ): Promise<AffectedTestResult> {
+    const result = await runCodeBrain(
+      this.runtime,
+      [
+        'affected',
+        ...changedFiles,
+        '--path',
+        root,
+        '--depth',
+        String(depth),
+        '--json',
+      ],
+      {
+        cwd: root,
+        env: codeBrainEnvironment(),
+        token,
+      },
+    );
+    if (result.code !== 0) {
+      throw new Error(
+        result.stderr.trim() ||
+          result.stdout.trim() ||
+          'Affected-test detection failed.',
+      );
+    }
+    return parseAffectedJson(result.stdout);
+  }
 
   public async analyze(
     folder: vscode.WorkspaceFolder,
@@ -393,30 +464,15 @@ export class ImpactAnalysisService {
     );
     const maxFiles = config.get<number>('chat.maxContextFiles', 12);
     const depth = config.get<number>('impact.maxDepth', 5);
-    const refreshBeforeAnalysis = config.get<boolean>(
-      'review.refreshIndexBeforeRun',
+    const detectTruncation = config.get<boolean>(
+      'impact.detectDepthTruncation',
       true,
     );
-    // Chat impact requests refresh while collecting their graph context and
-    // pass it back as an override. Avoid running the same refresh twice for
-    // that path; all standalone analyses still refresh here.
-    if (refreshBeforeAnalysis && !graphContextOverride) {
-      const refreshResult = await runCodeBrain(
-        this.runtime,
-        ['sync', folder.uri.fsPath],
-        {
-          cwd: folder.uri.fsPath,
-          env: codeBrainEnvironment(),
-          token,
-        },
-      );
-      if (refreshResult.code !== 0) {
-        throw new Error(
-          refreshResult.stderr.trim() ||
-            refreshResult.stdout.trim() ||
-            'CodeBrain index refresh failed; review was not started against a stale index.',
-        );
-      }
+    // Chat impact requests already refreshed while collecting their graph
+    // context, so they pass it back as an override. Everything else refreshes
+    // here — and only when the workspace actually changed since the last sync.
+    if (!graphContextOverride) {
+      await this.freshness.ensureFresh(folder, token);
     }
     const gitContext = await collectGitReviewContext(
       folder.uri.fsPath,
@@ -433,58 +489,61 @@ export class ImpactAnalysisService {
       );
     }
 
-    const affectedResult = await runCodeBrain(
-      this.runtime,
-      [
-        'affected',
-        ...changedFiles,
-        '--path',
-        folder.uri.fsPath,
-        '--depth',
-        String(depth),
-        '--json',
-      ],
-      {
-        cwd: folder.uri.fsPath,
-        env: codeBrainEnvironment(),
-        token,
-      },
-    );
-    if (affectedResult.code !== 0) {
-      throw new Error(
-        affectedResult.stderr.trim() ||
-          affectedResult.stdout.trim() ||
-          'Affected-test detection failed.',
-      );
-    }
-    const affected = parseAffectedJson(affectedResult.stdout);
+    // Probe one level deeper in parallel. If the deeper run reaches more of the
+    // graph, the configured depth cut the traversal short — which means every
+    // dependent count below is a lower bound, and a reader who takes "3
+    // dependents" at face value is being misled. Running both concurrently
+    // keeps the wall-clock cost of knowing this at roughly zero.
+    const [affected, deeperProbe] = await Promise.all([
+      this.runAffected(folder.uri.fsPath, changedFiles, depth, token),
+      detectTruncation
+        ? this.runAffected(folder.uri.fsPath, changedFiles, depth + 1, token).catch(
+            () => undefined,
+          )
+        : Promise.resolve(undefined),
+    ]);
+    const depthTruncated = deeperProbe
+      ? deeperProbe.totalDependentsTraversed > affected.totalDependentsTraversed
+      : undefined;
 
     let graphContext = graphContextOverride;
     if (!graphContext) {
-      const graphResult = await runCodeBrain(
-        this.runtime,
-        [
-          'explore',
-          exploreQuery(changedFiles),
-          '--path',
-          folder.uri.fsPath,
-          '--max-files',
-          String(maxFiles),
-        ],
-        {
-          cwd: folder.uri.fsPath,
-          env: codeBrainEnvironment(),
-          token,
-        },
-      );
-      if (graphResult.code !== 0) {
-        throw new Error(
-          graphResult.stderr.trim() ||
-            graphResult.stdout.trim() ||
-            'CodeBrain impact exploration failed.',
+      const cacheKey = {
+        root: folder.uri.fsPath,
+        kind: 'explore:impact',
+        parts: [exploreQuery(changedFiles), maxFiles],
+      };
+      const generation = this.freshness.generation(folder.uri.fsPath);
+      const cached = this.exploreCache.get(cacheKey, generation);
+      if (cached !== undefined) {
+        graphContext = cached;
+      } else {
+        const graphResult = await runCodeBrain(
+          this.runtime,
+          [
+            'explore',
+            exploreQuery(changedFiles),
+            '--path',
+            folder.uri.fsPath,
+            '--max-files',
+            String(maxFiles),
+          ],
+          {
+            cwd: folder.uri.fsPath,
+            env: codeBrainEnvironment(),
+            token,
+          },
         );
+        if (graphResult.code !== 0) {
+          throw new Error(
+            graphResult.stderr.trim() ||
+              graphResult.stdout.trim() ||
+              'CodeBrain impact exploration failed.',
+          );
+        }
+        graphContext = graphResult.stdout;
+        this.exploreCache.set(cacheKey, generation, graphContext);
       }
-      graphContext = graphResult.stdout;
     }
 
     const graph = buildGraph(
@@ -500,17 +559,29 @@ export class ImpactAnalysisService {
       affected.affectedTests,
       dependentCount,
       graphContext,
+      { depthTruncated, depthLimit: depth },
     );
-    const metrics = estimateTokenSaving(
-      graphContext.length + affectedResult.stdout.length,
-      changedFiles.length,
-      dependentCount,
-      affected.affectedTests.length,
-      Date.now() - startedAt,
-    );
+    // Measure the real cost of reading the files CodeBrain answered *instead*
+    // of. Changed files are excluded: they are in the diff either way, so they
+    // are not a read the graph saved.
+    const changedSet = new Set(changedFiles);
+    const candidateFiles = [
+      ...(affected.dependentFiles ?? []),
+      ...affected.affectedTests,
+      ...extractContextFilePaths(graphContext),
+    ].filter((path) => !changedSet.has(path));
+    const metrics = measureTokenSaving({
+      contextCharacters: graphContext.length,
+      baseline: measureFileReadBaseline(folder.uri.fsPath, candidateFiles),
+      changedFiles: changedFiles.length,
+      affectedTests: affected.affectedTests.length,
+      latencyMs: Date.now() - startedAt,
+    });
     await this.metrics.record(metrics);
 
     return {
+      depthLimit: depth,
+      depthTruncated,
       root: folder.uri.fsPath,
       generatedAt: new Date().toISOString(),
       runtimeTarget: this.runtime.target,
@@ -635,6 +706,46 @@ function signalTable(assessment: ImpactAssessment, vi: boolean): string {
   return [header, ...rows].join('\n');
 }
 
+/** Explicit warning when the traversal stopped early, or empty when it did not. */
+function truncationNotice(analysis: ImpactAnalysis, vi: boolean): string {
+  if (analysis.depthTruncated !== true) {
+    return '';
+  }
+  return vi
+    ? `> ⚠️ **Kết quả bị cắt.** Việc duyệt phụ thuộc đã dừng ở giới hạn độ sâu **${analysis.depthLimit}** trong khi vẫn còn phần đồ thị chưa đi tới. Mọi con số dependent bên dưới là **giới hạn dưới**, không phải blast radius đầy đủ. Tăng \`codebrain.impact.maxDepth\` để thấy toàn bộ.\n`
+    : `> ⚠️ **This result is truncated.** The dependency traversal stopped at its depth limit of **${analysis.depthLimit}** while more of the graph was still reachable. Every dependent count below is a **lower bound**, not the full blast radius. Raise \`codebrain.impact.maxDepth\` to see the rest.\n`;
+}
+
+/** Token section that reports a measured comparison, or says it cannot. */
+function tokenSection(analysis: ImpactAnalysis, vi: boolean): string {
+  const metrics = analysis.metrics;
+  if (!metrics.baselineMeasured) {
+    return vi
+      ? `Không đo được: CodeBrain không tìm thấy tệp ứng viên nào để so sánh, nên phần tiết kiệm là **không xác định** (không phải bằng 0).`
+      : `Not measurable: CodeBrain found no candidate file to compare against, so savings are **unknown** (not zero).`;
+  }
+  const percent = savingsPercent(metrics);
+  const rows = vi
+    ? [
+        '| Chỉ số | Giá trị |',
+        '|---|---:|',
+        `| Context CodeBrain trả về | ${metrics.contextTokens.toLocaleString()} tokens |`,
+        `| Đọc đầy đủ ${metrics.baselineFiles} tệp đó | ${metrics.baselineTokens.toLocaleString()} tokens |`,
+        `| Chênh lệch | ${metrics.tokensSaved.toLocaleString()} tokens${percent !== undefined ? ` (~${percent}%)` : ''} |`,
+      ]
+    : [
+        '| Metric | Value |',
+        '|---|---:|',
+        `| Context CodeBrain returned | ${metrics.contextTokens.toLocaleString()} tokens |`,
+        `| Reading those ${metrics.baselineFiles} files in full | ${metrics.baselineTokens.toLocaleString()} tokens |`,
+        `| Difference | ${metrics.tokensSaved.toLocaleString()} tokens${percent !== undefined ? ` (~${percent}%)` : ''} |`,
+      ];
+  const note = vi
+    ? `> Baseline được **đo thật** từ kích thước trên đĩa của ${metrics.baselineFiles} tệp mà CodeBrain lấy bằng chứng, quy đổi 4 byte ≈ 1 token. Không phải dữ liệu billing của model.`
+    : `> The baseline is **measured** from the real on-disk size of the ${metrics.baselineFiles} files CodeBrain drew evidence from, converted at 4 bytes ≈ 1 token. It is not model billing data.`;
+  return [...rows, '', note].join('\n');
+}
+
 export function buildImpactMarkdown(
   analysis: ImpactAnalysis,
   languageCode: string,
@@ -645,9 +756,10 @@ export function buildImpactMarkdown(
   if (vi) {
     return `# Phân tích ảnh hưởng thay đổi
 
+${truncationNotice(analysis, true)}
 ## Kết luận
 
-**Mức độ ảnh hưởng: ${risk} (${assessment.score}/${assessment.maxScore}).** CodeBrain đã duyệt ${analysis.totalDependentsTraversed} thành phần phụ thuộc và phát hiện ${analysis.affectedTests.length} tệp test bị ảnh hưởng.
+**Mức độ ảnh hưởng: ${risk} (${assessment.score}/${assessment.maxScore}).** CodeBrain đã duyệt ${analysis.depthTruncated === true ? 'ít nhất ' : ''}${analysis.totalDependentsTraversed} thành phần phụ thuộc và phát hiện ${analysis.affectedTests.length} tệp test bị ảnh hưởng.
 
 - Độ tin cậy bằng chứng: **${confidenceLabel(assessment.confidence, true)}**
 - Tình trạng test: **${coverageLabel(assessment.coverage, true)}**
@@ -677,22 +789,16 @@ ${listOrNone(analysis.affectedTests, 'Không phát hiện test bị ảnh hưở
 ## Phạm vi ảnh hưởng
 
 - Tệp thay đổi: **${analysis.changedFiles.length}**
-- Thành phần phụ thuộc đã duyệt: **${analysis.totalDependentsTraversed}**
+- Thành phần phụ thuộc đã duyệt: **${analysis.depthTruncated === true ? '≥ ' : ''}${analysis.totalDependentsTraversed}**
 - Test bị ảnh hưởng: **${analysis.affectedTests.length}**
 - Nút hiển thị trên graph: **${analysis.nodes.length}**
+- Giới hạn độ sâu: **${analysis.depthLimit}**${analysis.depthTruncated === true ? ' (đã bị cắt)' : analysis.depthTruncated === false ? ' (chưa bị cắt)' : ''}
 - Độ trễ phân tích: **${analysis.metrics.latencyMs} ms**
 - Runtime: **${analysis.runtimeTarget} · ${analysis.nativeKernel ? 'Rust native kernel' : 'WASM fallback'}**
 
-## Tiết kiệm token (ước tính)
+## So sánh chi phí context
 
-| Chỉ số | Giá trị |
-|---|---:|
-| Context CodeBrain | ${analysis.metrics.contextTokens.toLocaleString()} tokens |
-| Baseline đọc tệp | ${analysis.metrics.baselineTokens.toLocaleString()} tokens |
-| Token tiết kiệm | ${analysis.metrics.tokensSaved.toLocaleString()} tokens |
-| Lượt đọc tệp tránh được | ${analysis.metrics.fileReadsAvoided} |
-
-> Các số token là ước tính theo kích thước context và số tệp ứng viên, không phải số billing của model.
+${tokenSection(analysis, true)}
 
 ## Bằng chứng và giới hạn
 
@@ -702,9 +808,10 @@ Kết quả test và dependency được lấy từ index CodeBrain hiện tại
 
   return `# Change impact analysis
 
+${truncationNotice(analysis, false)}
 ## Verdict
 
-**Impact level: ${risk} (${assessment.score}/${assessment.maxScore}).** CodeBrain traversed ${analysis.totalDependentsTraversed} dependents and detected ${analysis.affectedTests.length} affected test file(s).
+**Impact level: ${risk} (${assessment.score}/${assessment.maxScore}).** CodeBrain traversed ${analysis.depthTruncated === true ? 'at least ' : ''}${analysis.totalDependentsTraversed} dependents and detected ${analysis.affectedTests.length} affected test file(s).
 
 - Evidence confidence: **${confidenceLabel(assessment.confidence, false)}**
 - Test status: **${coverageLabel(assessment.coverage, false)}**
@@ -734,22 +841,16 @@ ${listOrNone(analysis.affectedTests, 'No affected tests were detected in the ind
 ## Blast radius
 
 - Changed files: **${analysis.changedFiles.length}**
-- Dependents traversed: **${analysis.totalDependentsTraversed}**
+- Dependents traversed: **${analysis.depthTruncated === true ? '≥ ' : ''}${analysis.totalDependentsTraversed}**
 - Affected tests: **${analysis.affectedTests.length}**
 - Nodes shown in graph: **${analysis.nodes.length}**
+- Depth limit: **${analysis.depthLimit}**${analysis.depthTruncated === true ? ' (reached — result truncated)' : analysis.depthTruncated === false ? ' (not reached)' : ''}
 - Analysis latency: **${analysis.metrics.latencyMs} ms**
 - Runtime: **${analysis.runtimeTarget} · ${analysis.nativeKernel ? 'Rust native kernel' : 'WASM fallback'}**
 
-## Token savings (estimated)
+## Context cost comparison
 
-| Metric | Value |
-|---|---:|
-| CodeBrain context | ${analysis.metrics.contextTokens.toLocaleString()} tokens |
-| File-reading baseline | ${analysis.metrics.baselineTokens.toLocaleString()} tokens |
-| Tokens saved | ${analysis.metrics.tokensSaved.toLocaleString()} tokens |
-| File reads avoided | ${analysis.metrics.fileReadsAvoided} |
-
-> Token values are estimates based on context size and candidate-file count, not model billing data.
+${tokenSection(analysis, false)}
 
 ## Evidence and limits
 

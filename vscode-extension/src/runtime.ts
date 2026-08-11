@@ -25,6 +25,13 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
   token?: vscode.CancellationToken;
   maxOutputCharacters?: number;
+  /**
+   * Called with each stdout chunk as it arrives. Lets long-running commands
+   * such as `init` report real progress instead of showing a static spinner.
+   */
+  onStdout?: (chunk: string) => void;
+  /** Called with each stderr chunk as it arrives. */
+  onStderr?: (chunk: string) => void;
 }
 
 function runtimeTarget(): string {
@@ -108,9 +115,24 @@ export async function runProcess(
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout = append(stdout, chunk);
+      if (options.onStdout) {
+        // Progress reporting must never be able to kill the child process.
+        try {
+          options.onStdout(chunk.toString('utf8'));
+        } catch {
+          // Ignore listener failures.
+        }
+      }
     });
     child.stderr.on('data', (chunk: Buffer) => {
       stderr = append(stderr, chunk);
+      if (options.onStderr) {
+        try {
+          options.onStderr(chunk.toString('utf8'));
+        } catch {
+          // Ignore listener failures.
+        }
+      }
     });
 
     const cancellation = options.token?.onCancellationRequested(() => {
