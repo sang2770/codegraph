@@ -1,14 +1,14 @@
 {
-  "name": "codebrain",
-  "displayName": "CodeBrain",
-  "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, read-only AI review, and read-only Jira + Confluence (Collab) search shared across Copilot, Claude Code, Codex and Antigravity.",
-  "version": "1.2.0",
-  "publisher": "codebrain",
+  "name": "codebrain-lge",
+  "displayName": "CodeBrain LGE",
+  "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
+  "version": "2.0.3",
+  "publisher": "sang2nguyen-LGE",
   "license": "MIT",
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/colbymchenry/codegraph.git",
+    "url": "https://github.com/sang2770/codegraph.git",
     "directory": "vscode-extension"
   },
   "engines": {
