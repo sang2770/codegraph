@@ -133,6 +133,24 @@ Use the custom agent **CodeBrain Reviewer** in VS Code Chat. It is granted CodeB
 ### 📄 Exportable Markdown Reports
 Save generated reviews or explanations using the command **CodeBrain: Export Latest Report as Markdown**. Keep a lightweight record of complex analysis to review, share, or feed back to other AI models.
 
+### 🔗 Jira & Confluence (Collab) Search for Every Agent
+CodeBrain ships a second, read-only MCP server that lets an agent search your team's Confluence (Collab) and Jira from inside the task it is already working on — the ticket behind a branch name, the spec behind a design decision, the discussion that explains why the code looks the way it does.
+
+Five tools, all read-only: `confluence_search`, `confluence_get_page`, `jira_search`, `jira_get_issue`, `jira_get_comments`. Page bodies and issue descriptions come back in full, so the agent does not have to ask you to paste anything. Nothing in the server can create, edit, or transition an issue.
+
+**Setup — once, for all agents:**
+
+1. Run **CodeBrain: Configure Atlassian (Collab + Jira)** and enter the base URLs and your personal access tokens.
+   - Server / Data Center: create a token under *Profile → Personal Access Tokens*.
+   - Cloud: use an API token and enter your account email when prompted. Confluence Cloud URLs must include the `/wiki` context path.
+   - You can configure only Jira, only Confluence, or both — tools for an unconfigured product are never shown to the agent.
+2. GitHub Copilot picks the server up immediately, with no config file to edit.
+3. For **Claude Code**, **Codex CLI**, or **Antigravity**, run **CodeBrain: Register Atlassian MCP with Agents** and pick the ones you use, then restart that agent.
+
+**Where your credentials live:** tokens go into the OS keychain via VS Code SecretStorage, and are mirrored once to `~/.codebrain/atlassian.env` (owner-only, mode `0600`) — the only way agents outside VS Code can read them. Every agent config file CodeBrain writes contains just the command to run, so a committed `.mcp.json` never leaks a token. **CodeBrain: Clear Atlassian Credentials** removes both copies; **CodeBrain: Unregister Atlassian MCP from Agents** removes the config entries.
+
+Use **CodeBrain: Test Atlassian Connection** to verify access; results also go to the **CodeBrain Atlassian** output channel.
+
 ---
 
 ## ⚙️ Configuration Settings
@@ -152,6 +170,12 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 | `codebrain.tests.command` | `""` | Command for **Run Affected Tests**, using `${files}`. Empty detects the runner and confirms first. |
 | `codebrain.metrics.enabled` | `true` | Record local token savings and analytics. |
 | `codebrain.reports.openPreview` | `true` | Automatically open generated Markdown reports in preview mode. |
+| `codebrain.atlassian.jiraUrl` | `""` | Jira base URL, e.g. `https://jira.example.com`. Tokens are stored in the OS keychain, never here. |
+| `codebrain.atlassian.confluenceUrl` | `""` | Confluence (Collab) base URL **including its context path**, e.g. `https://site.atlassian.net/wiki`. |
+| `codebrain.atlassian.username` | `""` | Atlassian account email. Cloud only — Server/Data Center tokens need no username. |
+| `codebrain.atlassian.maxResults` | `10` | Default number of issues, pages, or comments per search (max 50). |
+| `codebrain.atlassian.maxBodyCharacters` | `12000` | Max characters of a page body or issue description per tool call; longer content is truncated with a visible note. |
+| `codebrain.atlassian.sslVerify` | `true` | Verify the TLS certificate of the Jira/Confluence hosts. Disable only for a private certificate authority. |
 
 ---
 
@@ -170,6 +194,11 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - `CodeBrain: Reset Token Savings` — Clear metrics history.
 - `CodeBrain: Restore Dismissed Review Findings` — Bring back dismissed findings.
 - `CodeBrain: Export Latest Report as Markdown` — Export findings.
+- `CodeBrain: Configure Atlassian (Collab + Jira)` — Enter the base URLs and personal access tokens for Jira and Confluence.
+- `CodeBrain: Register Atlassian MCP with Agents` — Add the Atlassian MCP server to Claude Code, Codex CLI, and/or Antigravity.
+- `CodeBrain: Unregister Atlassian MCP from Agents` — Remove those config entries.
+- `CodeBrain: Test Atlassian Connection` — Make one authenticated call per configured product and report the result.
+- `CodeBrain: Clear Atlassian Credentials` — Forget the tokens, URLs, and the shared credentials file.
 
 ---
 
@@ -192,4 +221,9 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - **Configured Model Unavailable**: Clear `codebrain.ai.model` or replace it with the model id shown by **CodeBrain: Choose AI Model**.
 - **No Inline Findings**: Inline diagnostics require the model to emit file/line finding markers; the full Markdown review is still available in the temporary preview report.
 - **WASM Fallback Warning**: If you see a warning that CodeBrain is using WASM fallback, your installed `.vsix` may not match your system architecture. The extension will still work but without the performance acceleration of the native Rust kernel.
-- **Logs**: Open VS Code Output view and select **CodeBrain** from the dropdown menu to inspect stdout, stderr, and execution logs.
+- **Atlassian Tools Missing in Copilot**: The Atlassian server only appears once a product is fully configured — both a base URL and a token. Run **CodeBrain: Configure Atlassian (Collab + Jira)**, then **CodeBrain: Test Atlassian Connection**.
+- **Atlassian Tools Missing in Claude Code / Codex / Antigravity**: Run **CodeBrain: Register Atlassian MCP with Agents** and restart the agent. Claude Code entries are project-scoped (`<workspace>/.mcp.json`), so a different folder needs its own registration.
+- **Atlassian Token Rejected (401)**: Server/Data Center tokens authenticate as a bearer token with no username; Cloud API tokens need your account email in `codebrain.atlassian.username`. Re-run the configure command to replace a rotated token.
+- **Confluence Returns 404 for Everything**: A Cloud Confluence URL must include the `/wiki` context path (`https://site.atlassian.net/wiki`).
+- **Atlassian Host Behind a Private CA**: Set `codebrain.atlassian.sslVerify` to `false`, or export `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false` for agents launched outside VS Code.
+- **Logs**: Open VS Code Output view and select **CodeBrain** from the dropdown menu to inspect stdout, stderr, and execution logs. Atlassian setup and connection tests log to the **CodeBrain Atlassian** channel.

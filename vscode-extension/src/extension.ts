@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { runAffectedTests } from './affectedTests';
+import { AtlassianIntegration } from './atlassianSetup';
 import { BlastRadiusLensProvider } from './blastRadiusLens';
 import { registerChatParticipant } from './chat';
 import { GraphCache } from './graphCache';
@@ -21,7 +22,14 @@ import { editReviewInstructions, selectReviewProfile } from './reviewInstruction
 export function activate(context: vscode.ExtensionContext): void {
   try {
     const runtime = validateBundledRuntime(context);
-    registerMcpProvider(context, runtime);
+
+    const atlassian = new AtlassianIntegration(context, runtime);
+    context.subscriptions.push(atlassian);
+    registerMcpProvider(context, runtime, atlassian);
+    // An extension update moves the bundled server's path, which breaks the
+    // entry every already-registered agent holds. Repair those in the
+    // background rather than making the user re-run the register command.
+    void atlassian.refreshInstalledTargets();
 
     const metrics = new MetricsStore(context);
     const reports = new ReportManager(context);
@@ -74,6 +82,21 @@ export function activate(context: vscode.ExtensionContext): void {
       ),
       vscode.commands.registerCommand('codebrain.selectModel', () =>
         chooseCodeBrainModel(),
+      ),
+      vscode.commands.registerCommand('codebrain.configureAtlassian', () =>
+        atlassian.configure(),
+      ),
+      vscode.commands.registerCommand('codebrain.registerAtlassianMcp', () =>
+        atlassian.install(),
+      ),
+      vscode.commands.registerCommand('codebrain.unregisterAtlassianMcp', () =>
+        atlassian.remove(),
+      ),
+      vscode.commands.registerCommand('codebrain.testAtlassianConnection', () =>
+        atlassian.testConnection(),
+      ),
+      vscode.commands.registerCommand('codebrain.clearAtlassianCredentials', () =>
+        atlassian.clear(),
       ),
       vscode.commands.registerCommand('codebrain.editReviewInstructions', () =>
         editReviewInstructions(),

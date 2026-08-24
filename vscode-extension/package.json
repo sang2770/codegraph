@@ -1,7 +1,7 @@
 {
   "name": "codebrain",
   "displayName": "CodeBrain",
-  "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
+  "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, read-only AI review, and read-only Jira + Confluence (Collab) search shared across Copilot, Claude Code, Codex and Antigravity.",
   "version": "1.2.0",
   "publisher": "codebrain",
   "license": "MIT",
@@ -25,7 +25,10 @@
     "copilot",
     "code intelligence",
     "code review",
-    "call graph"
+    "call graph",
+    "jira",
+    "confluence",
+    "atlassian"
   ],
   "extensionKind": [
     "workspace"
@@ -48,7 +51,12 @@
     "onCommand:codebrain.restoreDismissedFindings",
     "onCommand:codebrain.openWorkflowGraph",
     "onCommand:codebrain.showTokenSavings",
-    "onCommand:codebrain.exportLatestMarkdown"
+    "onCommand:codebrain.exportLatestMarkdown",
+    "onCommand:codebrain.configureAtlassian",
+    "onCommand:codebrain.registerAtlassianMcp",
+    "onCommand:codebrain.unregisterAtlassianMcp",
+    "onCommand:codebrain.testAtlassianConnection",
+    "onCommand:codebrain.clearAtlassianCredentials"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -245,6 +253,29 @@
         "command": "codebrain.replyToFinding",
         "title": "Ask CodeBrain about this finding",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "codebrain.configureAtlassian",
+        "title": "CodeBrain: Configure Atlassian (Collab + Jira)",
+        "icon": "$(key)"
+      },
+      {
+        "command": "codebrain.registerAtlassianMcp",
+        "title": "CodeBrain: Register Atlassian MCP with Agents",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "codebrain.unregisterAtlassianMcp",
+        "title": "CodeBrain: Unregister Atlassian MCP from Agents"
+      },
+      {
+        "command": "codebrain.testAtlassianConnection",
+        "title": "CodeBrain: Test Atlassian Connection",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "codebrain.clearAtlassianCredentials",
+        "title": "CodeBrain: Clear Atlassian Credentials"
       }
     ],
     "menus": {
@@ -432,6 +463,46 @@
           "type": "boolean",
           "default": true,
           "description": "Probe one level past codebrain.impact.maxDepth to detect whether the dependency traversal was cut short. When it was, CodeBrain reports the dependent counts as a lower bound instead of presenting them as complete."
+        },
+        "codebrain.atlassian.jiraUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Jira base URL for the bundled Atlassian MCP server, for example `https://jira.example.com` (Cloud: `https://your-site.atlassian.net`). Set the token with \"CodeBrain: Configure Atlassian (Collab + Jira)\" — tokens are stored in the OS keychain, never in settings.",
+          "scope": "application"
+        },
+        "codebrain.atlassian.confluenceUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Confluence (Collab) base URL **including its context path**, for example `https://collab.example.com` (Cloud: `https://your-site.atlassian.net/wiki`).",
+          "scope": "application"
+        },
+        "codebrain.atlassian.username": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Atlassian account email. Required only for Cloud, where an API token authenticates as `email:token`. Leave empty for Server/Data Center personal access tokens, which authenticate as a bearer token.",
+          "scope": "application"
+        },
+        "codebrain.atlassian.maxResults": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Default number of Jira issues, Confluence pages, or comments returned per search.",
+          "scope": "application"
+        },
+        "codebrain.atlassian.maxBodyCharacters": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Maximum characters of a Confluence page body or Jira description returned in one tool call. Longer content is truncated with an explicit note so the agent knows the text was cut.",
+          "scope": "application"
+        },
+        "codebrain.atlassian.sslVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify the TLS certificate of the Jira and Confluence hosts. Turn this off only for an internal deployment behind a private certificate authority.",
+          "scope": "application"
         },
         "codebrain.tests.command": {
           "type": "string",

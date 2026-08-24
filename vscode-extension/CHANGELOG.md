@@ -2,6 +2,17 @@
 
 All notable changes to the CodeBrain VS Code extension are documented here.
 
+## [Unreleased]
+
+### New Features
+
+- CodeBrain now ships a second, read-only MCP server for **Jira and Confluence (Collab)**, so an agent can look up the ticket behind a branch, the spec behind a design decision, or the discussion that explains why the code looks the way it does — without leaving the task. It offers five tools: search Confluence, read a full page, search Jira with free text or JQL, read a full issue with its comment thread, and read just the comments. Nothing in the server can create, edit, or transition anything.
+- One setup covers every agent. Run **CodeBrain: Configure Atlassian (Collab + Jira)** to enter the base URLs and personal access tokens; GitHub Copilot picks the server up immediately, and **CodeBrain: Register Atlassian MCP with Agents** adds it to Claude Code, Codex CLI, and Antigravity. Both Server/Data Center (personal access tokens) and Cloud (API token plus account email) are supported.
+- Tokens are stored in the OS keychain and mirrored once to a private, owner-only credentials file — the only way agents outside VS Code can read them. The config file CodeBrain writes for each agent contains just the command to run, so a committed `.mcp.json` never leaks a token. **CodeBrain: Clear Atlassian Credentials** and **CodeBrain: Unregister Atlassian MCP from Agents** undo each half independently.
+- Added **CodeBrain: Test Atlassian Connection**, which makes one authenticated call per configured product and reports exactly what failed — a rejected token, a missing context path, an unreachable host behind a private certificate authority.
+- Agent configs registered with CodeBrain are repaired automatically after an extension update, so an upgrade no longer silently breaks the server for Claude Code, Codex, or Antigravity.
+- Tools for a product you did not configure are never shown to the agent, and a page body or issue description that has to be shortened says so explicitly instead of just ending.
+
 ## [1.2.0] - 2026-08-11
 
 ### New Features

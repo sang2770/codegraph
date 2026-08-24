@@ -353,6 +353,31 @@ CodeBrain: Export Latest Report as Markdown
 
 Markdown giữ nguyên heading, tables, code blocks và Mermaid chart. File nhẹ, có thể preview trực tiếp trong VS Code, đọc lại bằng AI và review bằng Git diff.
 
+## 10b. Tìm kiếm Collab (Confluence) và Jira cho mọi agent
+
+CodeBrain đóng gói thêm một MCP server **chỉ đọc** cho Jira và Confluence (Collab), để agent tra cứu ngay trong lúc làm việc: ticket đứng sau tên branch, spec đứng sau một quyết định thiết kế, thảo luận giải thích vì sao code lại như vậy.
+
+Năm tool, tất cả đều read-only: `confluence_search`, `confluence_get_page`, `jira_search`, `jira_get_issue`, `jira_get_comments`. Nội dung page và description của issue trả về đầy đủ nên agent không cần bạn copy/paste. Server không có bất kỳ đường nào để tạo, sửa hay transition issue.
+
+### Cấu hình một lần, dùng cho tất cả agent
+
+1. Chạy **CodeBrain: Configure Atlassian (Collab + Jira)**, nhập base URL và personal access token.
+   - Server / Data Center: tạo token ở *Profile → Personal Access Tokens*.
+   - Cloud: dùng API token và nhập email tài khoản khi được hỏi. URL Confluence Cloud phải có context path `/wiki`.
+   - Có thể cấu hình chỉ Jira, chỉ Confluence, hoặc cả hai — tool của sản phẩm chưa cấu hình sẽ không hiện ra với agent.
+2. GitHub Copilot nhận server ngay, không cần sửa file config nào.
+3. Với **Claude Code**, **Codex CLI** hoặc **Antigravity**: chạy **CodeBrain: Register Atlassian MCP with Agents**, chọn agent đang dùng, rồi restart agent đó.
+
+### Token được lưu ở đâu
+
+Token nằm trong keychain của hệ điều hành (VS Code SecretStorage) và được ghi thêm một bản duy nhất vào `~/.codebrain/atlassian.env` (quyền `0600`, chỉ owner đọc được) — đây là cách duy nhất để các agent ngoài VS Code đọc được. File config của agent mà CodeBrain ghi ra **chỉ chứa câu lệnh chạy server**, nên `.mcp.json` có commit vào repo cũng không lộ token.
+
+- **CodeBrain: Test Atlassian Connection** — gọi thử một request đã xác thực cho từng sản phẩm.
+- **CodeBrain: Unregister Atlassian MCP from Agents** — xoá entry khỏi config của các agent.
+- **CodeBrain: Clear Atlassian Credentials** — xoá token, URL và file credentials dùng chung.
+
+Log của phần này nằm ở Output channel **CodeBrain Atlassian**.
+
 ## 11. Tự động nhận diện ngôn ngữ
 
 Chat participant phát hiện ngôn ngữ từ tin nhắn mới nhất.
@@ -390,6 +415,18 @@ Thêm vào `.vscode/settings.json`:
   "codebrain.codeLens.enabled": true,
   "codebrain.metrics.enabled": true,
   "codebrain.reports.openPreview": true
+}
+```
+
+Nếu dùng phần Collab + Jira, thêm (token **không** đặt ở đây — nhập qua command để lưu vào keychain):
+
+```json
+{
+  "codebrain.atlassian.jiraUrl": "https://jira.example.com",
+  "codebrain.atlassian.confluenceUrl": "https://collab.example.com",
+  "codebrain.atlassian.maxResults": 10,
+  "codebrain.atlassian.maxBodyCharacters": 12000,
+  "codebrain.atlassian.sslVerify": true
 }
 ```
 
@@ -457,6 +494,26 @@ Kiểm tra:
 ### Chat không hoạt động
 
 `/explain`, `/review` và `/impact` trong Chat cần một chat model đang được VS Code cung cấp. Các command index, Workflow Graph, affected-test detection, dashboard và export không phụ thuộc vào chat model.
+
+### Copilot không thấy tool Jira/Confluence
+
+Server Atlassian chỉ xuất hiện khi một sản phẩm đã cấu hình **đủ** base URL và token. Chạy **CodeBrain: Configure Atlassian (Collab + Jira)**, sau đó **CodeBrain: Test Atlassian Connection**.
+
+### Claude Code / Codex / Antigravity không thấy tool
+
+Chạy **CodeBrain: Register Atlassian MCP with Agents** rồi restart agent. Entry của Claude Code theo phạm vi project (`<workspace>/.mcp.json`), nên mở folder khác thì phải đăng ký lại.
+
+### Token bị từ chối (401)
+
+Token Server/Data Center xác thực dạng bearer, không cần username. API token của Cloud cần email tài khoản trong `codebrain.atlassian.username`. Token đã rotate thì chạy lại command configure.
+
+### Confluence trả 404 với mọi request
+
+URL Confluence Cloud phải có context path `/wiki`, ví dụ `https://site.atlassian.net/wiki`.
+
+### Host Atlassian dùng CA nội bộ
+
+Đặt `codebrain.atlassian.sslVerify` thành `false`, hoặc export `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false` cho agent chạy ngoài VS Code.
 
 ### Runtime báo WASM fallback
 

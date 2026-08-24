@@ -32,6 +32,11 @@ This compiles the TypeScript files and bundles the extension using esbuild:
 npm run build
 ```
 
+This produces **two** bundles:
+
+- `dist/extension.js` — the extension host entry point (`vscode` stays external).
+- `dist/atlassian-server.js` — the standalone stdio MCP server for Jira and Confluence. It runs as its own process, spawned by VS Code for Copilot and directly from their config files by Claude Code, Codex, and Antigravity, so it must never import `vscode`. That import is *not* marked external for this bundle, which turns an accidental dependency on the extension host into a build failure rather than a runtime crash inside an agent the user cannot debug.
+
 ### Build and Stage Runtime
 This builds and packages the platform-specific CodeBrain runtime for the current machine:
 ```bash
@@ -62,6 +67,25 @@ To run TypeScript compilation checks and the extension integration tests (tests 
 ```bash
 npm test
 ```
+
+### Atlassian MCP Server, By Hand
+The stdio server can be driven without VS Code or an agent. Point it at a
+credentials file and speak JSON-RPC on stdin, one message per line:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"jira_search","arguments":{"query":"rollback","limit":3}}}' \
+| CODEBRAIN_ATLASSIAN_ENV=/path/to/atlassian.env node dist/atlassian-server.js
+```
+
+Diagnostics go to stderr; stdout carries protocol traffic only. Useful
+environment overrides: `CODEBRAIN_ATLASSIAN_ENV` (credentials file path),
+`CODEBRAIN_ATLASSIAN_MAX_RESULTS`, `CODEBRAIN_ATLASSIAN_MAX_BODY_CHARS`,
+`CODEBRAIN_ATLASSIAN_TIMEOUT_MS`, `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false`. The
+four `JIRA_*` / `CONFLUENCE_*` variables also work directly and take precedence
+over the file.
 
 ### Packaged-Runtime Smoke Test
 You can manually run a smoke test against the packaged runtime:
