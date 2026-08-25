@@ -108,7 +108,8 @@ function run(command, args, options = {}) {
  */
 function resolveVsce() {
   const local = join(extensionRoot, 'node_modules', '@vscode', 'vsce', 'vsce');
-  if (existsSync(local)) {
+  const useGlobal = process.env.CODEBRAIN_USE_GLOBAL_VSCE === '1';
+  if (!useGlobal && existsSync(local)) {
     return { command: process.execPath, prefix: [local], label: local };
   }
 
@@ -240,7 +241,7 @@ export async function verifyPackage(vsix, target) {
     throw new Error(`${vsix} does not contain the ${target} runtime launcher.`);
   }
 
-  if (!target.startsWith('win32-')) {
+  if (!target.startsWith('win32-') && process.platform !== 'win32') {
     // The mode a Linux user's install starts from, read from the archive
     // itself rather than from the staging directory we set it in.
     const mode = (launcher.externalFileAttributes >>> 16) & 0o7777;
@@ -250,6 +251,11 @@ export async function verifyPackage(vsix, target) {
           'Package this target from macOS or Linux.',
       );
     }
+  } else if (!target.startsWith('win32-')) {
+    console.warn(
+      `[publish] ${vsix} was packaged on Windows; POSIX execute-bit verification skipped. ` +
+        'The extension will restore it on first run.',
+    );
   }
 }
 

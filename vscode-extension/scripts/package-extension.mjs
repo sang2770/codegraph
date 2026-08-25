@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -26,6 +26,10 @@ function run(command, args) {
     cwd: extensionRoot,
     stdio: 'inherit',
     env: process.env,
+    // npm.cmd and npx.cmd are Windows command shims. Node 24 rejects direct
+    // spawnSync() calls for .cmd files with EINVAL unless shell execution is
+    // enabled.
+    shell: process.platform === 'win32',
   });
   if (result.error) {
     throw result.error;
@@ -35,23 +39,53 @@ function run(command, args) {
   }
 }
 
-for (const target of targets) {
+// Keep the backup on the same volume as the extension. Windows cannot rename
+// a directory across volumes (for example, from D: to the user's C: temp).
+const runtimeBackupRoot = mkdtempSync(
+  join(extensionRoot, '.runtime-package-'),
+);
+
+function hideOtherRuntimes(target) {
+  const hiddenTargets = [];
   if (existsSync(runtimeRoot)) {
     for (const otherTarget of SUPPORTED_TARGETS) {
       if (otherTarget !== target) {
-        rmSync(join(runtimeRoot, otherTarget), { recursive: true, force: true });
+        const runtimePath = join(runtimeRoot, otherTarget);
+        if (existsSync(runtimePath)) {
+          const backupPath = join(runtimeBackupRoot, otherTarget);
+          mkdirSync(runtimeBackupRoot, { recursive: true });
+          renameSync(runtimePath, backupPath);
+          hiddenTargets.push({ runtimePath, backupPath });
+        }
       }
     }
   }
 
-  run(process.execPath, ['./scripts/build-runtime.mjs', target]);
-  run(npmCommand, ['run', 'build']);
-  run(npxCommand, [
-    'vsce',
-    'package',
-    '--target',
-    target,
-    '--out',
-    `codebrain-${target}.vsix`,
-  ]);
+  return () => {
+    for (const { runtimePath, backupPath } of hiddenTargets) {
+      renameSync(backupPath, runtimePath);
+    }
+  };
+}
+
+try {
+  for (const target of targets) {
+    const restoreRuntimes = hideOtherRuntimes(target);
+    try {
+      run(process.execPath, ['./scripts/build-runtime.mjs', target]);
+      run(npmCommand, ['run', 'build']);
+      run(npxCommand, [
+        'vsce',
+        'package',
+        '--target',
+        target,
+        '--out',
+        `codebrain-${target}.vsix`,
+      ]);
+    } finally {
+      restoreRuntimes();
+    }
+  }
+} finally {
+  rmSync(runtimeBackupRoot, { recursive: true, force: true });
 }
