@@ -52,6 +52,11 @@
     "onCommand:codebrain.openWorkflowGraph",
     "onCommand:codebrain.showTokenSavings",
     "onCommand:codebrain.exportLatestMarkdown",
+    "onCommand:codebrain.generateCommitMessage",
+    "onCommand:codebrain.selectCommitFormat",
+    "onCommand:codebrain.editCommitTemplate",
+    "onCommand:codebrain.registerMcp",
+    "onCommand:codebrain.unregisterMcp",
     "onCommand:codebrain.configureAtlassian",
     "onCommand:codebrain.registerAtlassianMcp",
     "onCommand:codebrain.unregisterAtlassianMcp",
@@ -255,6 +260,30 @@
         "icon": "$(comment-discussion)"
       },
       {
+        "command": "codebrain.generateCommitMessage",
+        "title": "CodeBrain: Generate Commit Message",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "codebrain.selectCommitFormat",
+        "title": "CodeBrain: Choose Commit Message Format",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "codebrain.editCommitTemplate",
+        "title": "CodeBrain: Customize Commit Message Template",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "codebrain.registerMcp",
+        "title": "CodeBrain: Install CodeBrain for Agents (Claude, Codex, Gemini…)",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "codebrain.unregisterMcp",
+        "title": "CodeBrain: Uninstall CodeBrain from Agents"
+      },
+      {
         "command": "codebrain.configureAtlassian",
         "title": "CodeBrain: Configure Atlassian (Collab + Jira)",
         "icon": "$(key)"
@@ -317,6 +346,11 @@
       ],
       "scm/title": [
         {
+          "command": "codebrain.generateCommitMessage",
+          "group": "navigation@1",
+          "when": "scmProvider == git"
+        },
+        {
           "command": "codebrain.analyzeImpact",
           "group": "navigation"
         },
@@ -327,6 +361,16 @@
         {
           "command": "codebrain.runAffectedTests",
           "group": "navigation"
+        },
+        {
+          "command": "codebrain.selectCommitFormat",
+          "group": "1_modification",
+          "when": "scmProvider == git"
+        },
+        {
+          "command": "codebrain.editCommitTemplate",
+          "group": "1_modification",
+          "when": "scmProvider == git"
         }
       ],
       "commandPalette": [
@@ -415,6 +459,42 @@
           "type": "string",
           "default": ".codebrain/review-instructions.md",
           "description": "Workspace-relative Markdown file with additional CodeBrain review priorities. Core review safety rules cannot be overridden.",
+          "scope": "resource"
+        },
+        "codebrain.commit.format": {
+          "type": "string",
+          "default": "conventional",
+          "enum": [
+            "conventional",
+            "issue-summary",
+            "plain"
+          ],
+          "enumDescriptions": [
+            "feat(auth): add refresh tokens — Conventional Commits.",
+            "TPLD-958: Fix Chart lag issue — issue key from the branch name, a blank line, then a nested detail list.",
+            "Fix chart lag when the window is resized — one imperative sentence, body only when it earns one."
+          ],
+          "description": "Commit message format CodeBrain writes. A custom template file, when the repository has one, overrides this.",
+          "scope": "resource"
+        },
+        "codebrain.commit.language": {
+          "type": "string",
+          "default": "",
+          "description": "Language for generated commit messages, for example \"Vietnamese\". Leave empty to let the model follow the repository's existing history.",
+          "scope": "resource"
+        },
+        "codebrain.commit.templateFile": {
+          "type": "string",
+          "default": ".codebrain/commit-template.md",
+          "description": "Workspace-relative Markdown file holding the commit message instructions CodeBrain sends to the model. Commit it to share one convention with your team. Falls back to the built-in Conventional Commits template when the file is missing.",
+          "scope": "resource"
+        },
+        "codebrain.commit.maxDiffCharacters": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 2000,
+          "maximum": 400000,
+          "description": "Maximum diff size sent when generating a commit message. A truncated diff is reported to the model so it does not describe changes it cannot see.",
           "scope": "resource"
         },
         "codebrain.review.profile": {

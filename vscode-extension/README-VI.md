@@ -343,6 +343,28 @@ Kiểm tra blast radius của authentication middleware
 Các test nào cần chạy trước khi release thay đổi này?
 ```
 
+## 9b. Sinh commit message
+
+Bấm **icon ngôi sao** trên thanh tiêu đề Source Control, CodeBrain viết commit message thẳng vào ô nhập.
+
+Nội dung mô tả các thay đổi **đã staged** — đúng những gì commit tới sẽ chứa — và nếu chưa staged gì thì lấy toàn bộ working tree. Nếu ô nhập đang có chữ, thông báo sẽ kèm nút **Undo** để khôi phục lại.
+
+**Theo convention của bạn, không phải của chúng tôi.** Chạy **CodeBrain: Choose Commit Message Format** (cũng có trong menu `⋯` của Source Control) rồi chọn một kiểu — danh sách hiện ví dụ thật chứ không bắt bạn đoán qua cái tên:
+
+| Format | Trông như |
+| :--- | :--- |
+| Conventional Commits | `feat(auth): add refresh tokens` |
+| Issue key + summary | `TPLD-958: Fix Chart lag issue`, một dòng trống, rồi danh sách chi tiết lồng nhau `-` / `+` / `*` |
+| Plain summary | `Fix chart lag when the window is resized` |
+
+Đặt `codebrain.commit.language` để viết bằng ngôn ngữ khác, ví dụ `Vietnamese`. Tên biến, đường dẫn và mã issue được giữ nguyên.
+
+Prompt còn mang theo **tên branch hiện tại** và vài commit subject gần nhất, nên format có thể lấy mã issue từ `feature/TPLD-958-chart-lag` và bám theo style sẵn có trong repo. Branch không có mã issue thì bỏ hẳn tiền tố chứ không bịa ra.
+
+**Không format nào vừa ý?** Chọn **Custom template…** ngay trong danh sách đó (hoặc chạy **CodeBrain: Customize Commit Message Template**) để tạo `.codebrain/commit-template.md`, file được điền sẵn theo format đang dùng nên bạn sửa từ nội dung chạy được chứ không phải trang trắng. File đó **thay thế** format có sẵn — xoá luật nào là luật đó hết hiệu lực — và được đọc từ git repo root, nên commit vào repo là cả team dùng chung một convention. Xoá file thì quay lại dùng picker. Muốn để file ở chỗ khác thì đổi `codebrain.commit.templateFile`.
+
+Message dùng model chọn ở **CodeBrain: Choose AI Model**.
+
 ## 10. Export báo cáo
 
 Sau khi chạy `/explain`, `/review` hoặc `/impact`, dùng:
@@ -352,6 +374,37 @@ CodeBrain: Export Latest Report as Markdown
 ```
 
 Markdown giữ nguyên heading, tables, code blocks và Mermaid chart. File nhẹ, có thể preview trực tiếp trong VS Code, đọc lại bằng AI và review bằng Git diff.
+
+## 10a. CodeBrain cho mọi agent — MCP server + Skill
+
+Agent cần hai thứ để dùng CodeBrain hiệu quả: **MCP server** cung cấp tool đồ thị, và **skill** cho agent biết khi nào và dùng tool đó ra sao. Trong VS Code, Copilot nhận cả hai trực tiếp từ extension. Các agent khác đọc file riêng của chúng, nên hãy chạy **CodeBrain: Install CodeBrain for Agents (Claude, Codex, Gemini…)**, chọn phạm vi, chọn cài gì, tích agent đang dùng, rồi restart agent đó.
+
+**MCP server**
+
+| Agent | Global — mọi project | Chỉ workspace này |
+| :--- | :--- | :--- |
+| Claude Code | `~/.claude.json` | `<workspace>/.mcp.json` |
+| Codex CLI | `~/.codex/config.toml` | — |
+| Gemini CLI | `~/.gemini/settings.json` | `<workspace>/.gemini/settings.json` |
+| Antigravity | `~/.gemini/config/mcp_config.json` | — |
+
+**Skill** — cài bằng đúng cơ chế gốc của từng agent nếu agent đó có, vì skill hay slash command chỉ được nạp khi thật sự cần, còn file instructions thì nạp vào **mọi** request:
+
+| Agent | Cơ chế | Global | Chỉ workspace này |
+| :--- | :--- | :--- | :--- |
+| Claude Code | skill | `~/.claude/skills/codebrain/SKILL.md` | `<workspace>/.claude/skills/codebrain/SKILL.md` |
+| Codex CLI | prompt — gõ `/codebrain` | `~/.codex/prompts/codebrain.md` | — |
+| Gemini CLI | command — gõ `/codebrain` | `~/.gemini/commands/codebrain.toml` | `<workspace>/.gemini/commands/codebrain.toml` |
+| Antigravity | mục trong instructions | `~/.gemini/GEMINI.md` | — |
+| GitHub Copilot | mục trong instructions | — | `<workspace>/.github/copilot-instructions.md` |
+
+Mọi agent nhận cùng một nội dung — `skills/codebrain/SKILL.md`, đúng file Copilot đang dùng — nên không có bản sao thứ hai để lệch nhau. Phần ghi vào file instructions được bọc trong marker `<!-- CODEBRAIN_SKILL_START -->` / `<!-- CODEBRAIN_SKILL_END -->`: nội dung bạn tự viết xung quanh được giữ nguyên, và khi gỡ thì chỉ mục có marker bị xoá. Copilot trong VS Code vốn đã có skill đóng gói sẵn, nên entry ở đây là để Copilot ở nơi khác dùng được — github.com, CLI, editor khác.
+
+**Chọn phạm vi nào?** Global thường là lựa chọn hợp lý: entry MCP **không** ghim đường dẫn workspace, agent khởi động server ngay trong thư mục bạn đang làm việc và CodeBrain trả lời theo project đã index gần nhất — cài một lần dùng được cho mọi repo. Chọn phạm vi workspace khi muốn nó đi kèm repository (`.mcp.json` và các file skill commit được vì không chứa token) hoặc chỉ muốn project này thấy. Codex CLI và Antigravity không có cấu hình theo project nên chỉ hiện ở global; file instructions của Copilot thuộc về repository nên chỉ hiện ở phạm vi workspace.
+
+Mỗi entry MCP trỏ tới runtime đóng gói sẵn trong extension, nên không cần cài Node.js, không cần `npm i -g`, và không lo PATH bị rút gọn khi agent được mở từ GUI. Repo chưa có `.codegraph/` thì server chỉ báo là chưa index; chạy **CodeBrain: Initialize Workspace** ở repo đó.
+
+Mỗi lần cập nhật extension, đường dẫn runtime đổi theo version và nội dung skill cũng có thể đổi. CodeBrain tự ghi lại những gì nó đã tạo ở lần activate kế tiếp — đúng phạm vi bạn đã cài — nên agent vẫn chạy sau khi nâng cấp mà bạn không phải làm gì thêm. **CodeBrain: Uninstall CodeBrain from Agents** quét cả hai phạm vi và cả hai phần nên không sót gì.
 
 ## 10b. Tìm kiếm Collab (Confluence) và Jira cho mọi agent
 
@@ -366,7 +419,7 @@ Năm tool, tất cả đều read-only: `confluence_search`, `confluence_get_pag
    - Cloud: dùng API token và nhập email tài khoản khi được hỏi. URL Confluence Cloud phải có context path `/wiki`.
    - Có thể cấu hình chỉ Jira, chỉ Confluence, hoặc cả hai — tool của sản phẩm chưa cấu hình sẽ không hiện ra với agent.
 2. GitHub Copilot nhận server ngay, không cần sửa file config nào.
-3. Với **Claude Code**, **Codex CLI** hoặc **Antigravity**: chạy **CodeBrain: Register Atlassian MCP with Agents**, chọn agent đang dùng, rồi restart agent đó.
+3. Với **Claude Code**, **Codex CLI**, **Gemini CLI** hoặc **Antigravity**: chạy **CodeBrain: Register Atlassian MCP with Agents**, chọn phạm vi global hay workspace, chọn agent đang dùng, rồi restart agent đó.
 
 ### Token được lưu ở đâu
 
@@ -499,9 +552,13 @@ Kiểm tra:
 
 Server Atlassian chỉ xuất hiện khi một sản phẩm đã cấu hình **đủ** base URL và token. Chạy **CodeBrain: Configure Atlassian (Collab + Jira)**, sau đó **CodeBrain: Test Atlassian Connection**.
 
-### Claude Code / Codex / Antigravity không thấy tool
+### Claude Code / Codex / Gemini / Antigravity không thấy tool CodeBrain
 
-Chạy **CodeBrain: Register Atlassian MCP with Agents** rồi restart agent. Entry của Claude Code theo phạm vi project (`<workspace>/.mcp.json`), nên mở folder khác thì phải đăng ký lại.
+Chạy **CodeBrain: Install CodeBrain for Agents** rồi restart agent — agent chỉ đọc danh sách MCP server lúc khởi động. Đăng ký theo phạm vi workspace chỉ có tác dụng trong đúng folder đó; muốn dùng ở mọi repo thì đăng ký global.
+
+### Claude Code / Codex / Gemini / Antigravity không thấy tool Jira/Confluence
+
+Chạy **CodeBrain: Register Atlassian MCP with Agents** rồi restart agent. Ghi chú về phạm vi ở trên cũng áp dụng ở đây.
 
 ### Token bị từ chối (401)
 

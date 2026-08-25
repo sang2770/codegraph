@@ -79,6 +79,27 @@ The engine will:
 3. Classify risk levels based on fan-out, public contracts, and test coverage gaps.
 4. Check whether the traversal stopped at its depth limit. If it did, the dependent counts are reported as a **lower bound** (`≥ N`) with a visible warning, instead of being presented as the full blast radius.
 
+### ✨ Generate a Commit Message
+Click the **sparkle icon** in the Source Control title bar and CodeBrain writes the commit message straight into the message box.
+
+It describes your **staged** changes — exactly what the next commit will contain — and falls back to the whole working tree when nothing is staged yet. If the box already had text, the notification offers **Undo** to put it back.
+
+**Your convention, not ours.** Run **CodeBrain: Choose Commit Message Format** (also in the Source Control `⋯` menu) and pick one — the picker shows a real example of each rather than a name to guess at:
+
+| Format | Looks like |
+| :--- | :--- |
+| Conventional Commits | `feat(auth): add refresh tokens` |
+| Issue key + summary | `TPLD-958: Fix Chart lag issue`, a blank line, then a nested `-` / `+` / `*` detail list |
+| Plain summary | `Fix chart lag when the window is resized` |
+
+Set `codebrain.commit.language` to write in another language — `Vietnamese`, for instance. Identifiers, paths and issue keys are left as they are.
+
+The prompt also carries the **current branch name** and the last few commit subjects, so a format can take the issue key from `feature/TPLD-958-chart-lag` and match the style already in the repository. When the branch has no issue key, the prefix is dropped rather than invented.
+
+**Need something none of those cover?** Pick **Custom template…** in the same list (or run **CodeBrain: Customize Commit Message Template**) to create `.codebrain/commit-template.md`, seeded with whichever format is active so you start from working text instead of a blank page. That file *replaces* the built-in format — a rule you delete stops being applied — and it is read from the repository root, so committing it gives your whole team the same convention. Delete it to go back to the picker. `codebrain.commit.templateFile` points somewhere else if you keep conventions in another file.
+
+The message uses the model chosen with **CodeBrain: Choose AI Model**.
+
 ### 🧠 Independent AI Code Review
 Run **CodeBrain: Review Changes** from the Source Control title menu or Command Palette for a review that is independent of Copilot Review.
 
@@ -133,6 +154,36 @@ Use the custom agent **CodeBrain Reviewer** in VS Code Chat. It is granted CodeB
 ### 📄 Exportable Markdown Reports
 Save generated reviews or explanations using the command **CodeBrain: Export Latest Report as Markdown**. Keep a lightweight record of complex analysis to review, share, or feed back to other AI models.
 
+### 🔌 CodeBrain for Every Agent — MCP Server + Skill
+Two things make CodeBrain useful to an agent: the **MCP server**, which gives it the graph tools, and the **skill**, which tells it when and how to use them. Inside VS Code, Copilot gets both from the extension itself. Every other agent reads its own files, so run **CodeBrain: Install CodeBrain for Agents (Claude, Codex, Gemini…)**, choose a scope, choose what to install, tick the agents you use, and restart them.
+
+**MCP server**
+
+| Agent | Global — every project | This workspace only |
+| :--- | :--- | :--- |
+| Claude Code | `~/.claude.json` | `<workspace>/.mcp.json` |
+| Codex CLI | `~/.codex/config.toml` | — |
+| Gemini CLI | `~/.gemini/settings.json` | `<workspace>/.gemini/settings.json` |
+| Antigravity | `~/.gemini/config/mcp_config.json` | — |
+
+**Skill** — installed through each agent's own mechanism wherever it has one, because a skill or slash command is loaded only when it is relevant, while an instructions file is loaded into every single request:
+
+| Agent | Mechanism | Global | This workspace only |
+| :--- | :--- | :--- | :--- |
+| Claude Code | skill | `~/.claude/skills/codebrain/SKILL.md` | `<workspace>/.claude/skills/codebrain/SKILL.md` |
+| Codex CLI | prompt — run `/codebrain` | `~/.codex/prompts/codebrain.md` | — |
+| Gemini CLI | command — run `/codebrain` | `~/.gemini/commands/codebrain.toml` | `<workspace>/.gemini/commands/codebrain.toml` |
+| Antigravity | instructions section | `~/.gemini/GEMINI.md` | — |
+| GitHub Copilot | instructions section | — | `<workspace>/.github/copilot-instructions.md` |
+
+Every agent is given the same text — `skills/codebrain/SKILL.md`, the file Copilot already receives — so there is no second copy to drift. The instructions-file sections are wrapped in `<!-- CODEBRAIN_SKILL_START -->` / `<!-- CODEBRAIN_SKILL_END -->` markers: everything you wrote around them is preserved, and uninstalling takes out only the marked section. Copilot inside VS Code already has the skill packaged with the extension, so its entry here is what reaches Copilot everywhere else — github.com, the CLI, other editors.
+
+**Which scope?** Global is usually what you want: the MCP entry carries no workspace path, so each agent starts the server in whatever folder you are working in and CodeBrain answers from the nearest indexed project — one installation covers every repository you open. Pick the workspace scope when it should travel with the repository (`.mcp.json` and the skill files are safe to commit — they hold no tokens) or when only this project should see it. Codex CLI and Antigravity have no project-scoped configuration at all, so they are only offered globally; Copilot's instructions file belongs to a repository, so it is only offered for the workspace.
+
+Every MCP entry points at the extension's own bundled runtime, so no Node.js install, no `npm i -g`, and no PATH surprises when an agent is launched from a GUI. A repository with no `.codegraph/` yet simply reports that it is not indexed; run **CodeBrain: Initialize Workspace** there.
+
+Extension updates move the bundled runtime's path and can change the skill text. CodeBrain rewrites what it already owns on the next activation — at whichever scope you installed it — so an agent keeps working across upgrades without you re-running anything. **CodeBrain: Uninstall CodeBrain from Agents** sweeps both scopes and both halves, so nothing is left behind.
+
 ### 🔗 Jira & Confluence (Collab) Search for Every Agent
 CodeBrain ships a second, read-only MCP server that lets an agent search your team's Confluence (Collab) and Jira from inside the task it is already working on — the ticket behind a branch name, the spec behind a design decision, the discussion that explains why the code looks the way it does.
 
@@ -145,7 +196,7 @@ Five tools, all read-only: `confluence_search`, `confluence_get_page`, `jira_sea
    - Cloud: use an API token and enter your account email when prompted. Confluence Cloud URLs must include the `/wiki` context path.
    - You can configure only Jira, only Confluence, or both — tools for an unconfigured product are never shown to the agent.
 2. GitHub Copilot picks the server up immediately, with no config file to edit.
-3. For **Claude Code**, **Codex CLI**, or **Antigravity**, run **CodeBrain: Register Atlassian MCP with Agents** and pick the ones you use, then restart that agent.
+3. For **Claude Code**, **Codex CLI**, **Gemini CLI**, or **Antigravity**, run **CodeBrain: Register Atlassian MCP with Agents**, choose global or workspace scope, pick the ones you use, then restart that agent.
 
 **Where your credentials live:** tokens go into the OS keychain via VS Code SecretStorage, and are mirrored once to `~/.codebrain/atlassian.env` (owner-only, mode `0600`) — the only way agents outside VS Code can read them. Every agent config file CodeBrain writes contains just the command to run, so a committed `.mcp.json` never leaks a token. **CodeBrain: Clear Atlassian Credentials** removes both copies; **CodeBrain: Unregister Atlassian MCP from Agents** removes the config entries.
 
@@ -195,7 +246,12 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - `CodeBrain: Restore Dismissed Review Findings` — Bring back dismissed findings.
 - `CodeBrain: Export Latest Report as Markdown` — Export findings.
 - `CodeBrain: Configure Atlassian (Collab + Jira)` — Enter the base URLs and personal access tokens for Jira and Confluence.
-- `CodeBrain: Register Atlassian MCP with Agents` — Add the Atlassian MCP server to Claude Code, Codex CLI, and/or Antigravity.
+- `CodeBrain: Generate Commit Message` — Write a commit message for the staged changes into the Source Control input box.
+- `CodeBrain: Choose Commit Message Format` — Pick the commit message style, or switch to a custom template.
+- `CodeBrain: Customize Commit Message Template` — Create and open the repository's commit message template.
+- `CodeBrain: Install CodeBrain for Agents (Claude, Codex, Gemini…)` — Add the code graph MCP server and/or the CodeBrain skill to Claude Code, Codex CLI, Gemini CLI, Antigravity, and GitHub Copilot, globally or for this workspace.
+- `CodeBrain: Uninstall CodeBrain from Agents` — Remove both again, at every scope.
+- `CodeBrain: Register Atlassian MCP with Agents` — Add the Atlassian MCP server to the same agents.
 - `CodeBrain: Unregister Atlassian MCP from Agents` — Remove those config entries.
 - `CodeBrain: Test Atlassian Connection` — Make one authenticated call per configured product and report the result.
 - `CodeBrain: Clear Atlassian Credentials` — Forget the tokens, URLs, and the shared credentials file.
@@ -223,7 +279,8 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - **"Permission Denied" Running the Runtime (Linux/macOS)**: You should never have to `chmod` anything by hand — CodeBrain checks its bundled runtime at startup and restores the execute bit if the installer dropped it, noting the repair in the **CodeBrain** output channel. The automatic repair only fails when the extension directory is read-only or owned by another user, and the error message then names the exact `chmod +x` command to run.
 - **WASM Fallback Warning**: If you see a warning that CodeBrain is using WASM fallback, your installed `.vsix` may not match your system architecture. The extension will still work but without the performance acceleration of the native Rust kernel.
 - **Atlassian Tools Missing in Copilot**: The Atlassian server only appears once a product is fully configured — both a base URL and a token. Run **CodeBrain: Configure Atlassian (Collab + Jira)**, then **CodeBrain: Test Atlassian Connection**.
-- **Atlassian Tools Missing in Claude Code / Codex / Antigravity**: Run **CodeBrain: Register Atlassian MCP with Agents** and restart the agent. Claude Code entries are project-scoped (`<workspace>/.mcp.json`), so a different folder needs its own registration.
+- **CodeBrain Tools Missing in Claude Code / Codex / Gemini / Antigravity**: Run **CodeBrain: Install CodeBrain for Agents** and restart the agent — MCP servers are only read at startup. A workspace-scoped registration only applies to that folder — register globally if you want it everywhere.
+- **Atlassian Tools Missing in Claude Code / Codex / Gemini / Antigravity**: Run **CodeBrain: Register Atlassian MCP with Agents** and restart the agent. The same project-scope note applies to Claude Code.
 - **Atlassian Token Rejected (401)**: Server/Data Center tokens authenticate as a bearer token with no username; Cloud API tokens need your account email in `codebrain.atlassian.username`. Re-run the configure command to replace a rotated token.
 - **Confluence Returns 404 for Everything**: A Cloud Confluence URL must include the `/wiki` context path (`https://site.atlassian.net/wiki`).
 - **Atlassian Host Behind a Private CA**: Set `codebrain.atlassian.sslVerify` to `false`, or export `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false` for agents launched outside VS Code.
