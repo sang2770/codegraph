@@ -1,6 +1,6 @@
 /**
  * Just enough TOML to inject, replace, or remove a single dotted-key table
- * (`[mcp_servers.codebrain-atlassian]`) inside an existing `~/.codex/config.toml`.
+ * (`[mcp_servers.<server>]`) inside an existing `~/.codex/config.toml`.
  *
  * Deliberately not a general parser: everything outside the target block is
  * preserved byte-for-byte, so a user's other MCP servers, model settings and

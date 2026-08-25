@@ -3,6 +3,12 @@ import { runAffectedTests } from './affectedTests';
 import { AtlassianIntegration } from './atlassianSetup';
 import { BlastRadiusLensProvider } from './blastRadiusLens';
 import { registerChatParticipant } from './chat';
+import { CodeBrainMcpRegistration } from './codegraphMcpSetup';
+import {
+  editCommitTemplate,
+  generateCommitMessage,
+  selectCommitFormat,
+} from './commitMessage';
 import { GraphCache } from './graphCache';
 import { ImpactController } from './impactController';
 import { IndexFreshness } from './indexFreshness';
@@ -29,7 +35,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // An extension update moves the bundled server's path, which breaks the
     // entry every already-registered agent holds. Repair those in the
     // background rather than making the user re-run the register command.
-    void atlassian.refreshInstalledTargets();
+    atlassian.refreshInstalledTargets();
 
     const metrics = new MetricsStore(context);
     const reports = new ReportManager(context);
@@ -41,6 +47,17 @@ export function activate(context: vscode.ExtensionContext): void {
     const freshness = new IndexFreshness(runtime, (message) => logSink(message));
     const indexManager = new IndexManager(runtime, context, freshness);
     logSink = (message) => indexManager.log(message);
+
+    // Copilot gets the code graph server from the definition provider above
+    // and the skill from `contributes.chatSkills`; Claude Code, Codex, Gemini
+    // CLI and Antigravity read their own files, so they get both (opt-in)
+    // through this.
+    const codeBrainMcp = new CodeBrainMcpRegistration(
+      runtime,
+      context.extensionUri.fsPath,
+      (message) => logSink(message),
+    );
+    codeBrainMcp.refreshInstalledTargets();
 
     // Silent by design — the runtime is usable again — but worth a trace so a
     // host that keeps dropping unix file modes is visible when someone looks.
@@ -90,6 +107,26 @@ export function activate(context: vscode.ExtensionContext): void {
       ),
       vscode.commands.registerCommand('codebrain.selectModel', () =>
         chooseCodeBrainModel(),
+      ),
+      // Invoked from the Source Control title bar, which passes the
+      // SourceControl the button belongs to — that identifies the repository.
+      vscode.commands.registerCommand(
+        'codebrain.generateCommitMessage',
+        (sourceControl?: unknown) => generateCommitMessage(sourceControl),
+      ),
+      vscode.commands.registerCommand(
+        'codebrain.selectCommitFormat',
+        (sourceControl?: unknown) => selectCommitFormat(sourceControl),
+      ),
+      vscode.commands.registerCommand(
+        'codebrain.editCommitTemplate',
+        (sourceControl?: unknown) => editCommitTemplate(sourceControl),
+      ),
+      vscode.commands.registerCommand('codebrain.registerMcp', () =>
+        codeBrainMcp.install(),
+      ),
+      vscode.commands.registerCommand('codebrain.unregisterMcp', () =>
+        codeBrainMcp.remove(),
       ),
       vscode.commands.registerCommand('codebrain.configureAtlassian', () =>
         atlassian.configure(),

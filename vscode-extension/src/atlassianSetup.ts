@@ -5,8 +5,8 @@
  *
  *  1. **Collecting connection settings.** URLs go to VS Code settings (visible,
  *     syncable, not secret); tokens go to `SecretStorage` (the OS keychain).
- *  2. **Exporting them once.** Codex, Claude Code and Antigravity cannot read
- *     VS Code's keychain, so the resolved set is mirrored to
+ *  2. **Exporting them once.** Codex, Claude Code, Gemini CLI and Antigravity
+ *     cannot read VS Code's keychain, so the resolved set is mirrored to
  *     `~/.codebrain/atlassian.env` (mode 0600). One configure step, every agent
  *     connected — and no token inside any agent's config file.
  *  3. **Registering the server with those agents**, plus refreshing the entries
@@ -16,7 +16,6 @@
  * server definition directly, with the credentials passed as process env.
  */
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { AtlassianClient } from './atlassian/client';
@@ -34,20 +33,15 @@ import {
   toConnections,
   writeEnvFile,
 } from './atlassian/connection';
-import {
-  ATLASSIAN_TARGETS,
-  AtlassianMcpEntry,
-  AtlassianTargetId,
-  installTarget,
-  readInstalledEntry,
-  removeTarget,
-  TargetPaths,
-} from './atlassian/targets';
+import { McpServerEntry } from './agents/mcpTargets';
+import { McpRegistrar } from './agents/registration';
 import { RuntimeCommand } from './runtime';
-import { getWorkspaceFolder } from './workspace';
 
 const JIRA_TOKEN_SECRET = 'codebrain.atlassian.jiraToken';
 const CONFLUENCE_TOKEN_SECRET = 'codebrain.atlassian.confluenceToken';
+
+/** The key the Atlassian server is registered under in every agent config. */
+export const ATLASSIAN_MCP_KEY = 'codebrain-atlassian';
 
 /** Relative location of the bundled stdio server inside the extension. */
 export const ATLASSIAN_SERVER_SCRIPT = join('dist', 'atlassian-server.js');
@@ -63,6 +57,7 @@ export class AtlassianIntegration implements vscode.Disposable {
   private readonly didChange = new vscode.EventEmitter<void>();
   private readonly output: vscode.OutputChannel;
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly registrar: McpRegistrar;
 
   /** Fires when credentials or URLs change, so the MCP provider can refresh. */
   readonly onDidChange = this.didChange.event;
@@ -72,6 +67,12 @@ export class AtlassianIntegration implements vscode.Disposable {
     private readonly runtime: RuntimeCommand,
   ) {
     this.output = vscode.window.createOutputChannel('CodeBrain Atlassian');
+    this.registrar = new McpRegistrar({
+      serverKey: ATLASSIAN_MCP_KEY,
+      label: 'CodeBrain Atlassian',
+      entry: () => this.serverEntry(),
+      log: (message) => this.log(message),
+    });
     this.disposables.push(
       this.output,
       this.didChange,
@@ -153,7 +154,7 @@ export class AtlassianIntegration implements vscode.Disposable {
    * than a `node` on PATH: GUI-launched agents get a stripped PATH, and this
    * runtime is guaranteed present and version-correct.
    */
-  serverEntry(): AtlassianMcpEntry {
+  serverEntry(): McpServerEntry {
     return { command: this.runtime.command, args: [this.serverScriptPath()] };
   }
 
@@ -334,7 +335,7 @@ export class AtlassianIntegration implements vscode.Disposable {
       const message = error instanceof Error ? error.message : String(error);
       this.log(`failed to write ${envFile}: ${message}`);
       void vscode.window.showWarningMessage(
-        `CodeBrain could not write ${envFile} (${message}). Copilot still works; Claude Code, Codex and Antigravity will not see the credentials.`,
+        `CodeBrain could not write ${envFile} (${message}). Copilot still works; Claude Code, Codex, Gemini CLI and Antigravity will not see the credentials.`,
       );
     }
 
@@ -349,125 +350,18 @@ export class AtlassianIntegration implements vscode.Disposable {
   // -------------------------------------------------------- agent targeting
 
   /** Ask which agents to register with, then write their config files. */
-  async install(): Promise<void> {
-    const paths = this.targetPaths();
-    const picks = await vscode.window.showQuickPick(
-      ATLASSIAN_TARGETS.map((target) => ({
-        label: target.displayName,
-        detail: target.detail,
-        id: target.id,
-        picked: true,
-      })),
-      {
-        canPickMany: true,
-        title: 'CodeBrain: register the Atlassian MCP server',
-        placeHolder: 'Copilot is already covered by the extension itself',
-      },
-    );
-    if (!picks || picks.length === 0) return;
-
-    const entry = this.serverEntry();
-    const succeeded: string[] = [];
-    const skipped: string[] = [];
-
-    for (const pick of picks) {
-      try {
-        const result = installTarget(pick.id as AtlassianTargetId, entry, paths);
-        this.log(
-          `${result.displayName}: ${result.action}${result.path ? ` (${result.path})` : ''}${result.reason ? ` — ${result.reason}` : ''}`,
-        );
-        if (result.action === 'skipped') {
-          skipped.push(`${result.displayName} — ${result.reason ?? 'not applicable'}`);
-        } else {
-          succeeded.push(`${result.displayName} (${result.action})`);
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.log(`${pick.label}: failed — ${message}`);
-        skipped.push(`${pick.label} — ${message}`);
-      }
-    }
-
-    if (succeeded.length > 0) {
-      void vscode.window.showInformationMessage(
-        `CodeBrain Atlassian registered with ${succeeded.join(', ')}. Restart the agent to pick it up.`,
-      );
-    }
-    if (skipped.length > 0) {
-      void vscode.window.showWarningMessage(
-        `CodeBrain could not register: ${skipped.join('; ')}.`,
-      );
-    }
+  install(): Promise<void> {
+    return this.registrar.install();
   }
 
   /** Remove the server entry from every agent config that holds one. */
-  async remove(): Promise<void> {
-    const paths = this.targetPaths();
-    const removed: string[] = [];
-
-    for (const target of ATLASSIAN_TARGETS) {
-      try {
-        const result = removeTarget(target.id, paths);
-        this.log(`${result.displayName}: ${result.action} (${result.paths.join(', ')})`);
-        if (result.action === 'removed') removed.push(result.displayName);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.log(`${target.displayName}: remove failed — ${message}`);
-      }
-    }
-
-    void vscode.window.showInformationMessage(
-      removed.length > 0
-        ? `CodeBrain Atlassian removed from ${removed.join(', ')}.`
-        : 'CodeBrain Atlassian was not registered with Claude Code, Codex or Antigravity.',
-    );
+  remove(): Promise<void> {
+    return this.registrar.remove();
   }
 
-  /**
-   * Re-point config entries that already exist at the current extension path.
-   *
-   * The entry embeds the extension's install directory, which carries the
-   * version number — so every update silently breaks every registered agent
-   * until the entry is rewritten. Only agents that already opted in are
-   * touched, and an entry that is already correct is left alone.
-   */
-  async refreshInstalledTargets(): Promise<void> {
-    const paths = this.targetPaths();
-    const entry = this.serverEntry();
-
-    for (const target of ATLASSIAN_TARGETS) {
-      let installed: ReturnType<typeof readInstalledEntry>;
-      try {
-        installed = readInstalledEntry(target.id, paths);
-      } catch (error) {
-        this.log(
-          `${target.displayName}: could not read config — ${error instanceof Error ? error.message : String(error)}`,
-        );
-        continue;
-      }
-      if (!installed) continue;
-
-      const installedScript = installed.entry.args?.[0];
-      const stale =
-        installed.entry.command !== entry.command || installedScript !== entry.args[0];
-      if (!stale) continue;
-
-      try {
-        const result = installTarget(target.id, entry, paths);
-        this.log(`${result.displayName}: refreshed stale server path (${result.action})`);
-      } catch (error) {
-        this.log(
-          `${target.displayName}: refresh failed — ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-  }
-
-  private targetPaths(): TargetPaths {
-    return {
-      homeDir: homedir(),
-      workspaceRoot: getWorkspaceFolder()?.uri.fsPath,
-    };
+  /** Repair entries left pointing at the previous extension version's path. */
+  refreshInstalledTargets(): void {
+    this.registrar.refreshInstalledTargets();
   }
 
   // ------------------------------------------------------------ diagnostics
