@@ -521,7 +521,9 @@
     "build:all": "npm run build:runtime && npm run build",
     "test": "npm run check && node --test ./test/*.test.mjs",
     "package": "node ./scripts/package-extension.mjs",
-    "package:all": "node ./scripts/package-extension.mjs --all"
+    "package:all": "node ./scripts/package-extension.mjs --all",
+    "package:store": "node ./scripts/publish-extension.mjs",
+    "publish:store": "node ./scripts/publish-extension.mjs --publish"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

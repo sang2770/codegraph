@@ -1,9 +1,16 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 
 const MAX_PROCESS_OUTPUT = 2_000_000;
+
+/**
+ * Files in a POSIX runtime bundle that have to carry the execute bit: `node` is
+ * what the extension spawns, and `bin/codegraph` is the launcher an agent or a
+ * terminal may run directly.
+ */
+const POSIX_EXECUTABLES = ['node', join('bin', 'codegraph')];
 
 export interface RuntimeCommand {
   command: string;
@@ -11,6 +18,11 @@ export interface RuntimeCommand {
   entrypoint: string;
   target: string;
   nativeKernel: boolean;
+  /**
+   * Runtime files whose execute bit was missing and has just been restored.
+   * Empty on a healthy install; non-empty is worth logging, never an error.
+   */
+  repairedExecutables: string[];
 }
 
 export interface ProcessResult {
@@ -48,6 +60,68 @@ function runtimeTarget(): string {
   return `${process.platform}-${process.arch}`;
 }
 
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Restore the execute bit on the bundled runtime, and report what needed it.
+ *
+ * A `.vsix` records unix file modes, but not everything that unpacks one keeps
+ * them: VS Code forks and OpenVSX-based hosts, installs done by unzipping the
+ * archive by hand, a copied or rsynced extensions directory, and any package
+ * built on Windows all land `node` as a plain non-executable file. Every
+ * CodeBrain command then dies with `EACCES` and the user has to run `chmod +x`
+ * themselves before the extension works at all. Doing it here means they never
+ * have to — the repair is idempotent, so a healthy install pays one `access()`
+ * per file and changes nothing.
+ *
+ * Read bits are mirrored into execute rather than forcing `0755`, so an install
+ * someone deliberately kept private (`0600`) stays private.
+ *
+ * Throws only if a file is still not executable afterwards — nothing the
+ * extension does can work at that point, so the message carries the exact
+ * command that fixes it.
+ */
+export function ensureRuntimeExecutable(root: string): string[] {
+  if (process.platform === 'win32') return [];
+
+  const repaired: string[] = [];
+  const unrepairable: string[] = [];
+
+  for (const relative of POSIX_EXECUTABLES) {
+    const target = join(root, relative);
+    if (!existsSync(target) || isExecutable(target)) continue;
+
+    try {
+      const mode = statSync(target).mode & 0o777;
+      chmodSync(target, mode | ((mode & 0o444) >> 2));
+    } catch {
+      // Fall through to the re-check below: a second window may have repaired
+      // the file already, and only the end state decides whether we can run.
+    }
+
+    if (isExecutable(target)) repaired.push(target);
+    else unrepairable.push(target);
+  }
+
+  if (unrepairable.length > 0) {
+    throw new Error(
+      `The bundled CodeBrain runtime for ${root} is not executable and could not be ` +
+        `repaired automatically. Run: chmod +x ${unrepairable
+          .map((path) => `"${path}"`)
+          .join(' ')}`,
+    );
+  }
+
+  return repaired;
+}
+
 export function locateRuntime(extensionUri: vscode.Uri): RuntimeCommand {
   const target = runtimeTarget();
   const root = join(extensionUri.fsPath, 'runtime', target);
@@ -59,6 +133,8 @@ export function locateRuntime(extensionUri: vscode.Uri): RuntimeCommand {
       `Bundled CodeBrain runtime is missing for ${target}. Reinstall the platform-specific extension package.`,
     );
   }
+
+  const repairedExecutables = ensureRuntimeExecutable(root);
 
   return {
     command,
@@ -72,7 +148,24 @@ export function locateRuntime(extensionUri: vscode.Uri): RuntimeCommand {
     nativeKernel: existsSync(
       join(root, 'lib', 'kernel', 'codegraph-kernel.node'),
     ),
+    repairedExecutables,
   };
+}
+
+/**
+ * Turn a bare `spawn ... EACCES` into something the user can act on. The
+ * execute bit is repaired at activation, so reaching this means the runtime
+ * lost it afterwards (an extension update that unpacked without modes, a
+ * restored backup) — say which file and how to fix it instead of leaking errno.
+ */
+function describeSpawnFailure(error: unknown, command: string): unknown {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code !== 'EACCES' && code !== 'EPERM') return error;
+  return new Error(
+    `CodeBrain could not execute its bundled runtime (${command}): permission denied. ` +
+      `Run: chmod +x "${command}" — or reinstall the extension.`,
+    { cause: error },
+  );
 }
 
 export async function runProcess(
@@ -141,7 +234,7 @@ export async function runProcess(
 
     child.once('error', (error) => {
       cancellation?.dispose();
-      reject(error);
+      reject(describeSpawnFailure(error, command));
     });
     child.once('close', (code) => {
       cancellation?.dispose();

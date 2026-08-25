@@ -1,7 +1,8 @@
-import { chmodSync, cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { markExecutable } from './runtime-permissions.mjs';
 import { assertTarget, normalizeTarget } from './runtime-target.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -85,7 +86,7 @@ if (target.startsWith('win32-')) {
     ['-xzf', archive, '--strip-components=1', '-C', destination],
     extensionRoot,
   );
-  chmodSync(join(destination, 'node'), 0o755);
+  markExecutable(destination, target);
 }
 
 const bundledKernel = join(destination, 'lib', 'kernel', 'codegraph-kernel.node');

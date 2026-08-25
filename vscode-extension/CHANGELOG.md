@@ -13,6 +13,10 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 - Agent configs registered with CodeBrain are repaired automatically after an extension update, so an upgrade no longer silently breaks the server for Claude Code, Codex, or Antigravity.
 - Tools for a product you did not configure are never shown to the agent, and a page body or issue description that has to be shortened says so explicitly instead of just ending.
 
+### Fixes
+
+- On Linux and macOS, CodeBrain no longer needs you to grant its runtime execute permission by hand. Some hosts — VS Code forks, OpenVSX installs, an extensions folder that was copied or unzipped manually — unpack the extension without unix file permissions, and every command then failed with "permission denied" until you ran `chmod +x` yourself. CodeBrain now restores the execute bit on its own at startup and notes it in the output channel. If the extension folder is read-only or owned by another user, the error says exactly which command to run instead of just reporting a failed command.
+
 ## [1.2.0] - 2026-08-11
 
 ### New Features

@@ -42,6 +42,14 @@ export function activate(context: vscode.ExtensionContext): void {
     const indexManager = new IndexManager(runtime, context, freshness);
     logSink = (message) => indexManager.log(message);
 
+    // Silent by design — the runtime is usable again — but worth a trace so a
+    // host that keeps dropping unix file modes is visible when someone looks.
+    if (runtime.repairedExecutables.length > 0) {
+      indexManager.log(
+        `[runtime] restored the execute bit on ${runtime.repairedExecutables.join(', ')}`,
+      );
+    }
+
     const impactController = new ImpactController(
       context,
       runtime,

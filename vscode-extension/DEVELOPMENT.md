@@ -103,6 +103,14 @@ runtime/<target>/node \
 
 Packaging produces platform-specific `.vsix` files. Each `.vsix` contains exactly one runtime target (e.g., node, native binary, libraries for a specific OS/Arch) so we avoid shipping all six runtimes to every user.
 
+> **Package POSIX targets from macOS or Linux.** The staging step sets the
+> execute bit on `runtime/<target>/node` and `runtime/<target>/bin/codegraph`,
+> and `vsce` copies those modes into the `.vsix`. Windows has no unix execute
+> bit to record, so a `linux-*` or `darwin-*` package built there ships without
+> one — the build warns, and the extension repairs the bit on first run
+> (`ensureRuntimeExecutable` in `src/runtime.ts`), but the clean fix is to build
+> those targets on a POSIX host.
+
 ### Pack for Current Host
 Builds a `.vsix` package matching your current platform:
 ```bash
@@ -127,3 +135,47 @@ Supported targets:
 - `linux-x64`
 - `win32-arm64`
 - `win32-x64`
+
+---
+
+## Publishing to the Marketplace
+
+`scripts/publish-extension.mjs` packages the Linux and Windows targets and
+pushes them with the locally installed, already logged-in `vsce`. Unlike
+`npm run package`, it **never builds or deletes a runtime** — stage those by
+hand first, in any order you like, and they all survive:
+
+```bash
+node ./scripts/build-runtime.mjs linux-x64
+node ./scripts/build-runtime.mjs win32-x64
+```
+
+Then:
+
+```bash
+npm run package:store     # build + package linux-x64 and win32-x64, no upload
+npm run publish:store     # the same, then publish after a confirmation prompt
+```
+
+Options (pass after `--` when going through npm):
+
+| Flag | Effect |
+| --- | --- |
+| `--targets a,b` | Targets to ship. Default `linux-x64,win32-x64`. |
+| `--publish` | Upload to the marketplace (what `publish:store` adds). |
+| `--pre-release` | Mark the packages as pre-release. |
+| `--skip-duplicate` | Do not fail when the version is already published. |
+| `--skip-build` | Reuse the current `dist/` instead of rebuilding. |
+| `--yes` | Skip the confirmation prompt (required for non-interactive runs). |
+
+Before packaging anything it refuses targets whose runtime is missing or
+incomplete, sets the execute bit on POSIX launchers, and warns when a runtime
+carries no native kernel (that ships a working but WASM-only extension). After
+packaging it reads each `.vsix` back and fails if the archive does not hold
+exactly this target's runtime, or records `node` as non-executable — a store
+package with either problem is broken for every user who installs it.
+
+Every target is published in a single `vsce publish` call, so the marketplace
+sees one version with all its platform packages rather than a half-published
+version if one upload fails. Version bumps stay manual: edit `version` in
+`package.json` first, since republishing an existing version is rejected.

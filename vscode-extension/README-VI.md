@@ -515,6 +515,12 @@ URL Confluence Cloud phải có context path `/wiki`, ví dụ `https://site.atl
 
 Đặt `codebrain.atlassian.sslVerify` thành `false`, hoặc export `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false` cho agent chạy ngoài VS Code.
 
+### Runtime báo "permission denied" trên Linux/macOS
+
+Không cần `chmod` thủ công nữa: khi khởi động, CodeBrain tự kiểm tra và cấp lại quyền thực thi cho runtime đi kèm (`runtime/<target>/node` và `runtime/<target>/bin/codegraph`) nếu trình cài đặt đã làm mất bit executable. Việc sửa được ghi vào Output channel **CodeBrain**.
+
+Chỉ khi thư mục extension ở chế độ chỉ đọc hoặc thuộc user khác thì việc tự sửa mới thất bại — lúc đó thông báo lỗi in ra đúng câu lệnh `chmod +x` cần chạy.
+
 ### Runtime báo WASM fallback
 
 VSIX đang cài có thể không đúng với platform/architecture của máy hoặc không chứa native kernel. Cài lại đúng package nền tảng. WASM fallback vẫn hoạt động nhưng không có tốc độ của native Rust kernel.
