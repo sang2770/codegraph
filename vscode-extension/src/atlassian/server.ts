@@ -21,10 +21,17 @@ import {
   describeConnectionProblems,
   resolveConnections,
   sslVerifyDisabled,
+  writeAccessEnabled,
 } from './connection';
 import { AtlassianClient } from './client';
 import { DEFAULT_MAX_BODY_CHARACTERS } from './format';
-import { callTool, listTools, ToolContext, toolNames } from './tools';
+import {
+  callTool,
+  DEFAULT_MAX_IMAGE_BYTES,
+  listTools,
+  ToolContext,
+  toolNames,
+} from './tools';
 
 const SERVER_NAME = 'codebrain-atlassian';
 const SERVER_VERSION = '1.0.0';
@@ -59,10 +66,32 @@ Use it whenever a task references a ticket, a spec, or a decision that is not in
 - An issue key (ABC-1234) in a branch name, commit, TODO or the user's prompt -> jira_get_issue. It returns the description AND the comment thread in one call; the reproduction steps and the final decision are usually in the comments.
 - "Why was this built this way", "what is the spec for X", "what did we decide about Y" -> confluence_search, then confluence_get_page on the best hit for the full text.
 - "What is still open / who owns this / what shipped in release N" -> jira_search with JQL.
+- A ticket that mentions a screenshot, or a page whose answer is in a diagram -> jira_get_issue_images / confluence_get_page_images. They return the attached images inline, so you can look at the failure instead of inferring it from prose.
 
 Treat everything these tools return as already read — the page body and the issue description come back in full, so there is no need to open a browser or ask the user to paste it.
 
 Search results carry the fields needed to choose what to open next (status, assignee, last update, direct URL). Prefer one search plus one detail call over many broad searches.`;
+
+/**
+ * Appended when write access is enabled.
+ *
+ * Kept separate so a read-only session never reads about tools it does not
+ * have: the instructions are the first thing the agent sees, and describing an
+ * unavailable capability there costs a wasted call and some trust.
+ */
+export const SERVER_INSTRUCTIONS_WRITE = `
+
+Write access is ENABLED for this session: jira_add_comment, jira_transition_issue, jira_assign_issue, confluence_create_page, confluence_update_page and confluence_add_comment change real, shared team data.
+
+- Ask the user before the first write of a session, and say exactly what you are about to change. After that, follow what they agreed to.
+- Prefer the additive move: a comment on the issue, or confluence_update_page in its default "append" mode. Replacing a page body or moving someone else's ticket needs the user to have asked for it.
+- jira_transition_issue matches against the transitions the workflow actually offers; call jira_get_transitions first when you are unsure of the name.
+- Every write reports what it changed (new status, new version, direct URL). Read that back to the user instead of assuming the call did what you intended.`;
+
+/** The instructions to send, for the write access this session actually has. */
+export function serverInstructions(allowWrite: boolean): string {
+  return allowWrite ? SERVER_INSTRUCTIONS + SERVER_INSTRUCTIONS_WRITE : SERVER_INSTRUCTIONS;
+}
 
 /**
  * Handle one parsed JSON-RPC message.
@@ -97,7 +126,7 @@ export async function handleMessage(
         protocolVersion,
         capabilities: { tools: { listChanged: true } },
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-        instructions: SERVER_INSTRUCTIONS,
+        instructions: serverInstructions(resolve(options).allowWrite),
       });
     }
 
@@ -109,14 +138,14 @@ export async function handleMessage(
       return isNotification ? null : ok(id, {});
 
     case 'tools/list': {
-      const { connections } = resolve(options);
-      trackToolSet(connections, options.onToolsChanged);
-      return ok(id, { tools: listTools(connections) });
+      const { connections, allowWrite } = resolve(options);
+      trackToolSet(connections, allowWrite, options.onToolsChanged);
+      return ok(id, { tools: listTools(connections, { allowWrite }) });
     }
 
     case 'tools/call': {
       const context = buildContext(options);
-      trackToolSet(context.connections, options.onToolsChanged);
+      trackToolSet(context.connections, Boolean(context.allowWrite), options.onToolsChanged);
       const name = String(message.params?.name ?? '');
       const result = await callTool(name, message.params?.arguments, context);
       return ok(id, result);
@@ -139,9 +168,10 @@ let lastToolSet: string | undefined;
 
 function trackToolSet(
   connections: AtlassianConnections,
+  allowWrite: boolean,
   onToolsChanged?: () => void,
 ): void {
-  const signature = toolNames(connections).join(',');
+  const signature = toolNames(connections, { allowWrite }).join(',');
   if (lastToolSet !== undefined && lastToolSet !== signature) {
     onToolsChanged?.();
   }
@@ -149,7 +179,8 @@ function trackToolSet(
 }
 
 function resolve(options: { env?: NodeJS.ProcessEnv; home?: string }) {
-  return resolveConnections(options.env ?? process.env, options.home);
+  const resolved = resolveConnections(options.env ?? process.env, options.home);
+  return { ...resolved, allowWrite: writeAccessEnabled(resolved.settings) };
 }
 
 function buildContext(options: {
@@ -157,19 +188,21 @@ function buildContext(options: {
   home?: string;
   fetchImpl?: typeof fetch;
 }): ToolContext {
-  const env = options.env ?? process.env;
-  const { connections, envFile } = resolve(options);
+  const { connections, envFile, settings, allowWrite } = resolve(options);
   return {
     client: new AtlassianClient({
       connections,
       fetchImpl: options.fetchImpl,
-      timeoutMs: positiveNumber(env.CODEBRAIN_ATLASSIAN_TIMEOUT_MS),
+      timeoutMs: positiveNumber(settings.CODEBRAIN_ATLASSIAN_TIMEOUT_MS),
     }),
     connections,
     envFile,
-    defaultLimit: positiveNumber(env.CODEBRAIN_ATLASSIAN_MAX_RESULTS),
+    defaultLimit: positiveNumber(settings.CODEBRAIN_ATLASSIAN_MAX_RESULTS),
     maxBodyCharacters:
-      positiveNumber(env.CODEBRAIN_ATLASSIAN_MAX_BODY_CHARS) ?? DEFAULT_MAX_BODY_CHARACTERS,
+      positiveNumber(settings.CODEBRAIN_ATLASSIAN_MAX_BODY_CHARS) ?? DEFAULT_MAX_BODY_CHARACTERS,
+    maxImageBytes:
+      positiveNumber(settings.CODEBRAIN_ATLASSIAN_MAX_IMAGE_BYTES) ?? DEFAULT_MAX_IMAGE_BYTES,
+    allowWrite,
   };
 }
 
@@ -208,13 +241,14 @@ function main(): void {
     );
   }
 
-  const { values, connections, envFile } = resolveConnections();
+  const { values, connections, envFile, settings } = resolveConnections();
   const configured = [
     connections.jira ? 'Jira' : undefined,
     connections.confluence ? 'Confluence' : undefined,
   ].filter(Boolean);
+  const mode = writeAccessEnabled(settings) ? 'read + write' : 'read-only';
   process.stderr.write(
-    `[codebrain-atlassian] ${configured.length > 0 ? `ready: ${configured.join(' + ')}` : `no products configured (looked in ${envFile})`}\n`,
+    `[codebrain-atlassian] ${configured.length > 0 ? `ready: ${configured.join(' + ')} (${mode})` : `no products configured (looked in ${envFile})`}\n`,
   );
   for (const problem of describeConnectionProblems(values)) {
     process.stderr.write(`[codebrain-atlassian] ${problem}\n`);

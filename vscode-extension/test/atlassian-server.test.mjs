@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadTypeScript } from './helpers/load.mjs';
 
-const { SERVER_INSTRUCTIONS, handleMessage, splitFrames } =
+const { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_WRITE, handleMessage, splitFrames } =
   loadTypeScript('atlassian/server.ts');
 
 function envFileWith(lines) {
@@ -45,9 +45,64 @@ test('an unknown protocol version falls back to the newest supported one', async
 });
 
 test('the instructions name the flows the tools are for', () => {
-  for (const fragment of ['jira_get_issue', 'confluence_search', 'confluence_get_page', 'already read']) {
+  for (const fragment of [
+    'jira_get_issue',
+    'confluence_search',
+    'confluence_get_page',
+    'jira_get_issue_images',
+    'already read',
+  ]) {
     assert.ok(SERVER_INSTRUCTIONS.includes(fragment), `instructions should mention ${fragment}`);
   }
+  // A read-only session must not be told about tools it does not have.
+  for (const fragment of ['jira_add_comment', 'confluence_update_page', 'Write access']) {
+    assert.ok(!SERVER_INSTRUCTIONS.includes(fragment), `read-only instructions must omit ${fragment}`);
+  }
+});
+
+test('enabling writes changes both the instructions and the tool list', async () => {
+  const env = { ...CONFIGURED, CODEBRAIN_ATLASSIAN_ALLOW_WRITE: '1' };
+  const initialize = await handleMessage(
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+    { env, home: '/nonexistent' },
+  );
+  assert.equal(initialize.result.instructions, SERVER_INSTRUCTIONS + SERVER_INSTRUCTIONS_WRITE);
+  assert.match(initialize.result.instructions, /Ask the user before the first write/);
+
+  const list = await handleMessage(
+    { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    { env, home: '/nonexistent' },
+  );
+  const names = list.result.tools.map((tool) => tool.name);
+  assert.ok(names.includes('jira_add_comment'));
+  assert.ok(names.includes('jira_transition_issue'));
+});
+
+test('only an explicit affirmative turns writing on', async () => {
+  for (const value of ['0', 'false', 'no', '', 'maybe']) {
+    const list = await handleMessage(
+      { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+      { env: { ...CONFIGURED, CODEBRAIN_ATLASSIAN_ALLOW_WRITE: value }, home: '/nonexistent' },
+    );
+    const names = list.result.tools.map((tool) => tool.name);
+    assert.ok(
+      !names.includes('jira_add_comment'),
+      `CODEBRAIN_ATLASSIAN_ALLOW_WRITE="${value}" must not enable writing`,
+    );
+  }
+});
+
+test('the env file can enable writing for agents that pass no environment', async () => {
+  const env = envFileWith([
+    'JIRA_URL="https://jira.example.com"',
+    'JIRA_PERSONAL_TOKEN="tok"',
+    'CODEBRAIN_ATLASSIAN_ALLOW_WRITE="1"',
+  ]);
+  const list = await handleMessage(
+    { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    { env, home: '/nonexistent' },
+  );
+  assert.ok(list.result.tools.map((tool) => tool.name).includes('jira_add_comment'));
 });
 
 test('notifications are never answered', async () => {
@@ -74,7 +129,7 @@ test('tools/list reflects the products the env file configures', async () => {
   );
   assert.deepEqual(
     response.result.tools.map((tool) => tool.name),
-    ['jira_search', 'jira_get_issue', 'jira_get_comments'],
+    ['jira_search', 'jira_get_issue', 'jira_get_comments', 'jira_get_issue_images'],
   );
 });
 

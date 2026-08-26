@@ -136,8 +136,20 @@ function unquoteValue(raw: string): string {
   return (comment === -1 ? raw : raw.slice(0, comment)).trim();
 }
 
+/** Behaviour settings that live alongside the credentials in the env file. */
+export interface AtlassianSettings {
+  /** Whether the MCP server exposes the tools that modify Jira and Confluence. */
+  allowWrite?: boolean;
+}
+
+/** Env var that turns the write tools on. Off unless it is explicitly truthy. */
+export const ALLOW_WRITE_KEY = 'CODEBRAIN_ATLASSIAN_ALLOW_WRITE';
+
 /** Render env-file content. Every value is quoted so tokens with `#` survive. */
-export function serializeEnvFile(values: AtlassianEnvValues): string {
+export function serializeEnvFile(
+  values: AtlassianEnvValues,
+  settings: AtlassianSettings = {},
+): string {
   const lines = [
     '# CodeBrain — Atlassian (Jira + Confluence/Collab) connection settings.',
     '# Written by the "CodeBrain: Configure Atlassian (Collab + Jira)" command.',
@@ -151,6 +163,15 @@ export function serializeEnvFile(values: AtlassianEnvValues): string {
     const value = values[key];
     if (value === undefined || value === '') continue;
     lines.push(`${key}=${quoteEnvValue(value)}`);
+  }
+
+  if (settings.allowWrite) {
+    lines.push(
+      '',
+      '# Agents may create and modify Jira issues and Confluence pages.',
+      '# Remove this line to put the server back into read-only mode.',
+      `${ALLOW_WRITE_KEY}="1"`,
+    );
   }
 
   return `${lines.join('\n')}\n`;
@@ -181,11 +202,15 @@ export function readEnvFile(filePath: string): Record<string, string> {
  * world-readable, and `chmodSync` runs again after the rename because an
  * already-existing target keeps its own mode on some platforms.
  */
-export function writeEnvFile(filePath: string, values: AtlassianEnvValues): void {
+export function writeEnvFile(
+  filePath: string,
+  values: AtlassianEnvValues,
+  settings: AtlassianSettings = {},
+): void {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
   const temp = `${filePath}.tmp.${process.pid}`;
   try {
-    writeFileSync(temp, serializeEnvFile(values), {
+    writeFileSync(temp, serializeEnvFile(values, settings), {
       encoding: 'utf8',
       mode: 0o600,
     });
@@ -324,10 +349,39 @@ export function resolveConnections(
   values: AtlassianEnvValues;
   connections: AtlassianConnections;
   envFile: string;
+  /**
+   * Every `CODEBRAIN_ATLASSIAN_*` tuning value, file and process environment
+   * merged the same way the credentials are. External agents spawn the server
+   * with no environment of their own, so a setting that only came from
+   * `process.env` would silently apply to Copilot and to nobody else.
+   */
+  settings: Record<string, string>;
 } {
   const envFile = atlassianEnvPath(env, home);
-  const values = mergeEnvValues(env, readEnvFile(envFile));
-  return { values, connections: toConnections(values), envFile };
+  const fileValues = readEnvFile(envFile);
+  const values = mergeEnvValues(env, fileValues);
+
+  const settings: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fileValues)) {
+    if (key.startsWith('CODEBRAIN_ATLASSIAN_') && value) settings[key] = value;
+  }
+  for (const [key, value] of Object.entries(env)) {
+    const trimmed = value?.trim();
+    if (key.startsWith('CODEBRAIN_ATLASSIAN_') && trimmed) settings[key] = trimmed;
+  }
+
+  return { values, connections: toConnections(values), envFile, settings };
+}
+
+/**
+ * Whether the mutating tools may be exposed.
+ *
+ * Anything other than an explicit affirmative reads as off: a half-set variable
+ * must never be what stands between an agent and a real ticket.
+ */
+export function writeAccessEnabled(settings: Record<string, string | undefined>): boolean {
+  const raw = settings[ALLOW_WRITE_KEY]?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
 /**

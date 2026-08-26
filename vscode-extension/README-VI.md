@@ -408,9 +408,11 @@ Mỗi lần cập nhật extension, đường dẫn runtime đổi theo version 
 
 ## 10b. Tìm kiếm Collab (Confluence) và Jira cho mọi agent
 
-CodeBrain đóng gói thêm một MCP server **chỉ đọc** cho Jira và Confluence (Collab), để agent tra cứu ngay trong lúc làm việc: ticket đứng sau tên branch, spec đứng sau một quyết định thiết kế, thảo luận giải thích vì sao code lại như vậy.
+CodeBrain đóng gói thêm một MCP server cho Jira và Confluence (Collab), để agent tra cứu ngay trong lúc làm việc: ticket đứng sau tên branch, spec đứng sau một quyết định thiết kế, thảo luận giải thích vì sao code lại như vậy.
 
-Năm tool, tất cả đều read-only: `confluence_search`, `confluence_get_page`, `jira_search`, `jira_get_issue`, `jira_get_comments`. Nội dung page và description của issue trả về đầy đủ nên agent không cần bạn copy/paste. Server không có bất kỳ đường nào để tạo, sửa hay transition issue.
+Bảy tool đọc: `confluence_search`, `confluence_get_page`, `confluence_get_page_images`, `jira_search`, `jira_get_issue`, `jira_get_comments`, `jira_get_issue_images`. Nội dung page và description của issue trả về đầy đủ nên agent không cần bạn copy/paste — và hai tool ảnh trả về luôn screenshot, diagram đính kèm dưới dạng ảnh thật, để agent *nhìn* được lỗi thay vì đoán qua phần mô tả.
+
+**Ghi dữ liệu là tuỳ chọn, mặc định tắt.** Bật `codebrain.atlassian.allowWrite` thì agent có thêm `jira_add_comment`, `jira_get_transitions`, `jira_transition_issue`, `jira_assign_issue`, `confluence_create_page`, `confluence_update_page`, `confluence_add_comment` — đủ để comment kết quả tìm được, chuyển ticket sang In Progress, nhận ticket, hoặc viết kết quả thành một page. Khi setting còn tắt, các tool đó **không hề xuất hiện** với bất kỳ agent nào, nên server chỉ có thể đọc. Mọi thao tác ghi đều báo lại chính xác cái gì đã đổi (status mới, version mới của page, URL trực tiếp), và cập nhật page mặc định là *append* chứ không phải ghi đè, nên agent không thể lặng lẽ xoá tài liệu của người khác.
 
 ### Cấu hình một lần, dùng cho tất cả agent
 
@@ -467,9 +469,12 @@ Thêm vào `.vscode/settings.json`:
   "codebrain.impact.detectDepthTruncation": true,
   "codebrain.codeLens.enabled": true,
   "codebrain.metrics.enabled": true,
-  "codebrain.reports.openPreview": true
+  "codebrain.reports.openPreview": true,
+  "codebrain.releaseNotes.showOnUpdate": true
 }
 ```
+
+`releaseNotes.showOnUpdate` mở trang **What's new** ở lần khởi động đầu tiên sau khi extension được cập nhật, gom đủ mọi bản phát hành kể từ version bạn đang dùng trước đó. Không hiện khi mới cài lần đầu, không hiện lại cho cùng một version. Mở thủ công bằng command **CodeBrain: What's New**.
 
 Nếu dùng phần Collab + Jira, thêm (token **không** đặt ở đây — nhập qua command để lưu vào keychain):
 
@@ -479,9 +484,13 @@ Nếu dùng phần Collab + Jira, thêm (token **không** đặt ở đây — n
   "codebrain.atlassian.confluenceUrl": "https://collab.example.com",
   "codebrain.atlassian.maxResults": 10,
   "codebrain.atlassian.maxBodyCharacters": 12000,
+  "codebrain.atlassian.maxImageBytes": 4194304,
+  "codebrain.atlassian.allowWrite": false,
   "codebrain.atlassian.sslVerify": true
 }
 ```
+
+`allowWrite` là công tắc duy nhất quyết định agent có được sửa Jira/Confluence hay không. Nó áp dụng cho **mọi** agent đang dùng chung bộ credential này (Copilot, Claude Code, Codex, Gemini CLI, Antigravity), vì cờ này được ghi kèm vào `~/.codebrain/atlassian.env`.
 
 ## 13. Demo nhanh
 

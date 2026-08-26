@@ -83,9 +83,26 @@ printf '%s\n' \
 Diagnostics go to stderr; stdout carries protocol traffic only. Useful
 environment overrides: `CODEBRAIN_ATLASSIAN_ENV` (credentials file path),
 `CODEBRAIN_ATLASSIAN_MAX_RESULTS`, `CODEBRAIN_ATLASSIAN_MAX_BODY_CHARS`,
-`CODEBRAIN_ATLASSIAN_TIMEOUT_MS`, `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false`. The
-four `JIRA_*` / `CONFLUENCE_*` variables also work directly and take precedence
-over the file.
+`CODEBRAIN_ATLASSIAN_MAX_IMAGE_BYTES`, `CODEBRAIN_ATLASSIAN_TIMEOUT_MS`,
+`CODEBRAIN_ATLASSIAN_SSL_VERIFY=false`. The four `JIRA_*` / `CONFLUENCE_*`
+variables also work directly and take precedence over the file; so do the
+`CODEBRAIN_ATLASSIAN_*` ones, which may also be set inside the file itself (that
+is how an agent launched with no environment of its own picks them up).
+
+The tools that modify Jira and Confluence are hidden unless
+`CODEBRAIN_ATLASSIAN_ALLOW_WRITE` is `1`/`true`/`yes`/`on` — anything else,
+including a half-set value, keeps the server read-only. The startup line on
+stderr says which mode it came up in (`ready: Jira + Confluence (read-only)`).
+The VS Code setting `codebrain.atlassian.allowWrite` drives the same flag and
+writes it into the shared env file, so toggling it moves every agent at once.
+To exercise a write by hand, add the variable to the command above:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"jira_add_comment","arguments":{"key":"ABC-1","body":"from the CLI"}}}' \
+| CODEBRAIN_ATLASSIAN_ALLOW_WRITE=1 CODEBRAIN_ATLASSIAN_ENV=/path/to/atlassian.env node dist/atlassian-server.js
+```
 
 ### Packaged-Runtime Smoke Test
 You can manually run a smoke test against the packaged runtime:

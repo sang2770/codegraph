@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { AtlassianClient } from './atlassian/client';
 import {
+  ALLOW_WRITE_KEY,
   ATLASSIAN_ENV_KEYS,
   AtlassianConnections,
   AtlassianEnvValues,
@@ -31,6 +32,7 @@ import {
   normalizeBaseUrl,
   readEnvFile,
   toConnections,
+  writeAccessEnabled,
   writeEnvFile,
 } from './atlassian/connection';
 import { McpServerEntry } from './agents/mcpTargets';
@@ -82,7 +84,11 @@ export class AtlassianIntegration implements vscode.Disposable {
         }
       }),
       vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('codebrain.atlassian')) this.didChange.fire();
+        if (!event.affectsConfiguration('codebrain.atlassian')) return;
+        if (event.affectsConfiguration('codebrain.atlassian.allowWrite')) {
+          void this.syncWriteAccess();
+        }
+        this.didChange.fire();
       }),
     );
   }
@@ -177,10 +183,47 @@ export class AtlassianIntegration implements vscode.Disposable {
     environment.CODEBRAIN_ATLASSIAN_MAX_BODY_CHARS = String(
       config.get<number>('maxBodyCharacters', 12000),
     );
+    environment.CODEBRAIN_ATLASSIAN_MAX_IMAGE_BYTES = String(
+      config.get<number>('maxImageBytes', 4 * 1024 * 1024),
+    );
     if (config.get<boolean>('sslVerify', true) === false) {
       environment.CODEBRAIN_ATLASSIAN_SSL_VERIFY = 'false';
     }
+    if (this.writeAllowed()) environment[ALLOW_WRITE_KEY] = '1';
     return environment;
+  }
+
+  /** Whether agents may modify Jira and Confluence. Opt-in, and off by default. */
+  writeAllowed(): boolean {
+    return (
+      vscode.workspace.getConfiguration('codebrain.atlassian').get<boolean>('allowWrite', false) ===
+      true
+    );
+  }
+
+  /**
+   * Re-export the env file after the write toggle changed.
+   *
+   * Agents outside VS Code read the flag from that file, so a toggle that only
+   * updated settings would leave Claude Code and Codex on the old mode until
+   * the next time the configure wizard happened to run.
+   */
+  private async syncWriteAccess(): Promise<void> {
+    const envFile = atlassianEnvPath();
+    const onDisk = readEnvFile(envFile);
+    if (Object.keys(onDisk).length === 0) return; // Nothing exported yet.
+
+    const allowWrite = this.writeAllowed();
+    if (writeAccessEnabled(onDisk) === allowWrite) return;
+
+    const { values } = await this.status();
+    try {
+      writeEnvFile(envFile, values, { allowWrite });
+      this.log(`write access ${allowWrite ? 'enabled' : 'disabled'} for external agents`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`failed to update ${envFile}: ${message}`);
+    }
   }
 
   // ---------------------------------------------------------------- wizard
@@ -329,7 +372,7 @@ export class AtlassianIntegration implements vscode.Disposable {
 
     const envFile = atlassianEnvPath();
     try {
-      writeEnvFile(envFile, values);
+      writeEnvFile(envFile, values, { allowWrite: this.writeAllowed() });
       this.log(`exported credentials to ${envFile}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

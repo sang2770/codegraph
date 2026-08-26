@@ -185,9 +185,11 @@ Every MCP entry points at the extension's own bundled runtime, so no Node.js ins
 Extension updates move the bundled runtime's path and can change the skill text. CodeBrain rewrites what it already owns on the next activation — at whichever scope you installed it — so an agent keeps working across upgrades without you re-running anything. **CodeBrain: Uninstall CodeBrain from Agents** sweeps both scopes and both halves, so nothing is left behind.
 
 ### 🔗 Jira & Confluence (Collab) Search for Every Agent
-CodeBrain ships a second, read-only MCP server that lets an agent search your team's Confluence (Collab) and Jira from inside the task it is already working on — the ticket behind a branch name, the spec behind a design decision, the discussion that explains why the code looks the way it does.
+CodeBrain ships a second MCP server that lets an agent search your team's Confluence (Collab) and Jira from inside the task it is already working on — the ticket behind a branch name, the spec behind a design decision, the discussion that explains why the code looks the way it does.
 
-Five tools, all read-only: `confluence_search`, `confluence_get_page`, `jira_search`, `jira_get_issue`, `jira_get_comments`. Page bodies and issue descriptions come back in full, so the agent does not have to ask you to paste anything. Nothing in the server can create, edit, or transition an issue.
+Seven read tools: `confluence_search`, `confluence_get_page`, `confluence_get_page_images`, `jira_search`, `jira_get_issue`, `jira_get_comments`, `jira_get_issue_images`. Page bodies and issue descriptions come back in full, so the agent does not have to ask you to paste anything — and the image tools hand back the attached screenshots and diagrams as real images, so the agent can look at the crash instead of guessing from the prose around it.
+
+**Writing back is opt-in.** Turn on `codebrain.atlassian.allowWrite` and the agent also gets `jira_add_comment`, `jira_get_transitions`, `jira_transition_issue`, `jira_assign_issue`, `confluence_create_page`, `confluence_update_page` and `confluence_add_comment` — enough to comment what it found, move a ticket to In Progress, take it, or write the finding up as a page. While the setting is off those tools are not offered to any agent at all, so the server can only read. Every write reports back exactly what changed (the new status, the new page version, a direct URL), and page updates default to appending rather than replacing, so an agent cannot quietly overwrite someone's document.
 
 **Setup — once, for all agents:**
 
@@ -221,11 +223,14 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 | `codebrain.tests.command` | `""` | Command for **Run Affected Tests**, using `${files}`. Empty detects the runner and confirms first. |
 | `codebrain.metrics.enabled` | `true` | Record local token savings and analytics. |
 | `codebrain.reports.openPreview` | `true` | Automatically open generated Markdown reports in preview mode. |
+| `codebrain.releaseNotes.showOnUpdate` | `true` | Open a "What's new" page after an update, covering every release since the version you were on. Never on a fresh install, never twice for the same version. |
 | `codebrain.atlassian.jiraUrl` | `""` | Jira base URL, e.g. `https://jira.example.com`. Tokens are stored in the OS keychain, never here. |
 | `codebrain.atlassian.confluenceUrl` | `""` | Confluence (Collab) base URL **including its context path**, e.g. `https://site.atlassian.net/wiki`. |
 | `codebrain.atlassian.username` | `""` | Atlassian account email. Cloud only — Server/Data Center tokens need no username. |
 | `codebrain.atlassian.maxResults` | `10` | Default number of issues, pages, or comments per search (max 50). |
 | `codebrain.atlassian.maxBodyCharacters` | `12000` | Max characters of a page body or issue description per tool call; longer content is truncated with a visible note. |
+| `codebrain.atlassian.allowWrite` | `false` | Let agents change Jira and Confluence — comment, transition, assign, and create/update pages. While off, those tools are not offered to any agent. |
+| `codebrain.atlassian.maxImageBytes` | `4194304` | Largest single attached image returned inline by the image tools. Bigger ones are named and skipped. |
 | `codebrain.atlassian.sslVerify` | `true` | Verify the TLS certificate of the Jira/Confluence hosts. Disable only for a private certificate authority. |
 
 ---

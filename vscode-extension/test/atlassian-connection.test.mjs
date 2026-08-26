@@ -18,6 +18,7 @@ const {
   serializeEnvFile,
   sslVerifyDisabled,
   toConnections,
+  writeAccessEnabled,
   writeEnvFile,
 } = loadTypeScript('atlassian/connection.ts');
 
@@ -66,6 +67,28 @@ test('serialization omits empty values and keeps the header comment', () => {
   assert.match(content, /^# CodeBrain/);
   assert.ok(content.includes('JIRA_URL='));
   assert.ok(!content.includes('JIRA_USERNAME'));
+});
+
+test('write access is only enabled by an explicit affirmative', () => {
+  for (const value of ['1', 'true', 'TRUE', 'yes', 'on', ' 1 ']) {
+    assert.equal(writeAccessEnabled({ CODEBRAIN_ATLASSIAN_ALLOW_WRITE: value }), true, value);
+  }
+  for (const value of ['0', 'false', 'no', 'off', '', ' ', 'maybe', undefined]) {
+    assert.equal(writeAccessEnabled({ CODEBRAIN_ATLASSIAN_ALLOW_WRITE: value }), false, String(value));
+  }
+  assert.equal(writeAccessEnabled({}), false);
+});
+
+test('the write flag round-trips through the env file, and is absent when off', () => {
+  const enabled = serializeEnvFile({ JIRA_URL: 'https://jira.example.com' }, { allowWrite: true });
+  assert.equal(writeAccessEnabled(parseEnvFile(enabled)), true);
+  assert.match(enabled, /# Remove this line to put the server back into read-only mode\./);
+
+  const off = serializeEnvFile({ JIRA_URL: 'https://jira.example.com' }, { allowWrite: false });
+  assert.ok(!off.includes('ALLOW_WRITE'));
+  assert.equal(writeAccessEnabled(parseEnvFile(off)), false);
+  // Omitting the settings argument keeps the pre-existing read-only default.
+  assert.ok(!serializeEnvFile({ JIRA_URL: 'https://jira.example.com' }).includes('ALLOW_WRITE'));
 });
 
 test('writeEnvFile writes atomically with owner-only permissions', (t) => {
@@ -167,6 +190,31 @@ test('resolveConnections reads the override path end to end', () => {
   assert.equal(resolved.envFile, file);
   assert.equal(resolved.connections.jira.token, 'file-token');
   assert.equal(resolved.connections.confluence, undefined);
+});
+
+test('tuning settings come from the file, and the environment overrides them', () => {
+  const file = join(tempDir(), 'atlassian.env');
+  writeFileSync(
+    file,
+    [
+      serializeEnvFile(
+        { JIRA_URL: 'https://jira.example.com', JIRA_PERSONAL_TOKEN: 'tok' },
+        { allowWrite: true },
+      ),
+      'CODEBRAIN_ATLASSIAN_MAX_RESULTS="7"',
+      '',
+    ].join('\n'),
+  );
+
+  const fromFile = resolveConnections({ CODEBRAIN_ATLASSIAN_ENV: file }, '/nonexistent-home');
+  assert.equal(fromFile.settings.CODEBRAIN_ATLASSIAN_MAX_RESULTS, '7');
+  assert.equal(writeAccessEnabled(fromFile.settings), true);
+
+  const overridden = resolveConnections(
+    { CODEBRAIN_ATLASSIAN_ENV: file, CODEBRAIN_ATLASSIAN_MAX_RESULTS: '25' },
+    '/nonexistent-home',
+  );
+  assert.equal(overridden.settings.CODEBRAIN_ATLASSIAN_MAX_RESULTS, '25');
 });
 
 test('TLS verification only relaxes for an explicit opt-out', () => {

@@ -22,6 +22,7 @@ import { IndexManager } from './indexManager';
 import { MetricsStore } from './metrics';
 import { registerMcpProvider, validateBundledRuntime } from './mcpProvider';
 import { ReportManager } from './reportManager';
+import { showReleaseNotes, showReleaseNotesOnUpdate } from './releaseNotes';
 import { ReviewFinding, ReviewStore } from './reviewStore';
 import { editReviewInstructions, selectReviewProfile } from './reviewInstructions';
 
@@ -214,6 +215,9 @@ export function activate(context: vscode.ExtensionContext): void {
         (argument?: { root: string; tests: string[] }) =>
           runAffectedTests(argument, () => impactController.latestTestTarget()),
       ),
+      vscode.commands.registerCommand('codebrain.showReleaseNotes', () =>
+        showReleaseNotes(context, { log: logSink }),
+      ),
     );
 
     registerChatParticipant(
@@ -230,6 +234,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // Bring back the findings from the last session's review.
     void presenter.restore();
+
+    // An update lands silently, so the user never learns what they just got.
+    // Deliberately last and unawaited: it is the least urgent thing here, and
+    // it must never delay or break activation.
+    void showReleaseNotesOnUpdate(context, logSink);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     void vscode.window.showErrorMessage(`CodeBrain extension: ${message}`);

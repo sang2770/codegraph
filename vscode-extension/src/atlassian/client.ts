@@ -1,5 +1,5 @@
 /**
- * Read-only REST client for Jira and Confluence (Collab).
+ * REST client for Jira and Confluence (Collab).
  *
  * Covers both deployment flavours because the same personal-token setup is
  * used against either:
@@ -8,14 +8,17 @@
  *     v2, Confluence REST v1.
  *   - **Cloud** — Basic `email:api-token` (so a `*_USERNAME` value switches
  *     auth), Jira REST v3 with the `search/jql` endpoint that replaced
- *     `/search`.
+ *     `/search`, and ADF node trees where Server/DC takes a plain string.
  *
- * Only GET requests exist here on purpose: the MCP surface is read-only, so
- * there is no code path that can modify an issue or a page even if an agent
- * asks for it.
+ * Reads and writes are separated by construction: {@link AtlassianClient.get}
+ * is the only path most methods take, and every mutating method goes through
+ * {@link AtlassianClient.send}. Whether the mutating methods are reachable at
+ * all is decided one layer up, in `tools.ts` — the tool surface hides them
+ * unless write access was explicitly enabled.
  */
 
 import { AtlassianConnections, AtlassianEndpoint } from './connection';
+import { textToAdf } from './format';
 
 /** A failed HTTP call, carrying enough context to be actionable in a tool reply. */
 export class AtlassianRequestError extends Error {
@@ -66,6 +69,40 @@ export interface JiraCommentsResponse {
   total?: number;
 }
 
+/** One file attached to a Jira issue. `content` is an absolute download URL. */
+export interface JiraAttachment {
+  id?: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  created?: string;
+  author?: { displayName?: string };
+  content?: string;
+}
+
+/** One workflow transition available from an issue's current status. */
+export interface JiraTransition {
+  id?: string;
+  name?: string;
+  to?: { name?: string };
+  hasScreen?: boolean;
+  fields?: Record<string, unknown>;
+}
+
+export interface JiraTransitionsResponse {
+  transitions?: JiraTransition[];
+}
+
+/** A user as returned by either deployment's user search. */
+export interface JiraUser {
+  accountId?: string;
+  name?: string;
+  key?: string;
+  displayName?: string;
+  emailAddress?: string;
+  active?: boolean;
+}
+
 export interface ConfluenceContent {
   id?: string;
   type?: string;
@@ -76,6 +113,27 @@ export interface ConfluenceContent {
   body?: { storage?: { value?: string } };
   excerpt?: string;
   _links?: { webui?: string; tinyui?: string };
+}
+
+/** One file attached to a Confluence page. */
+export interface ConfluenceAttachment {
+  id?: string;
+  title?: string;
+  metadata?: { mediaType?: string };
+  extensions?: { fileSize?: number; mediaType?: string };
+  version?: { when?: string; by?: { displayName?: string } };
+  _links?: { download?: string };
+}
+
+export interface ConfluenceAttachmentsResponse {
+  results?: ConfluenceAttachment[];
+  size?: number;
+}
+
+/** A downloaded binary, ready to be base64-encoded into an MCP image block. */
+export interface DownloadedFile {
+  bytes: Buffer;
+  contentType: string;
 }
 
 export interface ConfluenceSearchResponse {
@@ -188,9 +246,96 @@ export class AtlassianClient {
   }
 
   /** Cheap authenticated call used to verify the token works. */
-  async jiraWhoAmI(): Promise<{ displayName?: string; name?: string; emailAddress?: string }> {
+  async jiraWhoAmI(): Promise<JiraUser> {
     const jira = this.requireJira();
     return this.get(jira, `/rest/api/${this.jiraApi()}/myself`, {});
+  }
+
+  /** True when Jira is a Cloud tenant, which changes body shapes and user ids. */
+  get jiraIsCloud(): boolean {
+    return isCloudUrl(this.requireJira().baseUrl);
+  }
+
+  async jiraAttachments(key: string): Promise<JiraAttachment[]> {
+    const jira = this.requireJira();
+    const issue = await this.get<JiraIssue>(
+      jira,
+      `/rest/api/${this.jiraApi()}/issue/${encodeURIComponent(key)}`,
+      { fields: 'attachment' },
+    );
+    const attachments = issue.fields?.attachment;
+    return Array.isArray(attachments) ? (attachments as JiraAttachment[]) : [];
+  }
+
+  async jiraTransitions(key: string): Promise<JiraTransitionsResponse> {
+    const jira = this.requireJira();
+    return this.get<JiraTransitionsResponse>(
+      jira,
+      `/rest/api/${this.jiraApi()}/issue/${encodeURIComponent(key)}/transitions`,
+      { expand: 'transitions.fields' },
+    );
+  }
+
+  /** Find users by name, e-mail or account id, for resolving an assignee. */
+  async jiraFindUsers(query: string): Promise<JiraUser[]> {
+    const jira = this.requireJira();
+    // Cloud searches with `query`; Server/DC only understands `username`.
+    const path = `/rest/api/${this.jiraApi()}/user/search`;
+    const parameters: Record<string, string> = this.jiraIsCloud
+      ? { query, maxResults: '10' }
+      : { username: query, maxResults: '10' };
+    const users = await this.get<JiraUser[]>(jira, path, parameters);
+    return Array.isArray(users) ? users : [];
+  }
+
+  // ------------------------------------------------------------ Jira writes
+
+  async jiraAddComment(key: string, body: string): Promise<JiraComment> {
+    const jira = this.requireJira();
+    return this.send<JiraComment>(
+      jira,
+      'POST',
+      `/rest/api/${this.jiraApi()}/issue/${encodeURIComponent(key)}/comment`,
+      { body: this.jiraTextBody(body) },
+    );
+  }
+
+  /** Apply a transition, optionally attaching a comment in the same request. */
+  async jiraTransition(key: string, transitionId: string, comment?: string): Promise<void> {
+    const jira = this.requireJira();
+    const payload: Record<string, unknown> = { transition: { id: transitionId } };
+    if (comment) {
+      payload.update = { comment: [{ add: { body: this.jiraTextBody(comment) } }] };
+    }
+    await this.send<void>(
+      jira,
+      'POST',
+      `/rest/api/${this.jiraApi()}/issue/${encodeURIComponent(key)}/transitions`,
+      payload,
+    );
+  }
+
+  /**
+   * Set (or with `null`, clear) the assignee. Cloud identifies a user by
+   * `accountId`, Server/DC by `name` — sending the wrong one is accepted as a
+   * 204 that silently changes nothing, so the shape follows the deployment.
+   */
+  async jiraAssign(key: string, user: JiraUser | null): Promise<void> {
+    const jira = this.requireJira();
+    const payload = this.jiraIsCloud
+      ? { accountId: user?.accountId ?? null }
+      : { name: user?.name ?? user?.key ?? null };
+    await this.send<void>(
+      jira,
+      'PUT',
+      `/rest/api/${this.jiraApi()}/issue/${encodeURIComponent(key)}/assignee`,
+      payload,
+    );
+  }
+
+  /** Cloud takes an ADF document where Server/DC takes wiki-markup text. */
+  private jiraTextBody(text: string): unknown {
+    return this.jiraIsCloud ? textToAdf(text) : text;
   }
 
   // ---------------------------------------------------------- Confluence
@@ -229,10 +374,175 @@ export class AtlassianClient {
     });
   }
 
+  async confluenceAttachments(
+    pageId: string,
+    limit: number,
+  ): Promise<ConfluenceAttachmentsResponse> {
+    const confluence = this.requireConfluence();
+    return this.get<ConfluenceAttachmentsResponse>(
+      confluence,
+      `/rest/api/content/${encodeURIComponent(pageId)}/child/attachment`,
+      { limit: String(limit), expand: 'version,metadata,extensions' },
+    );
+  }
+
   /** Cheap authenticated call used to verify the token works. */
   async confluenceProbe(): Promise<{ results?: unknown[] }> {
     const confluence = this.requireConfluence();
     return this.get(confluence, '/rest/api/space', { limit: '1' });
+  }
+
+  // ------------------------------------------------------ Confluence writes
+
+  async confluenceCreatePage(options: {
+    spaceKey: string;
+    title: string;
+    storage: string;
+    parentId?: string;
+  }): Promise<ConfluenceContent> {
+    const confluence = this.requireConfluence();
+    return this.send<ConfluenceContent>(confluence, 'POST', '/rest/api/content', {
+      type: 'page',
+      title: options.title,
+      space: { key: options.spaceKey },
+      ...(options.parentId ? { ancestors: [{ id: options.parentId }] } : {}),
+      body: { storage: { value: options.storage, representation: 'storage' } },
+    });
+  }
+
+  /**
+   * Replace a page's body. Confluence uses the version number for optimistic
+   * locking: `version.number` must be exactly one past the current one, so the
+   * caller passes the version it actually read and a concurrent edit fails
+   * loudly instead of silently overwriting someone's work.
+   */
+  async confluenceUpdatePage(options: {
+    pageId: string;
+    title: string;
+    storage: string;
+    currentVersion: number;
+    type?: string;
+    versionMessage?: string;
+  }): Promise<ConfluenceContent> {
+    const confluence = this.requireConfluence();
+    return this.send<ConfluenceContent>(
+      confluence,
+      'PUT',
+      `/rest/api/content/${encodeURIComponent(options.pageId)}`,
+      {
+        id: options.pageId,
+        type: options.type ?? 'page',
+        title: options.title,
+        version: {
+          number: options.currentVersion + 1,
+          ...(options.versionMessage ? { message: options.versionMessage } : {}),
+        },
+        body: { storage: { value: options.storage, representation: 'storage' } },
+      },
+    );
+  }
+
+  /** A page comment is itself content of type `comment`, contained by the page. */
+  async confluenceAddComment(pageId: string, storage: string): Promise<ConfluenceContent> {
+    const confluence = this.requireConfluence();
+    return this.send<ConfluenceContent>(confluence, 'POST', '/rest/api/content', {
+      type: 'comment',
+      container: { id: pageId, type: 'page' },
+      body: { storage: { value: storage, representation: 'storage' } },
+    });
+  }
+
+  // ------------------------------------------------------------- downloads
+
+  /**
+   * Fetch an attachment as bytes.
+   *
+   * The URL comes from an API payload, so it is checked against the configured
+   * base URL before the token is attached: a crafted attachment record must not
+   * be able to send a personal access token to another host.
+   */
+  async download(
+    product: 'jira' | 'confluence',
+    url: string,
+    maxBytes: number,
+  ): Promise<DownloadedFile> {
+    const endpoint = product === 'jira' ? this.requireJira() : this.requireConfluence();
+    const target = this.resolveAttachmentUrl(endpoint, url);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(target.toString(), {
+        method: 'GET',
+        headers: {
+          Authorization: authorizationHeader(endpoint),
+          Accept: '*/*',
+          'User-Agent': 'CodeBrain-Atlassian-MCP',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new AtlassianRequestError(
+        `Could not download ${target.pathname} from ${target.host}: ${reason}.`,
+        0,
+        target.toString(),
+      );
+    }
+
+    if (!response.ok) {
+      const body = await readErrorBody(response);
+      throw new AtlassianRequestError(
+        `${response.status} ${response.statusText} downloading ${target.pathname}${describeStatus(response.status)}${body ? ` — ${body}` : ''}`,
+        response.status,
+        target.toString(),
+        body,
+      );
+    }
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.byteLength > maxBytes) {
+      throw new AtlassianRequestError(
+        `The file is ${bytes.byteLength} bytes, over the ${maxBytes}-byte limit.`,
+        413,
+        target.toString(),
+      );
+    }
+    return {
+      bytes,
+      contentType: response.headers?.get?.('content-type') ?? 'application/octet-stream',
+    };
+  }
+
+  /**
+   * Absolute URLs must stay on the configured host; relative ones are joined to
+   * it. A root-relative link (`/download/attachments/…`, which is what
+   * Confluence returns) is resolved against the base URL **including its
+   * context path** — plain URL joining would drop the `/wiki` that Confluence
+   * Cloud needs and turn every download into a 404.
+   */
+  private resolveAttachmentUrl(endpoint: AtlassianEndpoint, url: string): URL {
+    const base = new URL(endpoint.baseUrl);
+    const basePath = base.pathname.replace(/\/+$/, '');
+    let target: URL;
+    try {
+      if (url.startsWith('/')) {
+        const path = basePath && !url.startsWith(`${basePath}/`) ? `${basePath}${url}` : url;
+        target = new URL(`${base.origin}${path}`);
+      } else {
+        target = new URL(url, `${base.origin}${basePath}/`);
+      }
+    } catch {
+      throw new AtlassianRequestError(`"${url}" is not a usable attachment URL.`, 0, url);
+    }
+    if (target.host !== base.host) {
+      throw new AtlassianRequestError(
+        `Refusing to send credentials to ${target.host}: attachments must live on ${base.host}.`,
+        0,
+        target.toString(),
+      );
+    }
+    return target;
   }
 
   // ------------------------------------------------------------- plumbing
@@ -249,25 +559,53 @@ export class AtlassianClient {
     return confluence;
   }
 
-  private async get<T>(
+  private get<T>(
     endpoint: AtlassianEndpoint,
     path: string,
     query: Record<string, string>,
   ): Promise<T> {
+    return this.request<T>(endpoint, 'GET', path, { query });
+  }
+
+  /**
+   * A mutating request. Separate from {@link get} only so that every write in
+   * this file is greppable — the transport underneath is the same.
+   */
+  private send<T>(
+    endpoint: AtlassianEndpoint,
+    method: 'POST' | 'PUT',
+    path: string,
+    body: unknown,
+  ): Promise<T> {
+    return this.request<T>(endpoint, method, path, { body });
+  }
+
+  private async request<T>(
+    endpoint: AtlassianEndpoint,
+    method: 'GET' | 'POST' | 'PUT',
+    path: string,
+    options: { query?: Record<string, string>; body?: unknown } = {},
+  ): Promise<T> {
     const url = new URL(endpoint.baseUrl + path);
-    for (const [key, value] of Object.entries(query)) {
+    for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined && value !== '') url.searchParams.set(key, value);
     }
 
+    const hasBody = options.body !== undefined;
     let response: Response;
     try {
       response = await this.fetchImpl(url.toString(), {
-        method: 'GET',
+        method,
         headers: {
           Authorization: authorizationHeader(endpoint),
           Accept: 'application/json',
           'User-Agent': 'CodeBrain-Atlassian-MCP',
+          ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+          // Confluence and Jira reject a non-GET without this header when the
+          // session also carries a cookie; harmless otherwise.
+          ...(method === 'GET' ? {} : { 'X-Atlassian-Token': 'no-check' }),
         },
+        ...(hasBody ? { body: JSON.stringify(options.body) } : {}),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) {
@@ -291,7 +629,23 @@ export class AtlassianClient {
       );
     }
 
-    return (await response.json()) as T;
+    // A successful write commonly answers 204 with an empty body — assignee and
+    // transition both do. Parsing that as JSON would throw and turn a change
+    // that landed into a reported malfunction.
+    if (response.status === 204 || response.status === 205) return undefined as T;
+    try {
+      return (await response.json()) as T;
+    } catch (error) {
+      if (method === 'GET') {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new AtlassianRequestError(
+          `${url.pathname} did not return JSON (${reason}). Check that the base URL points at the API root and not at a login or proxy page.`,
+          response.status,
+          url.toString(),
+        );
+      }
+      return undefined as T;
+    }
   }
 }
 

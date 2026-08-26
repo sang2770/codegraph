@@ -197,3 +197,165 @@ export function quoteQueryLiteral(value: string): string {
   const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return `"${escaped}"`;
 }
+
+// ------------------------------------------------------------------- writing
+//
+// Everything below turns the plain text an agent writes into the shape the
+// product actually stores. Agents write Markdown-ish text whatever they are
+// asked for, so the conversion has to be lenient: an unrecognised construct
+// must survive as literal text rather than being dropped or breaking the
+// document.
+
+/** Escape text for embedding in Confluence storage XHTML. */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Convert plain/Markdown-ish text into Confluence storage format.
+ *
+ * Handles the constructs that actually appear in agent-written content:
+ * headings, bullet and numbered lists, fenced code blocks, `**bold**`,
+ * `` `code` `` and blank-line-separated paragraphs. Everything else is escaped
+ * and emitted verbatim — a page with a stray character is fixable, a page that
+ * silently lost a paragraph is not.
+ */
+export function textToStorage(text: string): string {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const out: string[] = [];
+  let listTag: 'ul' | 'ol' | undefined;
+  const closeList = (): void => {
+    if (listTag) {
+      out.push(`</${listTag}>`);
+      listTag = undefined;
+    }
+  };
+  const openList = (tag: 'ul' | 'ol'): void => {
+    if (listTag !== tag) {
+      closeList();
+      out.push(`<${tag}>`);
+      listTag = tag;
+    }
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const fence = /^\s*```(\w*)\s*$/.exec(line);
+    if (fence) {
+      closeList();
+      const body: string[] = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index] ?? '')) {
+        body.push(lines[index] ?? '');
+        index += 1;
+      }
+      out.push(codeMacro(body.join('\n'), fence[1] ?? ''));
+      continue;
+    }
+
+    if (line.trim() === '') {
+      closeList();
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      closeList();
+      const level = (heading[1] ?? '#').length;
+      out.push(`<h${level}>${inlineToStorage(heading[2] ?? '')}</h${level}>`);
+      continue;
+    }
+
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    if (bullet) {
+      openList('ul');
+      out.push(`<li>${inlineToStorage(bullet[1] ?? '')}</li>`);
+      continue;
+    }
+
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (numbered) {
+      openList('ol');
+      out.push(`<li>${inlineToStorage(numbered[1] ?? '')}</li>`);
+      continue;
+    }
+
+    closeList();
+    out.push(`<p>${inlineToStorage(line.trim())}</p>`);
+  }
+
+  closeList();
+  return out.join('');
+}
+
+/**
+ * A Confluence code block. The body goes in CDATA rather than being escaped:
+ * code is full of `<`, `&` and quotes, and CDATA keeps it byte-exact.
+ */
+function codeMacro(body: string, language: string): string {
+  const languageParameter = language
+    ? `<ac:parameter ac:name="language">${escapeHtml(language)}</ac:parameter>`
+    : '';
+  // `]]>` is the one sequence CDATA cannot hold; split it across two sections.
+  const safe = body.replace(/]]>/g, ']]]]><![CDATA[>');
+  return `<ac:structured-macro ac:name="code">${languageParameter}<ac:plain-text-body><![CDATA[${safe}]]></ac:plain-text-body></ac:structured-macro>`;
+}
+
+/** Inline markers inside one line. Escaping happens first, so markup cannot be injected. */
+function inlineToStorage(line: string): string {
+  return escapeHtml(line)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+
+/** One ADF node type, kept structural because that is all a written body needs. */
+export interface AdfDocument {
+  type: 'doc';
+  version: 1;
+  content: unknown[];
+}
+
+/**
+ * Convert plain text into an ADF document.
+ *
+ * Jira Cloud rejects a string body on v3 endpoints, so anything written there
+ * has to be a node tree. Paragraphs split on blank lines; a single newline
+ * inside a paragraph becomes a hard break, which is how the text was meant to
+ * read.
+ */
+export function textToAdf(text: string): AdfDocument {
+  const paragraphs = text.replace(/\r\n/g, '\n').split(/\n{2,}/);
+  const content = paragraphs
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== '')
+    .map((paragraph) => ({
+      type: 'paragraph',
+      content: paragraph
+        .split('\n')
+        .flatMap((line, index) =>
+          index === 0
+            ? [{ type: 'text', text: line }]
+            : [{ type: 'hardBreak' }, { type: 'text', text: line }],
+        ),
+    }));
+
+  // An empty document is invalid; an empty paragraph is the accepted stand-in.
+  return {
+    type: 'doc',
+    version: 1,
+    content: content.length > 0 ? content : [{ type: 'paragraph', content: [] }],
+  };
+}
+
+/** `1.4 MB`. Used in image and attachment listings. */
+export function formatBytes(bytes: unknown): string {
+  const value = typeof bytes === 'number' ? bytes : Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return '';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}

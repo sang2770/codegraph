@@ -61,7 +61,8 @@
     "onCommand:codebrain.registerAtlassianMcp",
     "onCommand:codebrain.unregisterAtlassianMcp",
     "onCommand:codebrain.testAtlassianConnection",
-    "onCommand:codebrain.clearAtlassianCredentials"
+    "onCommand:codebrain.clearAtlassianCredentials",
+    "onCommand:codebrain.showReleaseNotes"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -305,6 +306,11 @@
       {
         "command": "codebrain.clearAtlassianCredentials",
         "title": "CodeBrain: Clear Atlassian Credentials"
+      },
+      {
+        "command": "codebrain.showReleaseNotes",
+        "title": "CodeBrain: What's New",
+        "icon": "$(megaphone)"
       }
     ],
     "menus": {
@@ -534,6 +540,12 @@
           "default": true,
           "description": "Automatically open generated Markdown reports in VS Code's preview."
         },
+        "codebrain.releaseNotes.showOnUpdate": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Open a \"What's new\" page the first time CodeBrain starts after an update, listing everything released since the version you were on. Never shown on a fresh install, and never twice for the same version. Run **CodeBrain: What's New** to open it on demand.",
+          "scope": "application"
+        },
         "codebrain.codeLens.enabled": {
           "type": "boolean",
           "default": true,
@@ -576,6 +588,20 @@
           "minimum": 1000,
           "maximum": 100000,
           "description": "Maximum characters of a Confluence page body or Jira description returned in one tool call. Longer content is truncated with an explicit note so the agent knows the text was cut.",
+          "scope": "application"
+        },
+        "codebrain.atlassian.allowWrite": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let agents **change** Jira and Confluence: comment on and transition issues, assign them, and create, update or comment on pages. Off by default — while it is off those tools are not offered to any agent at all, so the server can only read. Turning it on affects every agent sharing these credentials (Copilot, Claude Code, Codex, Gemini CLI, Antigravity).",
+          "scope": "application"
+        },
+        "codebrain.atlassian.maxImageBytes": {
+          "type": "number",
+          "default": 4194304,
+          "minimum": 65536,
+          "maximum": 33554432,
+          "description": "Largest single attached image returned inline by the image tools. Bigger images are listed by name and skipped instead of being sent.",
           "scope": "application"
         },
         "codebrain.atlassian.sslVerify": {
