@@ -31,6 +31,18 @@ trap 'rm -rf "$WORK"' EXIT
 ARCH="${TARGET##*-}"   # x64 | arm64
 OSFAM="${TARGET%-*}"   # darwin | linux | win32
 
+# Translate a Git Bash path (/c/a/repo) into one a native Windows program
+# understands (C:\a\repo). Only ever called on Windows, where `cygpath` ships
+# with Git Bash; the manual conversion is the fallback for the shells that
+# leave it out.
+to_windows_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf '%s' "$1" | sed -E 's#^/([A-Za-z])/#\1:/#' | tr '/' '\\'
+  fi
+}
+
 echo "[bundle] target=${TARGET} node=${NODE_VERSION}"
 
 # 1. Download + extract the official Node runtime for the target platform.
@@ -136,7 +148,21 @@ mkdir -p "$OUT"
 if [ "$OSFAM" = "win32" ]; then
   ARCHIVE="$OUT/codegraph-${TARGET}.zip"
   rm -f "$ARCHIVE"
-  ( cd "$WORK" && zip -rqX "$ARCHIVE" "codegraph-${TARGET}" )
+  if command -v zip >/dev/null 2>&1; then
+    ( cd "$WORK" && zip -rqX "$ARCHIVE" "codegraph-${TARGET}" )
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    # Building a Windows bundle ON Windows: Git Bash carries no `zip`, and the
+    # `tar` on its PATH is GNU tar, which reads zip but cannot write it — it
+    # would produce a plain tar named `.zip` and the failure would only surface
+    # when someone installed the extension. PowerShell is always present, and
+    # `-Path <dir>` nests the directory inside the archive exactly the way
+    # `zip -r` does, which is the layout the extractor expects.
+    powershell.exe -NoProfile -NonInteractive -Command \
+      "Compress-Archive -Path '$(to_windows_path "$WORK/codegraph-${TARGET}")' -DestinationPath '$(to_windows_path "$ARCHIVE")' -CompressionLevel Optimal -Force"
+  else
+    echo "[bundle] no way to write a .zip: install 'zip', or build this target from a machine with PowerShell." >&2
+    exit 1
+  fi
 else
   ARCHIVE="$OUT/codegraph-${TARGET}.tar.gz"
   # --no-xattrs: don't embed macOS xattrs that make GNU tar warn on Linux.

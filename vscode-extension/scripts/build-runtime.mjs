@@ -63,7 +63,18 @@ if (target === hostTarget && process.env.CODEGRAPH_SKIP_NATIVE_KERNEL !== '1') {
   });
   if (cargo.status === 0) {
     console.log(`[runtime] building native Rust kernel for ${target}`);
-    run(bashCommand, [tarPath(join(engineRoot, 'scripts', 'build-kernel.sh'))]);
+    // `--platform` is passed rather than letting build-kernel.sh read the host
+    // from `uname`: on Windows ARM, Git Bash is the x64 MSYS build running
+    // under emulation, so `uname -m` says `x86_64`. cargo still produces a
+    // correct arm64 binary, but it would be staged under `prebuilds/win32-x64`
+    // and the arm64 bundle would then find no kernel and silently fall back to
+    // WASM. This target is the host target — the `if` above guarantees it — so
+    // naming it here is exactly the label the build deserves.
+    run(bashCommand, [
+      tarPath(join(engineRoot, 'scripts', 'build-kernel.sh')),
+      '--platform',
+      target,
+    ]);
   } else if (requireKernel) {
     throw new Error(
       'A Rust toolchain is required because CODEGRAPH_REQUIRE_NATIVE_KERNEL=1.',
