@@ -628,6 +628,7 @@
     "test": "npm run check && node --test ./test/*.test.mjs",
     "package": "node ./scripts/package-extension.mjs",
     "package:all": "node ./scripts/package-extension.mjs --all",
+    "prepare-release": "node ./scripts/prepare-release.mjs",
     "package:store": "node ./scripts/publish-extension.mjs",
     "publish:store": "node ./scripts/publish-extension.mjs --publish"
   },

@@ -40,6 +40,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { isExecutable, markExecutable } from './runtime-permissions.mjs';
 import { assertTarget, SUPPORTED_TARGETS } from './runtime-target.mjs';
+import { verifyPackage } from './verify-vsix.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const extensionRoot = resolve(scriptDir, '..');
@@ -191,74 +192,6 @@ function writeIgnoreFile(target, directory) {
   return path;
 }
 
-/**
- * Read back the archive that is about to be published and assert it is what we
- * think it is: this target's runtime present and executable, no other target's
- * runtime along for the ride. Best-effort — `yauzl` reaches us through vsce, so
- * skip the check rather than fail the release if it is not installed.
- */
-export async function verifyPackage(vsix, target) {
-  let yauzl;
-  try {
-    yauzl = (await import('yauzl')).default ?? (await import('yauzl'));
-  } catch {
-    console.warn('[publish] yauzl unavailable — skipped .vsix verification');
-    return;
-  }
-
-  const entries = await new Promise((fulfil, fail) => {
-    yauzl.open(vsix, { lazyEntries: true }, (error, zip) => {
-      if (error) return fail(error);
-      const found = [];
-      zip.on('entry', (entry) => {
-        found.push(entry);
-        zip.readEntry();
-      });
-      zip.on('end', () => fulfil(found));
-      zip.on('error', fail);
-      zip.readEntry();
-    });
-  });
-
-  const prefix = `extension/runtime/${target}/`;
-  const strays = SUPPORTED_TARGETS.filter((other) => other !== target).filter(
-    (other) =>
-      entries.some((entry) =>
-        entry.fileName.startsWith(`extension/runtime/${other}/`),
-      ),
-  );
-  if (strays.length > 0) {
-    throw new Error(
-      `${vsix} also contains runtimes for ${strays.join(', ')} — the ignore file did not apply.`,
-    );
-  }
-
-  const launcher = entries.find(
-    (entry) =>
-      entry.fileName === `${prefix}${target.startsWith('win32-') ? 'node.exe' : 'node'}`,
-  );
-  if (!launcher) {
-    throw new Error(`${vsix} does not contain the ${target} runtime launcher.`);
-  }
-
-  if (!target.startsWith('win32-') && process.platform !== 'win32') {
-    // The mode a Linux user's install starts from, read from the archive
-    // itself rather than from the staging directory we set it in.
-    const mode = (launcher.externalFileAttributes >>> 16) & 0o7777;
-    if ((mode & 0o111) === 0) {
-      throw new Error(
-        `${vsix} records ${prefix}node as non-executable (mode ${mode.toString(8).padStart(4, '0')}). ` +
-          'Package this target from macOS or Linux.',
-      );
-    }
-  } else if (!target.startsWith('win32-')) {
-    console.warn(
-      `[publish] ${vsix} was packaged on Windows; POSIX execute-bit verification skipped. ` +
-        'The extension will restore it on first run.',
-    );
-  }
-}
-
 async function confirm(question) {
   if (values.yes) return true;
   if (!process.stdin.isTTY) {
@@ -362,8 +295,8 @@ async function main() {
   );
 }
 
-// Importable without side effects, so `verifyPackage` can be exercised against
-// a .vsix on its own.
+// Only `main()` is guarded — this module parses argv at import time, so it is
+// not importable. The reusable half lives in `verify-vsix.mjs`.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
     console.error(`[publish] ${error instanceof Error ? error.message : String(error)}`);

@@ -18,6 +18,9 @@ const explicitTarget =
 const targets = packageAll
   ? SUPPORTED_TARGETS
   : [assertTarget(explicitTarget ?? normalizeTarget())];
+// A pre-release is stamped into the archive at package time — it cannot be
+// decided later at publish time, so the flag has to travel this far.
+const preRelease = process.argv.includes('--pre-release');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 
@@ -81,6 +84,7 @@ try {
         target,
         '--out',
         `codebrain-${target}.vsix`,
+        ...(preRelease ? ['--pre-release'] : []),
       ]);
     } finally {
       restoreRuntimes();

@@ -1,7 +1,29 @@
 name: VS Code extension
 
+# Pushes build and test the six platform packages and leave them as artifacts.
+# Publishing to the marketplace is never automatic: it happens only when a
+# maintainer runs this workflow by hand with `publish` ticked. Publishing is a
+# one-way action on a shared store — a bad version cannot be recalled, only
+# superseded — so it stays a deliberate act, the same way the npm release does.
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to the VS Code Marketplace (requires the VSCE_PAT secret)"
+        type: boolean
+        default: false
+      pre_release:
+        description: "Publish as a pre-release"
+        type: boolean
+        default: false
+      skip_duplicate:
+        description: "Succeed instead of failing when this version is already published"
+        type: boolean
+        default: false
+      allow_empty_changelog:
+        description: "Release even though there is nothing under ## [Unreleased]"
+        type: boolean
+        default: false
   push:
     paths:
       - "src/**"
@@ -14,8 +36,81 @@ on:
       - ".github/workflows/vscode-extension.yml"
 
 jobs:
+  # Everything that can reject a release is settled before six runners spend
+  # twenty minutes building runtimes: the token has to exist, and the changelog
+  # has to name this version. Both cost seconds here and a whole build if they
+  # only surface at the end.
+  preflight:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      # Only for the changelog promotion commit below.
+      contents: write
+    outputs:
+      # The commit the packages must be built from — the promotion commit when
+      # there was one, otherwise whatever the run was started on.
+      sha: ${{ steps.changelog.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the marketplace token
+        # The `secrets` context is unavailable in `if:`, so the check has to
+        # happen inside the step rather than as a condition on it.
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        shell: bash
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::VSCE_PAT is not set. Add the marketplace personal access token as a repository secret before publishing."
+            exit 1
+          fi
+
+      # The published package must carry a changelog that names its own
+      # version: it is what the marketplace shows on the Changelog tab, and
+      # what the extension reads for its "What's new" page after an update.
+      # Promoting it here rather than asking a human to remember means the two
+      # can never disagree.
+      - name: Promote the changelog
+        id: changelog
+        shell: bash
+        env:
+          ALLOW_EMPTY: ${{ inputs.allow_empty_changelog }}
+        run: |
+          version=$(node -p "require('./vscode-extension/package.json').version")
+          args=("$version")
+          if [ "$ALLOW_EMPTY" = "true" ]; then
+            args+=(--allow-empty)
+          fi
+          (cd vscode-extension && node ./scripts/prepare-release.mjs "${args[@]}")
+
+          if git diff --quiet -- vscode-extension/CHANGELOG.md; then
+            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "Changelog already named v$version" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "${{ github.ref_type }}" != "branch" ]; then
+            echo "::error::The changelog needs promoting but this run is not on a branch, so the change cannot be pushed. Promote it on main first."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vscode-extension/CHANGELOG.md
+          # [skip ci] — this push touches vscode-extension/, which would
+          # otherwise start a second run of this same workflow.
+          git commit -m "chore(extension): promote changelog for v$version [skip ci]"
+          git push origin "HEAD:${{ github.ref_name }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Promoted the changelog to **v$version**" >> "$GITHUB_STEP_SUMMARY"
+
   package:
     runs-on: ${{ matrix.os }}
+    needs: preflight
+    # preflight is skipped on a push, and a skipped dependency would otherwise
+    # skip this job with it. `!cancelled()` keeps that from also reviving the
+    # job after someone cancels the run.
+    if: ${{ !cancelled() && needs.preflight.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +129,12 @@ jobs:
             os: windows-latest
 
     steps:
+      # Build the promoted commit when there is one, so the packaged changelog
+      # is the same one the marketplace and the "What's new" page will show.
+      # Empty on a push, where preflight never ran.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -62,7 +162,15 @@ jobs:
         shell: bash
         env:
           CODEGRAPH_REQUIRE_NATIVE_KERNEL: "1"
-        run: npm run package -- --target "${{ matrix.target }}"
+          # A pre-release has to be stamped in at package time; it cannot be
+          # decided later when the archive is uploaded.
+          PRE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.pre_release }}
+        run: |
+          args=(--target "${{ matrix.target }}")
+          if [ "$PRE_RELEASE" = "true" ]; then
+            args+=(--pre-release)
+          fi
+          npm run package -- "${args[@]}"
 
       - name: Verify native kernel in packaged runtime
         shell: bash
@@ -73,3 +181,59 @@ jobs:
           name: codebrain-${{ matrix.target }}
           path: vscode-extension/codebrain-${{ matrix.target }}.vsix
           if-no-files-found: error
+
+  # One job, one `vsce publish` carrying all six packages. Uploading them one
+  # at a time would leave a half-published version on the marketplace if a
+  # later upload failed, and some users would then get a platform package that
+  # does not exist.
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    needs: [preflight, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      # vsce, and the yauzl the .vsix verification reads with, come from here.
+      - name: Install extension dependencies
+        working-directory: vscode-extension
+        run: npm ci
+
+      - name: Download every platform package
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codebrain-*
+          merge-multiple: true
+          path: packages
+
+      - name: Verify and publish
+        working-directory: vscode-extension
+        shell: bash
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          PRE_RELEASE: ${{ inputs.pre_release }}
+          SKIP_DUPLICATE: ${{ inputs.skip_duplicate }}
+        run: |
+          args=(--dir "$GITHUB_WORKSPACE/packages" --publish)
+          if [ "$PRE_RELEASE" = "true" ]; then
+            args+=(--pre-release)
+          fi
+          if [ "$SKIP_DUPLICATE" = "true" ]; then
+            args+=(--skip-duplicate)
+          fi
+          node ./scripts/publish-packaged.mjs "${args[@]}"
+
+      - name: Summarise
+        shell: bash
+        run: |
+          version=$(node -p "require('./vscode-extension/package.json').version")
+          id=$(node -p "const p = require('./vscode-extension/package.json'); p.publisher + '.' + p.name")
+          echo "Published **$id v$version**" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://marketplace.visualstudio.com/items?itemName=$id" >> "$GITHUB_STEP_SUMMARY"

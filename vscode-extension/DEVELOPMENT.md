@@ -155,7 +155,66 @@ Supported targets:
 
 ---
 
-## Publishing to the Marketplace
+## Publishing from CI (the normal path)
+
+The **VS Code extension** GitHub workflow builds all six platform packages —
+`darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`, `win32-arm64`,
+`win32-x64` — each on its own runner, because a runtime can only be built on
+the platform it targets. Every push that touches the extension runs the build
+and the tests and leaves the six `.vsix` files as artifacts. **Publishing never
+happens on a push.**
+
+To release:
+
+1. Write what changed under `## [Unreleased]` in `vscode-extension/CHANGELOG.md`.
+2. Bump `version` in `vscode-extension/package.json` and land both on `main`.
+   Republishing an existing version is rejected by the marketplace, so the bump
+   is what makes the release possible at all.
+3. **Actions → VS Code extension → Run workflow**, tick **publish**.
+
+Inputs:
+
+| Input | Effect |
+| --- | --- |
+| `publish` | Upload to the marketplace. Off by default — the run just builds. |
+| `pre_release` | Package and publish as a pre-release. Must be set for the build, not only the upload: the flag is stamped into the archive at package time. |
+| `skip_duplicate` | Succeed instead of failing when the version already exists. |
+| `allow_empty_changelog` | Release even though `## [Unreleased]` holds nothing. |
+
+The run does a **preflight** first, so anything that would reject the release
+costs seconds instead of a full six-runner build:
+
+- **`VSCE_PAT` must be set.** A marketplace personal access token for the
+  `sang2nguyen-LGE` publisher, with the *Marketplace → Manage* scope. Azure
+  DevOps PATs expire (a year at most), so a publish that suddenly fails
+  authentication usually needs a new token rather than a code change.
+- **The changelog is promoted** by `scripts/prepare-release.mjs`:
+  `## [Unreleased]` becomes `## [<version>] - <YYYY-MM-DD>` with a fresh empty
+  `[Unreleased]` opened above it, and the result is committed back to the
+  branch with `[skip ci]`. The package jobs then build **that** commit, so the
+  shipped archive carries a changelog naming its own version. This matters
+  twice over: the marketplace renders the file on the extension's Changelog
+  tab, and `src/releaseNotes.ts` reads it for the "What's new" page shown after
+  an update. Re-running a failed release is safe — a second promotion is a
+  no-op. With nothing under `[Unreleased]` the release **stops** rather than
+  shipping a blank "What's new"; `allow_empty_changelog` overrides that.
+  (This needs the workflow to be able to push to the branch. If it is
+  protected against Actions, run `npm run prepare-release` locally, commit, and
+  the preflight will find nothing left to do.)
+
+The packages are then built per target and published all six in **one**
+`vsce publish` call — uploading them one at a time would leave a half-published
+version on the store if a later upload failed. Before uploading,
+`scripts/publish-packaged.mjs` reads each archive back through
+`scripts/verify-vsix.mjs` and fails if it holds another target's runtime or
+records `node` as non-executable.
+
+---
+
+## Publishing by hand
+
+Still supported, and the right tool when CI is unavailable or you want to ship
+a subset of targets from a machine that already has their runtimes staged.
 
 `scripts/publish-extension.mjs` packages the Linux and Windows targets and
 pushes them with the locally installed, already logged-in `vsce`. Unlike
@@ -196,3 +255,6 @@ Every target is published in a single `vsce publish` call, so the marketplace
 sees one version with all its platform packages rather than a half-published
 version if one upload fails. Version bumps stay manual: edit `version` in
 `package.json` first, since republishing an existing version is rejected.
+
+`npm run package -- --target <target> --pre-release` marks a single package as
+a pre-release, which is what the CI workflow's `pre_release` input drives.
