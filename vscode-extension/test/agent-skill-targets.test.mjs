@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadTypeScript } from './helpers/load.mjs';
 
 const { readMarkdownBlock, removeMarkdownBlock, upsertMarkdownBlock } =
@@ -109,7 +110,10 @@ test('SKILL.md is split into the pieces each agent format needs', () => {
 });
 
 test('the skill shipped with the extension parses', () => {
-  const shipped = loadSkill(new URL('..', import.meta.url).pathname);
+  // `fileURLToPath`, not `.pathname`: on Windows a file URL's pathname is
+  // `/D:/a/repo/`, and joining that onto anything resolves against the current
+  // drive to `D:\D:\a\repo\…`. It only looks correct on POSIX.
+  const shipped = loadSkill(fileURLToPath(new URL('..', import.meta.url)));
   assert.equal(shipped.name, 'codebrain');
   assert.ok(shipped.description.length > 0);
   assert.ok(shipped.body.includes('codegraph_explore'));
