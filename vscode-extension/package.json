@@ -2,7 +2,7 @@
   "name": "codebrain-lge",
   "displayName": "CodeBrain LGE",
   "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
-  "version": "2.0.5",
+  "version": "2.1.0",
   "publisher": "sang2nguyen-LGE",
   "license": "MIT",
   "icon": "media/icon.png",
