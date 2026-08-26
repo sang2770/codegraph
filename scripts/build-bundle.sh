@@ -43,6 +43,21 @@ to_windows_path() {
   fi
 }
 
+# Read the archive back and refuse it if any entry uses `\` as its separator.
+# A zip like that extracts to files literally named `dir\sub\file` on POSIX
+# and is rejected outright by `unzip`, so catching it here is the difference
+# between a build that fails and a runtime that is quietly unusable.
+assert_forward_slashes() {
+  local ps="$1" archive="$2" bad
+  bad="$("$ps" -NoProfile -NonInteractive -Command \
+    "Add-Type -AssemblyName System.IO.Compression.FileSystem; \$zip = [System.IO.Compression.ZipFile]::OpenRead('$(to_windows_path "$archive")'); \$n = @(\$zip.Entries | Where-Object { \$_.FullName -like '*\\*' }).Count; \$zip.Dispose(); Write-Output \$n" |
+    tr -d '\r')"
+  if [ "${bad:-0}" != "0" ]; then
+    echo "[bundle] ${archive}: ${bad} entries use backslash separators, which is not a valid zip." >&2
+    exit 1
+  fi
+}
+
 echo "[bundle] target=${TARGET} node=${NODE_VERSION}"
 
 # 1. Download + extract the official Node runtime for the target platform.
@@ -150,15 +165,21 @@ if [ "$OSFAM" = "win32" ]; then
   rm -f "$ARCHIVE"
   if command -v zip >/dev/null 2>&1; then
     ( cd "$WORK" && zip -rqX "$ARCHIVE" "codegraph-${TARGET}" )
-  elif command -v powershell.exe >/dev/null 2>&1; then
+  elif PS="$(command -v pwsh.exe || command -v pwsh || command -v powershell.exe)"; then
     # Building a Windows bundle ON Windows: Git Bash carries no `zip`, and the
     # `tar` on its PATH is GNU tar, which reads zip but cannot write it — it
     # would produce a plain tar named `.zip` and the failure would only surface
-    # when someone installed the extension. PowerShell is always present, and
-    # `-Path <dir>` nests the directory inside the archive exactly the way
-    # `zip -r` does, which is the layout the extractor expects.
-    powershell.exe -NoProfile -NonInteractive -Command \
-      "Compress-Archive -Path '$(to_windows_path "$WORK/codegraph-${TARGET}")' -DestinationPath '$(to_windows_path "$ARCHIVE")' -CompressionLevel Optimal -Force"
+    # when someone installed the extension.
+    #
+    # PowerShell is always present, but NOT its `Compress-Archive` cmdlet: that
+    # writes entry names separated by `\`, which the ZIP spec forbids (it
+    # mandates `/`), and `unzip` then refuses the archive. .NET's own
+    # CreateFromDirectory normalises the separator, so it is used directly.
+    # `$true` includes the base directory, giving the same `codegraph-<target>/…`
+    # nesting as `zip -r` and the layout the extractor expects.
+    "$PS" -NoProfile -NonInteractive -Command \
+      "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::CreateFromDirectory('$(to_windows_path "$WORK/codegraph-${TARGET}")', '$(to_windows_path "$ARCHIVE")', [System.IO.Compression.CompressionLevel]::Optimal, \$true)"
+    assert_forward_slashes "$PS" "$ARCHIVE"
   else
     echo "[bundle] no way to write a .zip: install 'zip', or build this target from a machine with PowerShell." >&2
     exit 1
