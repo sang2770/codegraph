@@ -12,6 +12,7 @@ import {
 import { GraphCache } from './graphCache';
 import { ImpactController } from './impactController';
 import { IndexFreshness } from './indexFreshness';
+import { registerJiraBoard } from './jira/boardView';
 import {
   ReviewCodeActionProvider,
   ReviewPresenter,
@@ -219,6 +220,11 @@ export function activate(context: vscode.ExtensionContext): void {
         showReleaseNotes(context, { log: logSink }),
       ),
     );
+
+    // The Jira board: sidebar view, full panel, branch mapping and the
+    // status-bar ticket. Registered after the commands above because its
+    // webview can invoke them.
+    registerJiraBoard(context, atlassian, logSink);
 
     registerChatParticipant(
       context,

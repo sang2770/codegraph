@@ -184,6 +184,26 @@ Every MCP entry points at the extension's own bundled runtime, so no Node.js ins
 
 Extension updates move the bundled runtime's path and can change the skill text. CodeBrain rewrites what it already owns on the next activation — at whichever scope you installed it — so an agent keeps working across upgrades without you re-running anything. **CodeBrain: Uninstall CodeBrain from Agents** sweeps both scopes and both halves, so nothing is left behind.
 
+### 📋 Jira Board with Branch Mapping
+A **CodeBrain** icon in the Activity Bar opens a **Jira Board** that runs on the same credentials as the Atlassian MCP server — no second login. **CodeBrain: Open Jira Board** opens the wide version with charts in an editor tab.
+
+**Filters, and what each one costs.** Chips pick who (*Mine*, *Reported*, *Watching*, *Everyone*) and the progress columns (*To do*, *In progress*, *Done*); a dropdown filters by deadline (overdue, today, this week, no due date); and there is a project box, an open-sprints toggle, a sort order, and a search box that filters the loaded issues by key, summary, assignee, label or component as you type. Only the filters that belong in the query re-ask Jira — the rest narrow what is already loaded, so they are instant. Your choices are remembered per workspace.
+
+**Warnings, so nothing rots quietly.** Tiles above the board count what needs attention: **overdue**, **due soon** (within `codebrain.jira.dueSoonDays`), **stale** (in progress, untouched for `codebrain.jira.staleDays`), **unassigned**, and **in progress with no due date**. Click a tile to see only those issues. Warnings are never reported on a finished issue. Each card also shows its own warnings, and carries a coloured edge for the most severe one.
+
+**Statistics.** The full board adds a progress donut with the completion rate, a deadline distribution, workload per assignee, and a breakdown by status — all over the issues currently on screen, so a filter changes the charts with it.
+
+**Branch mapping.** Each card knows the branches that carry its issue key, and one click does the right thing:
+- a local branch exists → switch to it (and CodeBrain asks first if uncommitted changes would be carried along);
+- only a teammate's remote branch exists → create a local branch tracking it;
+- neither → suggest a name from `codebrain.jira.branchTemplate` (default `{prefix}/{key}-{summary}`, so `TPLD-958` becomes `bugfix/TPLD-958-fix-chart-lag`) and let you edit it before it is created. Accented summaries become readable ASCII, and a name git would refuse is corrected before it is offered.
+
+Several branches carrying the same key are offered as a list rather than guessed at. **CodeBrain: Check Out Branch for a Jira Issue** does the same thing from the Command Palette or the Source Control menu, and **Fetch branches** picks up what teammates just pushed.
+
+**The reverse direction, passively.** The status bar shows the issue key read from the current branch with its status, going amber when that issue is overdue — click it to open the ticket. A branch key is only trusted when its project is one the board actually loaded, so `chore/node-22` is not reported as ticket NODE-22. Turn it off with `codebrain.jira.statusBar`.
+
+Cards also offer **Ask CodeBrain**, which opens Chat with the ticket as the question, and **Copy key** for the commit message. With `codebrain.atlassian.allowWrite` on, a **Move** action transitions the issue — the same switch that governs agents, so the board is read-only until you say otherwise.
+
 ### 🔗 Jira & Confluence (Collab) Search for Every Agent
 CodeBrain ships a second MCP server that lets an agent search your team's Confluence (Collab) and Jira from inside the task it is already working on — the ticket behind a branch name, the spec behind a design decision, the discussion that explains why the code looks the way it does.
 
@@ -232,6 +252,15 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 | `codebrain.atlassian.allowWrite` | `false` | Let agents change Jira and Confluence — comment, transition, assign, and create/update pages. While off, those tools are not offered to any agent. |
 | `codebrain.atlassian.maxImageBytes` | `4194304` | Largest single attached image returned inline by the image tools. Bigger ones are named and skipped. |
 | `codebrain.atlassian.sslVerify` | `true` | Verify the TLS certificate of the Jira/Confluence hosts. Disable only for a private certificate authority. |
+| `codebrain.jira.defaultProject` | `""` | Jira project keys the board starts filtered to, e.g. `TPLD, WEB`. |
+| `codebrain.jira.maxIssues` | `100` | How many issues one board load fetches (10–500). The board says so when Jira had more. |
+| `codebrain.jira.autoRefreshMinutes` | `10` | Minutes between automatic board reloads, only while the window has focus. `0` disables it. |
+| `codebrain.jira.dueSoonDays` | `3` | An open issue due within this many days is flagged as due soon. |
+| `codebrain.jira.staleDays` | `5` | An in-progress issue with no update for this long is flagged as stale. |
+| `codebrain.jira.branchTemplate` | `{prefix}/{key}-{summary}` | Suggested branch name. Placeholders: `{key}`, `{summary}`, `{prefix}`, `{type}`. |
+| `codebrain.jira.baseBranch` | `""` | Branch a new issue branch is created from. Empty branches off whatever is checked out. |
+| `codebrain.jira.jql` | `""` | Advanced: JQL replacing every generated condition. Ordering is appended unless yours has `ORDER BY`. |
+| `codebrain.jira.statusBar` | `true` | Show the current branch's issue key and status in the status bar. |
 
 ---
 
@@ -260,6 +289,10 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - `CodeBrain: Unregister Atlassian MCP from Agents` — Remove those config entries.
 - `CodeBrain: Test Atlassian Connection` — Make one authenticated call per configured product and report the result.
 - `CodeBrain: Clear Atlassian Credentials` — Forget the tokens, URLs, and the shared credentials file.
+- `CodeBrain: Open Jira Board` — Open the full board, with charts, in an editor tab.
+- `CodeBrain: Refresh Jira Board` — Reload the board from Jira now.
+- `CodeBrain: Check Out Branch for a Jira Issue` — Pick a ticket and switch to, track, or create its branch.
+- `CodeBrain: Open the Jira Issue for This Branch` — Open the ticket the current branch name refers to.
 
 ---
 

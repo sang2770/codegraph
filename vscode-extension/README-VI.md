@@ -433,6 +433,40 @@ Token nằm trong keychain của hệ điều hành (VS Code SecretStorage) và 
 
 Log của phần này nằm ở Output channel **CodeBrain Atlassian**.
 
+## 10c. Bảng Jira kèm mapping branch
+
+Icon **CodeBrain** trên Activity Bar mở view **Jira Board**, dùng đúng credentials đã cấu hình ở phần trên — không phải đăng nhập lần hai. Lệnh **CodeBrain: Open Jira Board** mở bản rộng, có biểu đồ, trong một tab editor.
+
+### Filter — cái nào tốn một request, cái nào không
+
+Chip chọn phạm vi (*Mine*, *Reported*, *Watching*, *Everyone*) và cột tiến độ (*To do*, *In progress*, *Done*); dropdown filter theo deadline (quá hạn, hôm nay, trong tuần, chưa có due date); ngoài ra có ô project, toggle sprint đang mở, thứ tự sắp xếp, và ô tìm kiếm lọc theo key, summary, người phụ trách, label hoặc component ngay khi bạn gõ.
+
+Chỉ những filter thuộc về câu query mới hỏi lại Jira; phần còn lại lọc trên tập đã tải nên phản hồi tức thì. Lựa chọn được ghi nhớ theo từng workspace.
+
+### Cảnh báo — để không ticket nào bị bỏ quên
+
+Các ô phía trên bảng đếm những thứ cần để ý: **quá hạn**, **gần đến hạn** (trong `codebrain.jira.dueSoonDays` ngày), **ì** (đang In progress nhưng `codebrain.jira.staleDays` ngày không có cập nhật), **chưa có người nhận**, và **đang làm nhưng không có due date**. Bấm vào một ô để chỉ xem nhóm đó. Ticket đã đóng thì không bao giờ bị cảnh báo. Mỗi card cũng hiện cảnh báo của riêng nó, kèm viền màu theo mức nghiêm trọng nhất.
+
+### Biểu đồ thống kê
+
+Bản đầy đủ có donut tiến độ kèm tỉ lệ hoàn thành, phân bố deadline, khối lượng theo từng người, và thống kê theo status — tất cả tính trên tập ticket đang hiển thị, nên đổi filter là biểu đồ đổi theo.
+
+### Mapping sang git branch
+
+Mỗi card biết những branch đang mang issue key của nó, và một click làm đúng việc cần làm:
+
+- đã có branch local → chuyển sang branch đó (nếu đang có thay đổi chưa commit, CodeBrain hỏi trước vì git sẽ mang chúng theo);
+- chỉ có branch remote của đồng nghiệp → tạo branch local track theo branch đó;
+- chưa có gì → gợi ý tên theo `codebrain.jira.branchTemplate` (mặc định `{prefix}/{key}-{summary}`, nên `TPLD-958` thành `bugfix/TPLD-958-fix-chart-lag`) và cho bạn sửa trước khi tạo. Summary tiếng Việt được chuyển thành ASCII đọc được, và tên mà git từ chối sẽ được sửa trước khi gợi ý.
+
+Nhiều branch cùng mang một key thì được liệt kê ra cho bạn chọn, không đoán. Lệnh **CodeBrain: Check Out Branch for a Jira Issue** làm cùng việc đó từ Command Palette hoặc menu Source Control, còn nút **Fetch branches** lấy về những branch đồng nghiệp vừa push.
+
+### Chiều ngược lại, không cần mở gì
+
+Status bar hiện issue key đọc từ tên branch hiện tại kèm status, chuyển màu vàng khi ticket đó quá hạn — bấm vào để mở ticket. Key từ branch chỉ được tin khi project của nó nằm trong số project bảng đã tải, nên `chore/node-22` không bị hiểu thành ticket NODE-22. Tắt bằng `codebrain.jira.statusBar`.
+
+Trên mỗi card còn có **Ask CodeBrain** (mở Chat với ticket làm câu hỏi) và **Copy key** cho commit message. Nếu `codebrain.atlassian.allowWrite` đang bật, card có thêm **Move** để chuyển status — vẫn là đúng cái switch dành cho agent, nên khi chưa bật thì bảng chỉ đọc.
+
 ## 11. Tự động nhận diện ngôn ngữ
 
 Chat participant phát hiện ngôn ngữ từ tin nhắn mới nhất.

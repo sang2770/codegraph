@@ -2,7 +2,7 @@
   "name": "codebrain-lge",
   "displayName": "CodeBrain LGE",
   "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "publisher": "sang2nguyen-LGE",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -62,7 +62,11 @@
     "onCommand:codebrain.unregisterAtlassianMcp",
     "onCommand:codebrain.testAtlassianConnection",
     "onCommand:codebrain.clearAtlassianCredentials",
-    "onCommand:codebrain.showReleaseNotes"
+    "onCommand:codebrain.showReleaseNotes",
+    "onCommand:codebrain.openJiraBoard",
+    "onCommand:codebrain.refreshJiraBoard",
+    "onCommand:codebrain.jiraCheckoutBranch",
+    "onCommand:codebrain.openIssueForCurrentBranch"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -75,6 +79,26 @@
     }
   },
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codebrain",
+          "title": "CodeBrain",
+          "icon": "media/codebrain-bar.svg"
+        }
+      ]
+    },
+    "views": {
+      "codebrain": [
+        {
+          "type": "webview",
+          "id": "codebrain.jiraBoard",
+          "name": "Jira Board",
+          "contextualTitle": "CodeBrain Jira Board",
+          "icon": "media/codebrain-bar.svg"
+        }
+      ]
+    },
     "mcpServerDefinitionProviders": [
       {
         "id": "codebrain.runtime",
@@ -311,9 +335,51 @@
         "command": "codebrain.showReleaseNotes",
         "title": "CodeBrain: What's New",
         "icon": "$(megaphone)"
+      },
+      {
+        "command": "codebrain.openJiraBoard",
+        "title": "CodeBrain: Open Jira Board",
+        "icon": "$(layout)"
+      },
+      {
+        "command": "codebrain.refreshJiraBoard",
+        "title": "CodeBrain: Refresh Jira Board",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codebrain.jiraCheckoutBranch",
+        "title": "CodeBrain: Check Out Branch for a Jira Issue",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "codebrain.openIssueForCurrentBranch",
+        "title": "CodeBrain: Open the Jira Issue for This Branch",
+        "icon": "$(issues)"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "codebrain.refreshJiraBoard",
+          "when": "view == codebrain.jiraBoard",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codebrain.jiraCheckoutBranch",
+          "when": "view == codebrain.jiraBoard",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codebrain.openJiraBoard",
+          "when": "view == codebrain.jiraBoard",
+          "group": "navigation@3"
+        },
+        {
+          "command": "codebrain.configureAtlassian",
+          "when": "view == codebrain.jiraBoard",
+          "group": "1_configure@1"
+        }
+      ],
       "editor/context": [
         {
           "command": "codebrain.analyzeImpact",
@@ -375,6 +441,11 @@
         },
         {
           "command": "codebrain.editCommitTemplate",
+          "group": "1_modification",
+          "when": "scmProvider == git"
+        },
+        {
+          "command": "codebrain.jiraCheckoutBranch",
           "group": "1_modification",
           "when": "scmProvider == git"
         }
@@ -609,6 +680,68 @@
           "default": true,
           "description": "Verify the TLS certificate of the Jira and Confluence hosts. Turn this off only for an internal deployment behind a private certificate authority.",
           "scope": "application"
+        },
+        "codebrain.jira.defaultProject": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Jira project keys the board starts filtered to, for example `TPLD` or `TPLD, WEB`. Leave empty for every project your query matches. Change it per session with the project box in the board's filter bar.",
+          "scope": "resource"
+        },
+        "codebrain.jira.maxIssues": {
+          "type": "number",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 500,
+          "description": "How many issues one board load fetches. The board says so when Jira had more, because a filter can only narrow what was already loaded.",
+          "scope": "window"
+        },
+        "codebrain.jira.autoRefreshMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "maximum": 240,
+          "description": "Minutes between automatic board reloads. Reloads happen only while the window has focus. Set to 0 to refresh only when you ask.",
+          "scope": "window"
+        },
+        "codebrain.jira.dueSoonDays": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 30,
+          "description": "An open issue due this many days from now, or sooner, is flagged as due soon.",
+          "scope": "window"
+        },
+        "codebrain.jira.staleDays": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 90,
+          "description": "An in-progress issue with no update for this many days is flagged as stale.",
+          "scope": "window"
+        },
+        "codebrain.jira.branchTemplate": {
+          "type": "string",
+          "default": "{prefix}/{key}-{summary}",
+          "markdownDescription": "Branch name suggested when you start work on an issue. Placeholders: `{key}` (TPLD-958), `{summary}` (slug of the summary), `{prefix}` (`feature`, `bugfix`, `hotfix`, `chore` or `spike`, from the issue type), `{type}`. The suggestion is always editable before the branch is created.",
+          "scope": "resource"
+        },
+        "codebrain.jira.baseBranch": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Branch a new issue branch is created from, for example `develop`. Leave empty to branch off whatever is checked out.",
+          "scope": "resource"
+        },
+        "codebrain.jira.jql": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Advanced: JQL that replaces every condition the board would generate — the who/project/progress filters stop applying to the query (they still narrow what is already loaded). Ordering is appended unless your JQL brings its own `ORDER BY`.",
+          "scope": "resource"
+        },
+        "codebrain.jira.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the issue key from the current branch in the status bar, with its status, and turn it amber when that issue is overdue.",
+          "scope": "window"
         },
         "codebrain.tests.command": {
           "type": "string",
