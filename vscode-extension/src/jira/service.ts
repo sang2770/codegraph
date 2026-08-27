@@ -224,6 +224,8 @@ export class JiraBoardService implements vscode.Disposable {
   private headWatcher: vscode.FileSystemWatcher | undefined;
   private inFlight: Promise<void> | undefined;
   private projectsInFlight: Promise<BoardProject[]> | undefined;
+  /** True when the project list hit the client's own cap — reported, not hidden. */
+  private projectListTruncated = false;
 
   /** Fires with a freshly composed view whenever anything changed. */
   readonly onDidChange = this.didChange.event;
@@ -350,9 +352,21 @@ export class JiraBoardService implements vscode.Disposable {
       this.emit();
       try {
         const client = new AtlassianClient({ connections });
-        const projects = normalizeProjects(await client.jiraProjects());
+        // The recent list is a nicety and a second request, so it never decides
+        // whether the picker opens: a failure there leaves the list unsorted.
+        const [listed, recent] = await Promise.all([
+          client.jiraProjects(),
+          client.jiraRecentProjects().catch(() => []),
+        ]);
+        const projects = normalizeProjects(
+          listed.projects,
+          recent.map((entry) => entry.key ?? ''),
+        );
+        this.projectListTruncated = listed.truncated;
         this.data = { ...this.data, projects, projectsLoading: false };
-        this.log(`[jira] loaded ${projects.length} project(s)`);
+        this.log(
+          `[jira] loaded ${projects.length} project(s)${listed.truncated ? ' (list truncated by the client limit)' : ''}`,
+        );
         this.emit();
         return projects;
       } catch (error) {
@@ -375,6 +389,11 @@ export class JiraBoardService implements vscode.Disposable {
     return this.data.projects;
   }
 
+  /** Whether the loaded project list is known to be incomplete. */
+  projectsTruncated(): boolean {
+    return this.projectListTruncated;
+  }
+
   /**
    * Forget the cached project list.
    *
@@ -384,6 +403,7 @@ export class JiraBoardService implements vscode.Disposable {
    * list that almost never changes.
    */
   invalidateProjects(): void {
+    this.projectListTruncated = false;
     if (this.data.projects.length === 0 && !this.data.projectsError) return;
     this.data = { ...this.data, projects: [], projectsError: undefined };
   }

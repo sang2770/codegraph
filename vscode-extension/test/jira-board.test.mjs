@@ -486,6 +486,39 @@ test('the project list drops what cannot be selected and sorts by key', () => {
   );
 });
 
+test('recently used projects come first, still sorted among themselves', () => {
+  const projects = normalizeProjects(
+    [
+      { key: 'ALPHA', name: 'Alpha' },
+      { key: 'TPLD', name: 'Tool Platform' },
+      { key: 'WEB', name: 'Web Client' },
+      { key: 'ZED', name: 'Zed' },
+    ],
+    // Lower case, and one key that is not in the list at all: neither should
+    // disturb the ordering.
+    ['web', 'tpld', 'GONE'],
+  );
+  assert.deepEqual(
+    projects.map((project) => [project.key, project.recent ?? false]),
+    [
+      ['TPLD', true],
+      ['WEB', true],
+      ['ALPHA', false],
+      ['ZED', false],
+    ],
+  );
+});
+
+test('a thousand projects are all kept — the picker is searchable, not capped', () => {
+  const raw = Array.from({ length: 1031 }, (_, index) => ({
+    key: `P${String(index).padStart(4, '0')}`,
+    name: `Project ${index}`,
+  }));
+  const projects = normalizeProjects(raw, ['P0500']);
+  assert.equal(projects.length, 1031);
+  assert.equal(projects[0].key, 'P0500');
+});
+
 test('toggling a project key edits the filter text in place', () => {
   assert.equal(toggleProjectKey('', 'tpld'), 'TPLD');
   assert.equal(toggleProjectKey('TPLD', 'WEB'), 'TPLD, WEB');

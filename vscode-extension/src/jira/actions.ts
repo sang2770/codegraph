@@ -401,15 +401,17 @@ export async function moveIssueToCategory(
 export async function pickProjectKeys(
   projects: readonly BoardProject[],
   selected: readonly string[],
-  options: { error?: string } = {},
+  options: { error?: string; truncated?: boolean } = {},
 ): Promise<string[] | undefined> {
   const current = selected.map((key) => key.toUpperCase());
   // Keys that are filtered on but missing from the list (typed by hand, or a
   // project the list could not be read for) stay selectable rather than being
   // dropped by opening the picker.
   const known = new Set(projects.map((project) => project.key));
-  const extras = current.filter((key) => !known.has(key)).map((key) => ({ key, name: key }));
-  const entries = [...extras, ...projects];
+  const extras: BoardProject[] = current
+    .filter((key) => !known.has(key))
+    .map((key) => ({ key, name: key }));
+  const entries: BoardProject[] = [...extras, ...projects];
 
   if (entries.length === 0) {
     const typed = await vscode.window.showInputBox({
@@ -430,13 +432,20 @@ export async function pickProjectKeys(
   const picked = await vscode.window.showQuickPick(
     entries.map((project) => ({
       label: project.key,
-      description: project.name === project.key ? undefined : project.name,
+      description: [
+        project.name === project.key ? undefined : project.name,
+        project.recent ? '$(history) recent' : undefined,
+      ]
+        .filter(Boolean)
+        .join(' · '),
       picked: current.includes(project.key),
       key: project.key,
     })),
     {
-      title: 'Jira projects',
-      placeHolder: 'Pick the projects the board should load — none means every one',
+      // The count is in the title on purpose: on an instance with a thousand
+      // projects it is the only way to tell a filtered picker from a short list.
+      title: `Jira projects (${entries.length})${options.truncated ? ' — list truncated' : ''}`,
+      placeHolder: 'Type to filter by key or name. Pick none to load every project.',
       canPickMany: true,
       matchOnDescription: true,
       ignoreFocusOut: true,

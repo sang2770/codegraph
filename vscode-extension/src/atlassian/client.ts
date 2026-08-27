@@ -295,24 +295,33 @@ export class AtlassianClient {
   /**
    * Every project the token may browse.
    *
-   * Cloud paginates behind `/project/search` and Server/DC returns the whole
-   * list from `/project`, so the shape of the answer follows the deployment
-   * while the caller gets one flat array either way. `limit` is a stop for a
-   * tenant with thousands of projects: the list feeds a picker, and a picker
-   * nobody can scroll is worse than a truncated one.
+   * Cloud paginates behind `/project/search`; Server/DC has no such endpoint
+   * (it answers 404) and returns the whole list from `/project` in one request —
+   * measured at ~1000 projects in 300ms, so there is no reason to ask for less.
+   * The shape of the answer follows the deployment and the caller gets one flat
+   * array either way.
+   *
+   * `limit` is a backstop against an instance with an implausible number of
+   * projects, not a page size. It is reported through `truncated` rather than
+   * applied silently: a picker quietly missing half the projects looks exactly
+   * like a broken feature, which is the bug this replaced.
    */
-  async jiraProjects(limit = 500): Promise<JiraProject[]> {
+  async jiraProjects(
+    limit = 10_000,
+  ): Promise<{ projects: JiraProject[]; truncated: boolean }> {
     const jira = this.requireJira();
     if (!isCloudUrl(jira.baseUrl)) {
       const projects = await this.get<JiraProject[]>(jira, '/rest/api/2/project', {});
-      return Array.isArray(projects) ? projects.slice(0, limit) : [];
+      const all = Array.isArray(projects) ? projects : [];
+      return { projects: all.slice(0, limit), truncated: all.length > limit };
     }
 
     const collected: JiraProject[] = [];
     const pageSize = 50;
     // Bounded rather than "until isLast": a deployment that always answers
     // `isLast: false` must not turn one picker into an endless request loop.
-    for (let page = 0; page < Math.ceil(limit / pageSize); page += 1) {
+    const maxPages = Math.ceil(limit / pageSize);
+    for (let page = 0; page < maxPages; page += 1) {
       const response = await this.get<{ values?: JiraProject[]; isLast?: boolean }>(
         jira,
         '/rest/api/3/project/search',
@@ -320,9 +329,31 @@ export class AtlassianClient {
       );
       const values = Array.isArray(response.values) ? response.values : [];
       collected.push(...values);
-      if (values.length < pageSize || response.isLast === true) break;
+      if (values.length < pageSize || response.isLast === true) {
+        return { projects: collected, truncated: false };
+      }
     }
-    return collected.slice(0, limit);
+    return { projects: collected, truncated: true };
+  }
+
+  /**
+   * The projects this user touched most recently.
+   *
+   * A courtesy that matters at scale: on an instance with a thousand projects,
+   * the three the user actually works in should be at the top of the picker
+   * rather than buried alphabetically. Best-effort — a deployment without the
+   * endpoint just gets an unsorted list.
+   */
+  async jiraRecentProjects(count = 10): Promise<JiraProject[]> {
+    const jira = this.requireJira();
+    const projects = isCloudUrl(jira.baseUrl)
+      ? await this.get<JiraProject[]>(jira, '/rest/api/3/project/recent', {
+          maxResults: String(count),
+        })
+      : await this.get<JiraProject[]>(jira, '/rest/api/2/project', {
+          recent: String(count),
+        });
+    return Array.isArray(projects) ? projects : [];
   }
 
   /** Find users by name, e-mail or account id, for resolving an assignee. */

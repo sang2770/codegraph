@@ -168,11 +168,10 @@ async function selectProjects(service: JiraBoardService): Promise<void> {
     () => service.loadProjects(),
   );
   const after = service.view();
-  const picked = await pickProjectKeys(
-    projects,
-    after.selectedProjects,
-    after.data.projectsError ? { error: after.data.projectsError } : {},
-  );
+  const picked = await pickProjectKeys(projects, after.selectedProjects, {
+    truncated: service.projectsTruncated(),
+    ...(after.data.projectsError ? { error: after.data.projectsError } : {}),
+  });
   if (!picked) return;
   await service.setProjects(picked);
 }

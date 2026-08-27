@@ -209,6 +209,8 @@ export function normalizeIssue(
 export interface BoardProject {
   key: string;
   name: string;
+  /** True for a project this user touched recently — sorted to the top. */
+  recent?: boolean;
 }
 
 /**
@@ -223,14 +225,36 @@ export function normalizeProject(raw: JiraProject): BoardProject | undefined {
   return { key, name: firstString(raw.name) ?? key };
 }
 
-/** Flatten and sort a project list by key, which is how people refer to them. */
-export function normalizeProjects(raw: readonly JiraProject[]): BoardProject[] {
+/**
+ * Flatten a project list: recently-used projects first, then by key.
+ *
+ * By key because that is how people refer to a project, and recents first
+ * because an instance can hold a thousand of them — measured on a real Jira
+ * Data Center — and the handful someone actually works in should not be buried
+ * alphabetically. `recentKeys` may name projects the main list does not carry;
+ * those are ignored rather than invented, since only the full list says what a
+ * project is called.
+ */
+export function normalizeProjects(
+  raw: readonly JiraProject[],
+  recentKeys: readonly string[] = [],
+): BoardProject[] {
+  const recent = new Set(
+    recentKeys
+      .map((key) => firstString(key)?.toUpperCase())
+      .filter((key): key is string => Boolean(key)),
+  );
   const seen = new Map<string, BoardProject>();
   for (const entry of raw) {
     const project = normalizeProject(entry);
-    if (project && !seen.has(project.key)) seen.set(project.key, project);
+    if (!project || seen.has(project.key)) continue;
+    seen.set(project.key, recent.has(project.key) ? { ...project, recent: true } : project);
   }
-  return [...seen.values()].sort((left, right) => left.key.localeCompare(right.key));
+  return [...seen.values()].sort(
+    (left, right) =>
+      Number(Boolean(right.recent)) - Number(Boolean(left.recent)) ||
+      left.key.localeCompare(right.key),
+  );
 }
 
 /**
