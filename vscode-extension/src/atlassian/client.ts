@@ -80,17 +80,33 @@ export interface JiraAttachment {
   content?: string;
 }
 
-/** One workflow transition available from an issue's current status. */
+/**
+ * One workflow transition available from an issue's current status.
+ *
+ * `to.statusCategory` is what makes a drag onto a column resolvable: the target
+ * column is a category, and only the destination status says which category a
+ * transition would land the issue in.
+ */
 export interface JiraTransition {
   id?: string;
   name?: string;
-  to?: { name?: string };
+  to?: { name?: string; statusCategory?: { id?: number; key?: string; name?: string } };
   hasScreen?: boolean;
   fields?: Record<string, unknown>;
 }
 
 export interface JiraTransitionsResponse {
   transitions?: JiraTransition[];
+}
+
+/** A project, as either deployment's project list returns one. */
+export interface JiraProject {
+  id?: string;
+  key?: string;
+  name?: string;
+  projectTypeKey?: string;
+  archived?: boolean;
+  lead?: JiraUser;
 }
 
 /** A user as returned by either deployment's user search. */
@@ -274,6 +290,39 @@ export class AtlassianClient {
       `/rest/api/${this.jiraApi()}/issue/${encodeURIComponent(key)}/transitions`,
       { expand: 'transitions.fields' },
     );
+  }
+
+  /**
+   * Every project the token may browse.
+   *
+   * Cloud paginates behind `/project/search` and Server/DC returns the whole
+   * list from `/project`, so the shape of the answer follows the deployment
+   * while the caller gets one flat array either way. `limit` is a stop for a
+   * tenant with thousands of projects: the list feeds a picker, and a picker
+   * nobody can scroll is worse than a truncated one.
+   */
+  async jiraProjects(limit = 500): Promise<JiraProject[]> {
+    const jira = this.requireJira();
+    if (!isCloudUrl(jira.baseUrl)) {
+      const projects = await this.get<JiraProject[]>(jira, '/rest/api/2/project', {});
+      return Array.isArray(projects) ? projects.slice(0, limit) : [];
+    }
+
+    const collected: JiraProject[] = [];
+    const pageSize = 50;
+    // Bounded rather than "until isLast": a deployment that always answers
+    // `isLast: false` must not turn one picker into an endless request loop.
+    for (let page = 0; page < Math.ceil(limit / pageSize); page += 1) {
+      const response = await this.get<{ values?: JiraProject[]; isLast?: boolean }>(
+        jira,
+        '/rest/api/3/project/search',
+        { startAt: String(page * pageSize), maxResults: String(pageSize), orderBy: 'key' },
+      );
+      const values = Array.isArray(response.values) ? response.values : [];
+      collected.push(...values);
+      if (values.length < pageSize || response.isLast === true) break;
+    }
+    return collected.slice(0, limit);
   }
 
   /** Find users by name, e-mail or account id, for resolving an assignee. */

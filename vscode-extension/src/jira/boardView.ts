@@ -15,11 +15,14 @@ import {
   checkoutForIssue,
   copyIssueKey,
   fetchBranches,
+  moveIssueToCategory,
   openIssue,
+  pickProjectKeys,
   transitionIssue,
+  TransitionOutcome,
 } from './actions';
 import { boardHtml } from './boardHtml';
-import { BoardIssue } from './model';
+import { BoardIssue, STATUS_CATEGORIES } from './model';
 import { BoardView, JiraBoardService, readBoardConfig } from './service';
 
 export const JIRA_BOARD_VIEW_ID = 'codebrain.jiraBoard';
@@ -29,6 +32,26 @@ interface BoardMessage {
   command?: string;
   key?: string;
   filters?: unknown;
+  /** Target column for a drop, validated against {@link STATUS_CATEGORIES}. */
+  category?: string;
+}
+
+/**
+ * Apply a successful transition to the board.
+ *
+ * The card moves immediately from what Jira reported the new status to be, then
+ * a real reload follows — a workflow with post-functions can leave the issue
+ * somewhere other than the destination status implied, and the reload is what
+ * corrects the optimistic move.
+ */
+async function afterTransition(
+  service: JiraBoardService,
+  key: string,
+  outcome: TransitionOutcome,
+): Promise<void> {
+  if (!outcome.ok) return;
+  if (outcome.status) service.applyLocalStatus(key, outcome.status, outcome.category);
+  await service.refresh({ reason: 'issue moved' });
 }
 
 /**
@@ -54,6 +77,9 @@ async function handleMessage(
       else service.notify();
       return;
     case 'refresh':
+      // An explicit refresh is also how a project created since the picker was
+      // last opened gets picked up.
+      service.invalidateProjects();
       await service.refresh({ reason: 'manual refresh' });
       return;
     case 'setFilters':
@@ -101,14 +127,54 @@ async function handleMessage(
     case 'transition': {
       const target = issue();
       if (!target) return;
-      if (await transitionIssue(target, atlassian)) {
-        await service.refresh({ reason: 'issue moved' });
-      }
+      await afterTransition(service, target.key, await transitionIssue(target, atlassian));
       return;
     }
+    case 'moveTo': {
+      const target = issue();
+      const category = STATUS_CATEGORIES.find((entry) => entry === message.category);
+      if (!target || !category) return;
+      await afterTransition(
+        service,
+        target.key,
+        await moveIssueToCategory(target, category, atlassian),
+      );
+      return;
+    }
+    case 'pickProjects':
+      await vscode.commands.executeCommand('codebrain.jiraSelectProjects');
+      return;
     default:
       return;
   }
+}
+
+/** Open the project picker and apply what came back. */
+async function selectProjects(service: JiraBoardService): Promise<void> {
+  const view = service.view();
+  if (!view.data.configured) {
+    const choice = await vscode.window.showWarningMessage(
+      'CodeBrain: connect Jira first, then pick the projects to show.',
+      'Configure…',
+    );
+    if (choice === 'Configure…') {
+      await vscode.commands.executeCommand('codebrain.configureAtlassian');
+    }
+    return;
+  }
+
+  const projects = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Window, title: 'CodeBrain: reading Jira projects…' },
+    () => service.loadProjects(),
+  );
+  const after = service.view();
+  const picked = await pickProjectKeys(
+    projects,
+    after.selectedProjects,
+    after.data.projectsError ? { error: after.data.projectsError } : {},
+  );
+  if (!picked) return;
+  await service.setProjects(picked);
 }
 
 /** The board in the sidebar: same data, compact layout, no charts. */
@@ -330,8 +396,12 @@ export function registerJiraBoard(
     vscode.commands.registerCommand('codebrain.openJiraBoard', () => {
       JiraBoardPanel.show(context.extensionUri, service, atlassian);
     }),
-    vscode.commands.registerCommand('codebrain.refreshJiraBoard', () =>
-      service.refresh({ reason: 'refresh command' }),
+    vscode.commands.registerCommand('codebrain.refreshJiraBoard', () => {
+      service.invalidateProjects();
+      return service.refresh({ reason: 'refresh command' });
+    }),
+    vscode.commands.registerCommand('codebrain.jiraSelectProjects', () =>
+      selectProjects(service),
     ),
     vscode.commands.registerCommand('codebrain.jiraCheckoutBranch', async () => {
       const issue = await pickIssue(service, 'Check out the branch for which ticket?');

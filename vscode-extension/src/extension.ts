@@ -22,6 +22,7 @@ import { chooseCodeBrainModel } from './modelSelection';
 import { IndexManager } from './indexManager';
 import { MetricsStore } from './metrics';
 import { registerMcpProvider, validateBundledRuntime } from './mcpProvider';
+import { registerModulesView } from './modulesView';
 import { ReportManager } from './reportManager';
 import { showReleaseNotes, showReleaseNotesOnUpdate } from './releaseNotes';
 import { ReviewFinding, ReviewStore } from './reviewStore';
@@ -220,6 +221,11 @@ export function activate(context: vscode.ExtensionContext): void {
         showReleaseNotes(context, { log: logSink }),
       ),
     );
+
+    // The modules view: which projects in this workspace are indexed, and the
+    // right-click / submodule entry points that index the rest. After the
+    // commands above because its rows invoke them.
+    registerModulesView(context, indexManager);
 
     // The Jira board: sidebar view, full panel, branch mapping and the
     // status-bar ticket. Registered after the commands above because its

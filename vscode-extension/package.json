@@ -64,7 +64,10 @@
     "onCommand:codebrain.clearAtlassianCredentials",
     "onCommand:codebrain.showReleaseNotes",
     "onCommand:codebrain.openJiraBoard",
+    "onCommand:codebrain.initializeFolder",
+    "onCommand:codebrain.initializeSubmodules",
     "onCommand:codebrain.refreshJiraBoard",
+    "onCommand:codebrain.jiraSelectProjects",
     "onCommand:codebrain.jiraCheckoutBranch",
     "onCommand:codebrain.openIssueForCurrentBranch"
   ],
@@ -91,6 +94,12 @@
     "views": {
       "codebrain": [
         {
+          "id": "codebrain.modules",
+          "name": "Indexed Modules",
+          "contextualTitle": "CodeBrain Indexed Modules",
+          "icon": "media/codebrain-bar.svg"
+        },
+        {
           "type": "webview",
           "id": "codebrain.jiraBoard",
           "name": "Jira Board",
@@ -99,6 +108,18 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "codebrain.modules",
+        "when": "workspaceFolderCount == 0",
+        "contents": "Open a folder or workspace, and CodeBrain will list every project in it that has an index."
+      },
+      {
+        "view": "codebrain.modules",
+        "when": "workspaceFolderCount != 0",
+        "contents": "No CodeBrain index was found in this workspace.\n[Index this workspace](command:codebrain.initializeWorkspace)\nYou can also right-click any folder in the Explorer and choose “CodeBrain: Index This Folder”, or index a repository's submodules in one step.\n[Index submodules](command:codebrain.initializeSubmodules)"
+      }
+    ],
     "mcpServerDefinitionProviders": [
       {
         "id": "codebrain.runtime",
@@ -347,6 +368,56 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "codebrain.initializeFolder",
+        "title": "CodeBrain: Index This Folder",
+        "icon": "$(add)"
+      },
+      {
+        "command": "codebrain.initializeSubmodules",
+        "title": "CodeBrain: Index Git Submodules",
+        "icon": "$(repo-forked)"
+      },
+      {
+        "command": "codebrain.refreshModules",
+        "title": "CodeBrain: Refresh Indexed Modules",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codebrain.initializeModule",
+        "title": "CodeBrain: Index This Module",
+        "icon": "$(add)"
+      },
+      {
+        "command": "codebrain.syncModule",
+        "title": "CodeBrain: Refresh This Module's Index",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "codebrain.rebuildModule",
+        "title": "CodeBrain: Rebuild This Module's Index",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "codebrain.showModuleStatus",
+        "title": "CodeBrain: Show This Module's Index Status",
+        "icon": "$(info)"
+      },
+      {
+        "command": "codebrain.pinModule",
+        "title": "CodeBrain: Answer for This Module",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "codebrain.unpinModule",
+        "title": "CodeBrain: Follow the Active Editor Again",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "codebrain.jiraSelectProjects",
+        "title": "CodeBrain: Select Jira Projects",
+        "icon": "$(list-selection)"
+      },
+      {
         "command": "codebrain.jiraCheckoutBranch",
         "title": "CodeBrain: Check Out Branch for a Jira Issue",
         "icon": "$(git-branch)"
@@ -358,21 +429,85 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "codebrain.initializeFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "9_codebrain@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "codebrain.initializeModule",
+          "when": "view == codebrain.modules && viewItem == codebrain.module.unindexed",
+          "group": "inline@1"
+        },
+        {
+          "command": "codebrain.syncModule",
+          "when": "view == codebrain.modules && viewItem =~ /codebrain.module.(indexed|pinned)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "codebrain.pinModule",
+          "when": "view == codebrain.modules && viewItem == codebrain.module.indexed",
+          "group": "inline@2"
+        },
+        {
+          "command": "codebrain.unpinModule",
+          "when": "view == codebrain.modules && viewItem == codebrain.module.pinned",
+          "group": "inline@2"
+        },
+        {
+          "command": "codebrain.showModuleStatus",
+          "when": "view == codebrain.modules && viewItem =~ /codebrain.module.(indexed|pinned)/",
+          "group": "1_index@1"
+        },
+        {
+          "command": "codebrain.rebuildModule",
+          "when": "view == codebrain.modules && viewItem =~ /codebrain.module.(indexed|pinned)/",
+          "group": "1_index@2"
+        }
+      ],
       "view/title": [
+        {
+          "command": "codebrain.refreshModules",
+          "when": "view == codebrain.modules",
+          "group": "navigation@1"
+        },
+        {
+          "command": "codebrain.initializeSubmodules",
+          "when": "view == codebrain.modules",
+          "group": "navigation@2"
+        },
+        {
+          "command": "codebrain.initializeWorkspace",
+          "when": "view == codebrain.modules",
+          "group": "1_index@1"
+        },
+        {
+          "command": "codebrain.selectProject",
+          "when": "view == codebrain.modules",
+          "group": "1_index@2"
+        },
         {
           "command": "codebrain.refreshJiraBoard",
           "when": "view == codebrain.jiraBoard",
           "group": "navigation@1"
         },
         {
-          "command": "codebrain.jiraCheckoutBranch",
+          "command": "codebrain.jiraSelectProjects",
           "when": "view == codebrain.jiraBoard",
           "group": "navigation@2"
         },
         {
-          "command": "codebrain.openJiraBoard",
+          "command": "codebrain.jiraCheckoutBranch",
           "when": "view == codebrain.jiraBoard",
           "group": "navigation@3"
+        },
+        {
+          "command": "codebrain.openJiraBoard",
+          "when": "view == codebrain.jiraBoard",
+          "group": "navigation@4"
         },
         {
           "command": "codebrain.configureAtlassian",
@@ -454,6 +589,34 @@
         {
           "command": "codebrain.resetTokenSavings",
           "when": "codebrain.tokenSavings.hasData"
+        },
+        {
+          "command": "codebrain.initializeFolder",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.initializeModule",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.syncModule",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.rebuildModule",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.showModuleStatus",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.pinModule",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.refreshModules",
+          "when": "false"
         },
         {
           "command": "codebrain.dismissReviewFinding",
@@ -684,7 +847,7 @@
         "codebrain.jira.defaultProject": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Jira project keys the board starts filtered to, for example `TPLD` or `TPLD, WEB`. Leave empty for every project your query matches. Change it per session with the project box in the board's filter bar.",
+          "markdownDescription": "Jira project keys the board starts filtered to, for example `TPLD` or `TPLD, WEB`. Leave empty for every project your query matches. Change it per session with **Select projects…** in the board's filter bar, which lists the projects your account can browse.",
           "scope": "resource"
         },
         "codebrain.jira.maxIssues": {

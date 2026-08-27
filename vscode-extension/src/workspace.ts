@@ -33,6 +33,15 @@ function folderFor(projectPath: string, index = 0): vscode.WorkspaceFolder {
 }
 
 /**
+ * A directory as a workspace folder, so any path can be handed to the commands
+ * that index one — a sub-project picked in the explorer, or a git submodule,
+ * which VS Code does not model as a workspace folder of its own.
+ */
+export function projectFolder(projectPath: string): vscode.WorkspaceFolder {
+  return folderFor(projectPath);
+}
+
+/**
  * Nearest ancestor of `startPath` that holds an index, searching no higher than
  * `boundary`.
  *

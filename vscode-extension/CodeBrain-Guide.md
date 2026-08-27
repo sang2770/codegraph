@@ -131,9 +131,16 @@ Click any node to open the source file and line. The panel shows the active engi
 
 The comparison is measured, not estimated from a constant: CodeBrain takes the files it actually drew evidence from, reads their real sizes on disk, and converts both sides at the same ratio. When no candidate file can be measured it reports the saving as **unknown** rather than showing a number. All metrics stay in VS Code's local workspace state — nothing is uploaded.
 
-### Monorepo support
+### Monorepo and submodule support
 
-When a workspace holds several indexed projects, **CodeBrain: Choose Project** pins which one CodeBrain answers for. By default it follows the nearest indexed project above whichever file is open.
+The **Indexed Modules** view in the CodeBrain sidebar lists every project in the workspace that has an index, says how long ago each was built, and marks the one CodeBrain is currently answering for. Each row carries its own actions: refresh, rebuild, index status, and "answer for this module" (the same pin as **CodeBrain: Choose Project**, which still works from the Command Palette).
+
+Indexing something other than the workspace root:
+
+- **Right-click any folder in the Explorer → CodeBrain: Index This Folder.** Works on a multi-selection, so a handful of packages can be indexed in one go.
+- **CodeBrain: Index Git Submodules** finds the repository's submodules — nested ones included — and offers them with the un-indexed ones already ticked. A submodule is its own repository, so the outer index does not cover it. Submodules that are registered but not checked out are listed as unavailable rather than silently skipped: run `git submodule update --init` for those first.
+
+Submodules without an index also appear in the Indexed Modules view, dimmed, and one click indexes them.
 
 ### Read-only reviewer agent
 
@@ -231,6 +238,8 @@ Seven read tools: `confluence_search`, `confluence_get_page`, `confluence_get_pa
 | Command | Purpose |
 |---|---|
 | CodeBrain: Initialize Workspace | Create the local index |
+| CodeBrain: Index This Folder | Index one folder, from the Explorer's right-click menu |
+| CodeBrain: Index Git Submodules | Index the repository's submodules |
 | CodeBrain: Refresh Index / Rebuild Index | Update or rebuild it |
 | CodeBrain: Show Index Status | Coverage, gaps and warnings |
 | CodeBrain: Choose Project | Pin a project in a monorepo |

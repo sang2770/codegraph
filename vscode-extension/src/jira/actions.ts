@@ -8,7 +8,7 @@
  */
 
 import * as vscode from 'vscode';
-import { AtlassianClient } from '../atlassian/client';
+import { AtlassianClient, JiraTransition } from '../atlassian/client';
 import { AtlassianIntegration } from '../atlassianSetup';
 import {
   branchNameFor,
@@ -23,7 +23,14 @@ import {
   switchBranch,
   trackRemoteBranch,
 } from './branches';
-import { BoardIssue } from './model';
+import {
+  BoardIssue,
+  BoardProject,
+  CATEGORY_LABELS,
+  StatusCategory,
+  transitionCategory,
+  transitionsToCategory,
+} from './model';
 import { BoardConfig, RepositoryState } from './service';
 
 /** Open an issue in the browser. */
@@ -206,80 +213,235 @@ export async function fetchBranches(repository: RepositoryState): Promise<void> 
   }
 }
 
+// ------------------------------------------------------------------ workflow
+
 /**
- * Move an issue through its workflow.
+ * What a transition attempt produced.
  *
- * Only reachable while `codebrain.atlassian.allowWrite` is on — the same switch
- * that decides whether agents may change Jira, so the board never becomes a
- * quieter way around it. A transition Jira gates behind a screen is reported as
- * such instead of failing with a field-validation dump.
+ * `status` and `category` are the issue's new position when one was actually
+ * applied, which is what lets the board move the card before the reload lands.
  */
-export async function transitionIssue(
-  issue: BoardIssue,
-  atlassian: AtlassianIntegration,
-): Promise<boolean> {
-  if (!atlassian.writeAllowed()) {
-    const choice = await vscode.window.showWarningMessage(
-      'Moving an issue changes Jira. Turn on "CodeBrain › Atlassian: Allow Write" to enable it.',
-      'Open setting',
+export interface TransitionOutcome {
+  ok: boolean;
+  status?: string;
+  category?: StatusCategory;
+}
+
+const NOT_MOVED: TransitionOutcome = { ok: false };
+
+/**
+ * The board may only change Jira while `codebrain.atlassian.allowWrite` is on —
+ * the same switch that decides whether agents may, so the board never becomes a
+ * quieter way around it. Refusing with the setting one click away is what makes
+ * a drag that does nothing self-explanatory.
+ */
+async function ensureWriteAllowed(atlassian: AtlassianIntegration): Promise<boolean> {
+  if (atlassian.writeAllowed()) return true;
+  const choice = await vscode.window.showWarningMessage(
+    'Moving an issue changes Jira. Turn on "CodeBrain › Atlassian: Allow Write" to enable it.',
+    'Open setting',
+  );
+  if (choice === 'Open setting') {
+    await vscode.commands.executeCommand(
+      'workbench.action.openSettings',
+      'codebrain.atlassian.allowWrite',
     );
-    if (choice === 'Open setting') {
-      await vscode.commands.executeCommand(
-        'workbench.action.openSettings',
-        'codebrain.atlassian.allowWrite',
-      );
-    }
-    return false;
   }
+  return false;
+}
 
-  const { connections } = await atlassian.status();
-  if (!connections.jira) return false;
-  const client = new AtlassianClient({ connections });
-
-  let transitions;
+/** Read an issue's available transitions, reporting a failure once. */
+async function readTransitions(
+  issue: BoardIssue,
+  client: AtlassianClient,
+): Promise<JiraTransition[] | undefined> {
   try {
     const response = await client.jiraTransitions(issue.key);
-    transitions = (response.transitions ?? []).filter((transition) => transition.id);
+    return (response.transitions ?? []).filter((transition) => transition.id);
   } catch (error) {
     void vscode.window.showErrorMessage(
       `CodeBrain could not read the transitions for ${issue.key} — ${error instanceof Error ? error.message : String(error)}`,
     );
-    return false;
+    return undefined;
   }
+}
 
-  if (transitions.length === 0) {
-    void vscode.window.showInformationMessage(
-      `CodeBrain: ${issue.key} has no transition available to you from ${issue.status}.`,
-    );
-    return false;
-  }
+function transitionItem(transition: JiraTransition): vscode.QuickPickItem & { id: string } {
+  return {
+    label: transition.name ?? transition.to?.name ?? 'Transition',
+    description: transition.to?.name
+      ? `→ ${transition.to.name} · ${CATEGORY_LABELS[transitionCategory(transition)]}`
+      : undefined,
+    detail: transition.hasScreen
+      ? 'Jira asks for extra fields on this transition; it may be rejected here.'
+      : undefined,
+    id: transition.id as string,
+  };
+}
 
-  const picked = await vscode.window.showQuickPick(
-    transitions.map((transition) => ({
-      label: transition.name ?? transition.to?.name ?? 'Transition',
-      description: transition.to?.name ? `→ ${transition.to.name}` : undefined,
-      detail: transition.hasScreen
-        ? 'Jira asks for extra fields on this transition; it may be rejected here.'
-        : undefined,
-      id: transition.id as string,
-    })),
-    {
-      title: `${issue.key} — currently ${issue.status}`,
-      placeHolder: 'Move this issue to…',
-    },
-  );
-  if (!picked) return false;
-
+/** Apply one transition, reporting the new status or the reason it failed. */
+async function applyTransition(
+  issue: BoardIssue,
+  transition: JiraTransition,
+  client: AtlassianClient,
+): Promise<TransitionOutcome> {
+  const status = transition.to?.name ?? transition.name ?? 'its next status';
   try {
-    await client.jiraTransition(issue.key, picked.id);
-    void vscode.window.showInformationMessage(
-      `CodeBrain: ${issue.key} moved to ${picked.description?.replace('→ ', '') ?? picked.label}.`,
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Window,
+        title: `CodeBrain: ${issue.key} → ${status}`,
+      },
+      () => client.jiraTransition(issue.key, transition.id as string),
     );
-    return true;
+    void vscode.window.showInformationMessage(`CodeBrain: ${issue.key} moved to ${status}.`);
+    return { ok: true, status, category: transitionCategory(transition) };
   } catch (error) {
     void vscode.window.showErrorMessage(
       `CodeBrain could not move ${issue.key} — ${error instanceof Error ? error.message : String(error)}`,
     );
-    return false;
+    return NOT_MOVED;
   }
+}
+
+/**
+ * Move an issue through its workflow, choosing the transition from a list.
+ *
+ * A transition Jira gates behind a screen is called out in the picker rather
+ * than failing later with a field-validation dump.
+ */
+export async function transitionIssue(
+  issue: BoardIssue,
+  atlassian: AtlassianIntegration,
+): Promise<TransitionOutcome> {
+  if (!(await ensureWriteAllowed(atlassian))) return NOT_MOVED;
+
+  const { connections } = await atlassian.status();
+  if (!connections.jira) return NOT_MOVED;
+  const client = new AtlassianClient({ connections });
+
+  const transitions = await readTransitions(issue, client);
+  if (!transitions) return NOT_MOVED;
+  if (transitions.length === 0) {
+    void vscode.window.showInformationMessage(
+      `CodeBrain: ${issue.key} has no transition available to you from ${issue.status}.`,
+    );
+    return NOT_MOVED;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    transitions.map(transitionItem),
+    { title: `${issue.key} — currently ${issue.status}`, placeHolder: 'Move this issue to…' },
+  );
+  if (!picked) return NOT_MOVED;
+  const transition = transitions.find((entry) => entry.id === picked.id);
+  return transition ? applyTransition(issue, transition, client) : NOT_MOVED;
+}
+
+/**
+ * Move an issue into a column — the drop half of drag and drop.
+ *
+ * The column is a status *category*, and a workflow usually offers more than
+ * one way into it ("In Review" and "In Progress" are both In progress). One
+ * candidate is applied straight away, because that is the whole point of the
+ * drag; several are offered as a list, because picking for the user here would
+ * silently choose a status they did not want. A workflow with no route into the
+ * column says so and names what it does offer, instead of leaving the card
+ * snapping back with no explanation.
+ */
+export async function moveIssueToCategory(
+  issue: BoardIssue,
+  category: StatusCategory,
+  atlassian: AtlassianIntegration,
+): Promise<TransitionOutcome> {
+  if (issue.category === category) return NOT_MOVED;
+  if (!(await ensureWriteAllowed(atlassian))) return NOT_MOVED;
+
+  const { connections } = await atlassian.status();
+  if (!connections.jira) return NOT_MOVED;
+  const client = new AtlassianClient({ connections });
+
+  const transitions = await readTransitions(issue, client);
+  if (!transitions) return NOT_MOVED;
+
+  const candidates = transitionsToCategory(transitions, category);
+  if (candidates.length === 0) {
+    const offered = transitions
+      .map((transition) => transition.to?.name ?? transition.name)
+      .filter(Boolean)
+      .join(', ');
+    void vscode.window.showWarningMessage(
+      `CodeBrain: ${issue.key} cannot go to ${CATEGORY_LABELS[category]} from ${issue.status}.${offered ? ` Jira offers: ${offered}.` : ''}`,
+    );
+    return NOT_MOVED;
+  }
+  if (candidates.length === 1) {
+    return applyTransition(issue, candidates[0] as JiraTransition, client);
+  }
+
+  const picked = await vscode.window.showQuickPick(candidates.map(transitionItem), {
+    title: `${issue.key} → ${CATEGORY_LABELS[category]}`,
+    placeHolder: `${candidates.length} statuses in ${CATEGORY_LABELS[category]} — which one?`,
+  });
+  if (!picked) return NOT_MOVED;
+  const transition = candidates.find((entry) => entry.id === picked.id);
+  return transition ? applyTransition(issue, transition, client) : NOT_MOVED;
+}
+
+// ------------------------------------------------------------------ projects
+
+/**
+ * Choose which projects the board loads.
+ *
+ * Multi-select, searchable by key and name, with the current selection ticked —
+ * so the answer is the whole new selection, not a diff. `undefined` means the
+ * picker was dismissed and nothing should change; an empty array is a real
+ * answer meaning "every project I can see".
+ */
+export async function pickProjectKeys(
+  projects: readonly BoardProject[],
+  selected: readonly string[],
+  options: { error?: string } = {},
+): Promise<string[] | undefined> {
+  const current = selected.map((key) => key.toUpperCase());
+  // Keys that are filtered on but missing from the list (typed by hand, or a
+  // project the list could not be read for) stay selectable rather than being
+  // dropped by opening the picker.
+  const known = new Set(projects.map((project) => project.key));
+  const extras = current.filter((key) => !known.has(key)).map((key) => ({ key, name: key }));
+  const entries = [...extras, ...projects];
+
+  if (entries.length === 0) {
+    const typed = await vscode.window.showInputBox({
+      title: 'Jira projects',
+      prompt: options.error
+        ? `The project list could not be read (${options.error}). Enter project keys, comma separated.`
+        : 'Enter the project keys to show, comma separated. Leave empty for every project.',
+      value: current.join(', '),
+      ignoreFocusOut: true,
+    });
+    if (typed === undefined) return undefined;
+    return typed
+      .split(/[^A-Za-z0-9_]+/)
+      .filter((entry) => /^[A-Za-z][A-Za-z0-9_]*$/.test(entry))
+      .map((entry) => entry.toUpperCase());
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    entries.map((project) => ({
+      label: project.key,
+      description: project.name === project.key ? undefined : project.name,
+      picked: current.includes(project.key),
+      key: project.key,
+    })),
+    {
+      title: 'Jira projects',
+      placeHolder: 'Pick the projects the board should load — none means every one',
+      canPickMany: true,
+      matchOnDescription: true,
+      ignoreFocusOut: true,
+    },
+  );
+  if (!picked) return undefined;
+  return picked.map((item) => item.key);
 }

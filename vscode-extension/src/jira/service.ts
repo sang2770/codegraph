@@ -23,6 +23,7 @@ import {
   applyFilters,
   BoardFilters,
   BoardIssue,
+  BoardProject,
   BOARD_FIELDS,
   BoardStats,
   buildJql,
@@ -34,6 +35,10 @@ import {
   needsRefetch,
   normalizeFilters,
   normalizeIssue,
+  normalizeProjects,
+  parseProjectKeys,
+  StatusCategory,
+  statusCategoryOf,
   WarningOptions,
 } from './model';
 
@@ -104,6 +109,11 @@ export interface BoardData {
   jql: string;
   error?: string;
   repository: RepositoryState;
+  /** Every project the token may browse. Loaded lazily; empty until then. */
+  projects: BoardProject[];
+  projectsLoading: boolean;
+  /** Why the project list could not be read, when it could not be. */
+  projectsError?: string;
 }
 
 /** One issue as the board draws it: the issue plus everything derived. */
@@ -128,6 +138,8 @@ export interface BoardView {
   loadedStats: BoardStats;
   /** Every distinct status in the loaded set, for the status chips. */
   statuses: string[];
+  /** The project keys currently filtered on, parsed out of the filter text. */
+  selectedProjects: string[];
   summary: string;
   now: number;
   config: BoardConfig;
@@ -185,6 +197,7 @@ export function composeView(
     stats: computeStats(visible, now, config.warnings),
     loadedStats: computeStats(data.issues, now, config.warnings),
     statuses,
+    selectedProjects: parseProjectKeys(filters.projects),
     summary: describeFilters(filters),
     now: now.getTime(),
     config,
@@ -203,11 +216,14 @@ export class JiraBoardService implements vscode.Disposable {
     capped: false,
     jql: '',
     repository: { isRepository: false, branches: [] },
+    projects: [],
+    projectsLoading: false,
   };
   private me: JiraUser | undefined;
   private refreshTimer: NodeJS.Timeout | undefined;
   private headWatcher: vscode.FileSystemWatcher | undefined;
   private inFlight: Promise<void> | undefined;
+  private projectsInFlight: Promise<BoardProject[]> | undefined;
 
   /** Fires with a freshly composed view whenever anything changed. */
   readonly onDidChange = this.didChange.event;
@@ -229,6 +245,11 @@ export class JiraBoardService implements vscode.Disposable {
       // "connect Jira" call-to-action has to disappear on its own.
       this.atlassian.onDidChange(() => {
         this.me = undefined;
+        // The project list belongs to the old credentials — another site has
+        // other projects, and a stale picker would offer keys that match
+        // nothing.
+        this.data = { ...this.data, projects: [], projectsLoading: false };
+        this.projectsInFlight = undefined;
         void this.refresh({ reason: 'credentials changed' });
       }),
       vscode.workspace.onDidChangeConfiguration((event) => {
@@ -302,6 +323,105 @@ export class JiraBoardService implements vscode.Disposable {
     });
   }
 
+  /** Replace the project selection with an exact set of keys. */
+  async setProjects(keys: readonly string[]): Promise<void> {
+    await this.setFilters({ projects: keys.join(', ') });
+  }
+
+  // ---------------------------------------------------------------- projects
+
+  /**
+   * The projects the token may browse, loaded once and reused.
+   *
+   * Lazy on purpose: a board filtered to one project never needs the list, and
+   * on a large Cloud tenant reading it costs several requests. Concurrent
+   * callers — the picker opened twice, or the picker and a refresh — share one
+   * request the same way {@link refresh} does.
+   */
+  async loadProjects(options: { force?: boolean } = {}): Promise<BoardProject[]> {
+    if (!options.force && this.data.projects.length > 0) return this.data.projects;
+    if (this.projectsInFlight) return this.projectsInFlight;
+
+    this.projectsInFlight = (async (): Promise<BoardProject[]> => {
+      const { connections } = await this.atlassian.status();
+      if (!connections.jira) return [];
+
+      this.data = { ...this.data, projectsLoading: true, projectsError: undefined };
+      this.emit();
+      try {
+        const client = new AtlassianClient({ connections });
+        const projects = normalizeProjects(await client.jiraProjects());
+        this.data = { ...this.data, projects, projectsLoading: false };
+        this.log(`[jira] loaded ${projects.length} project(s)`);
+        this.emit();
+        return projects;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Not fatal: the free-text box still accepts keys typed by hand, so the
+        // failure is reported next to the picker rather than as an error dialog.
+        this.data = { ...this.data, projectsLoading: false, projectsError: message };
+        this.log(`[jira] could not load projects — ${message}`);
+        this.emit();
+        return [];
+      } finally {
+        this.projectsInFlight = undefined;
+      }
+    })();
+    return this.projectsInFlight;
+  }
+
+  /** What is loaded of the project list right now, without asking Jira. */
+  projects(): BoardProject[] {
+    return this.data.projects;
+  }
+
+  /**
+   * Forget the cached project list.
+   *
+   * Called from an explicit refresh, so a project created since the picker was
+   * last opened shows up without restarting the window — and only then, since
+   * re-reading it on every automatic refresh would cost several requests for a
+   * list that almost never changes.
+   */
+  invalidateProjects(): void {
+    if (this.data.projects.length === 0 && !this.data.projectsError) return;
+    this.data = { ...this.data, projects: [], projectsError: undefined };
+  }
+
+  /** The display name for a key, when the list happens to be loaded. */
+  projectName(key: string): string | undefined {
+    const wanted = key.toUpperCase();
+    return this.data.projects.find((project) => project.key === wanted)?.name;
+  }
+
+  // -------------------------------------------------------------- local edits
+
+  /**
+   * Move one loaded issue to a new status without refetching.
+   *
+   * A transition takes a round-trip and a full reload takes another, so the
+   * card would sit in its old column for a second or two after the drop — long
+   * enough to read as "the drag did nothing" and be repeated. The patch is
+   * always followed by a real refresh, which is what corrects it if Jira's
+   * workflow did something other than what the destination status implied.
+   */
+  applyLocalStatus(key: string, status: string, category?: StatusCategory): void {
+    const wanted = key.toUpperCase();
+    // The transition's destination knows its own category; only a transition
+    // that came back without one falls back to reading the status name.
+    const resolved: StatusCategory = category ?? statusCategoryOf({ name: status });
+    let changed = false;
+    const issues = this.data.issues.map((issue) => {
+      if (issue.key.toUpperCase() !== wanted) return issue;
+      if (issue.status === status && issue.category === resolved) return issue;
+      changed = true;
+      return { ...issue, status, category: resolved, resolved: resolved === 'done' };
+    });
+    if (!changed) return;
+    this.data = { ...this.data, issues };
+    this.emit();
+  }
+
   // ----------------------------------------------------------------- loading
 
   /**
@@ -334,6 +454,8 @@ export class JiraBoardService implements vscode.Disposable {
         capped: false,
         jql: '',
         repository,
+        projects: [],
+        projectsLoading: false,
       };
       this.emit();
       return;
@@ -364,6 +486,9 @@ export class JiraBoardService implements vscode.Disposable {
         issues,
         loading: false,
         loadedAt: Date.now(),
+        projects: this.data.projects,
+        projectsLoading: this.data.projectsLoading,
+        ...(this.data.projectsError ? { projectsError: this.data.projectsError } : {}),
         capped:
           typeof response.total === 'number'
             ? response.total > issues.length
@@ -389,6 +514,9 @@ export class JiraBoardService implements vscode.Disposable {
         jql,
         error: message,
         repository,
+        projects: this.data.projects,
+        projectsLoading: this.data.projectsLoading,
+        ...(this.data.projectsError ? { projectsError: this.data.projectsError } : {}),
         ...(this.data.loadedAt ? { loadedAt: this.data.loadedAt } : {}),
       };
       this.log(`[jira] load failed — ${message}`);

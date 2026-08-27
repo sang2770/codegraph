@@ -46,6 +46,8 @@
   /** @type {any} */
   let view = null;
   let searchTimer = null;
+  /** The card being dragged, so a column knows whether it may accept it. */
+  let dragging = null;
 
   const byId = (id) => document.getElementById(id);
 
@@ -171,6 +173,61 @@
     if (sprint && document.activeElement !== sprint) sprint.checked = filters.openSprintsOnly;
 
     renderStatusChips(current);
+    renderProjectChips(current);
+  }
+
+  /**
+   * The project selection, as removable chips next to the picker button.
+   *
+   * The chips are the readable half of the free-text box below them: they name
+   * what is filtered on and let one project be dropped without editing a
+   * comma-separated string by hand.
+   */
+  function renderProjectChips(current) {
+    const host = clear(byId('projectChips'));
+    const selected = current.selectedProjects || [];
+    const names = {};
+    (current.data.projects || []).forEach(function (project) {
+      names[project.key] = project.name;
+    });
+
+    const button = byId('pickProjects');
+    if (button) {
+      button.textContent = current.data.projectsLoading
+        ? 'Reading projects…'
+        : selected.length > 0
+          ? 'Change projects…'
+          : 'Select projects…';
+      button.disabled = Boolean(current.data.projectsLoading);
+    }
+
+    if (selected.length === 0) {
+      const all = node('span', 'muted', 'Every project you can see');
+      all.title = 'The board is not filtered by project. Pick one to narrow it.';
+      host.appendChild(all);
+    } else {
+      selected.forEach(function (key) {
+        const chip = node('button', 'chip project');
+        chip.type = 'button';
+        chip.appendChild(node('span', null, key));
+        chip.appendChild(node('span', 'remove', '×'));
+        chip.title = (names[key] ? names[key] + ' — ' : '') + 'Click to stop filtering on ' + key;
+        chip.setAttribute('aria-pressed', 'true');
+        chip.addEventListener('click', function () {
+          const next = selected.filter(function (entry) {
+            return entry !== key;
+          });
+          setFilters({ projects: next.join(', ') });
+        });
+        host.appendChild(chip);
+      });
+    }
+
+    if (current.data.projectsError) {
+      const failed = node('span', 'muted', 'Project list unavailable — type keys instead');
+      failed.title = current.data.projectsError;
+      host.appendChild(failed);
+    }
   }
 
   function renderStatusChips(current) {
@@ -502,8 +559,38 @@
     if (card.onBranch) element.classList.add('on-branch');
     element.tabIndex = 0;
     element.dataset.key = issue.key;
+    element.dataset.category = issue.category;
     element.setAttribute('role', 'button');
     element.title = issue.key + ' — ' + issue.summary;
+
+    // Dragging is offered whether or not writes are allowed: the drop reports
+    // the setting that gates it, which is how someone finds out it exists. The
+    // key travels as plain text too, so a drop into an editor pastes it.
+    element.draggable = true;
+    element.addEventListener('dragstart', function (event) {
+      dragging = { key: issue.key, category: issue.category };
+      element.classList.add('dragging');
+      // Reveals the drop targets for columns the filters are hiding, so a
+      // ticket can still be finished while the board only shows open work.
+      document.body.classList.add('dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        try {
+          event.dataTransfer.setData('text/plain', issue.key);
+        } catch (error) {
+          // Some hosts refuse a custom type mid-drag; the drop still works
+          // because the dragged card is tracked here, not in the payload.
+        }
+      }
+    });
+    element.addEventListener('dragend', function () {
+      dragging = null;
+      element.classList.remove('dragging');
+      document.body.classList.remove('dragging');
+      document.querySelectorAll('.column.drop-target').forEach(function (column) {
+        column.classList.remove('drop-target');
+      });
+    });
 
     const top = node('div', 'issue-top');
     top.appendChild(node('span', 'key', issue.key));
@@ -521,7 +608,18 @@
     avatar.title = issue.assignee ? 'Assigned to ' + issue.assignee : 'Unassigned';
     meta.appendChild(avatar);
     meta.appendChild(node('span', 'who', issue.assignee || 'Unassigned'));
-    meta.appendChild(node('span', 'tag', issue.status));
+
+    // The status is also the fastest way to change it: clicking it lists the
+    // transitions Jira actually offers, which a drag onto a column cannot when
+    // the workflow has several routes into the same column.
+    const status = node('button', 'tag status', issue.status);
+    status.type = 'button';
+    status.title = 'Status: ' + issue.status + ' — click to move this issue';
+    status.addEventListener('click', function (event) {
+      event.stopPropagation();
+      post('transition', { key: issue.key });
+    });
+    meta.appendChild(status);
     if (card.branches.length > 0) {
       const branch = node('span', 'tag branch', card.branches[0].localName);
       branch.title =
@@ -679,6 +777,7 @@
         return card.issue.category === category;
       });
       const column = node('div', 'column');
+      column.dataset.category = category;
       const head = node('div', 'column-head');
       const dot = node('span', 'dot');
       dot.style.background = CATEGORY_COLOR[category];
@@ -689,16 +788,75 @@
 
       const body = node('div', 'column-body');
       if (cards.length === 0) {
-        body.appendChild(node('div', 'muted', 'Nothing here.'));
+        body.appendChild(node('div', 'muted', 'Nothing here. Drop a ticket to move it.'));
       } else {
         cards.forEach(function (card) {
           body.appendChild(issueCard(card, current));
         });
       }
       column.appendChild(body);
+      makeDropTarget(column, category);
       columns.appendChild(column);
     });
+
+    // A column the filters hide still has to be reachable: with "Done"
+    // switched off there would otherwise be nowhere to drop a finished
+    // ticket. These appear only while a card is being dragged.
+    ['todo', 'inprogress', 'done'].forEach(function (category) {
+      if (current.filters.categories.indexOf(category) >= 0) return;
+      const ghost = node('div', 'column ghost');
+      ghost.dataset.category = category;
+      const head = node('div', 'column-head');
+      const dot = node('span', 'dot');
+      dot.style.background = CATEGORY_COLOR[category];
+      head.appendChild(dot);
+      head.appendChild(node('span', null, 'Move to ' + CATEGORY_LABELS[category]));
+      ghost.appendChild(head);
+      ghost.appendChild(
+        node('div', 'column-body muted', 'Not shown by the current filters. Drop here to move.'),
+      );
+      makeDropTarget(ghost, category);
+      columns.appendChild(ghost);
+    });
+
     host.appendChild(columns);
+  }
+
+  /**
+   * Let a column accept a dragged card.
+   *
+   * The card's own column refuses the drop — dropping something back where it
+   * came from should be a no-op, not a transition Jira has to reject. Everything
+   * else is accepted and answered by the extension, which resolves the column
+   * into a real workflow transition.
+   */
+  function makeDropTarget(column, category) {
+    const accepts = function () {
+      return Boolean(dragging) && dragging.category !== category;
+    };
+
+    column.addEventListener('dragover', function (event) {
+      if (!accepts()) return;
+      // Both the default action and the propagation have to go: without
+      // preventDefault the browser never fires `drop`.
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      column.classList.add('drop-target');
+    });
+    column.addEventListener('dragleave', function (event) {
+      // `dragleave` also fires when the pointer crosses into a child, so the
+      // highlight only goes when the pointer actually left the column.
+      if (event.relatedTarget && column.contains(event.relatedTarget)) return;
+      column.classList.remove('drop-target');
+    });
+    column.addEventListener('drop', function (event) {
+      if (!accepts()) return;
+      event.preventDefault();
+      column.classList.remove('drop-target');
+      const key = dragging.key;
+      dragging = null;
+      post('moveTo', { key: key, category: category });
+    });
   }
 
   // ------------------------------------------------------------------- footer
@@ -784,6 +942,9 @@
   });
   byId('projects').addEventListener('change', function (event) {
     setFilters({ projects: event.target.value });
+  });
+  byId('pickProjects').addEventListener('click', function () {
+    post('pickProjects');
   });
 
   // Debounced: every keystroke re-filters in the extension, but a round-trip

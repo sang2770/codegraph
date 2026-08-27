@@ -33,6 +33,13 @@ export class IndexManager implements vscode.Disposable {
   );
   private readonly output = vscode.window.createOutputChannel('CodeBrain');
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly didChange = new vscode.EventEmitter<void>();
+
+  /**
+   * Fires whenever a project gained, refreshed or lost its index, or the pinned
+   * project changed — everything the modules view puts on screen.
+   */
+  public readonly onDidChangeIndex = this.didChange.event;
 
   public constructor(
     private readonly runtime: RuntimeCommand,
@@ -49,6 +56,7 @@ export class IndexManager implements vscode.Disposable {
     this.disposables.push(
       this.statusBar,
       this.output,
+      this.didChange,
       vscode.commands.registerCommand('codebrain.initializeWorkspace', () =>
         this.initialize(),
       ),
@@ -151,12 +159,22 @@ export class IndexManager implements vscode.Disposable {
       ignoreFocusOut: true,
     });
     if (!picked) return;
-    setPinnedProject(picked.value);
-    await this.context.workspaceState.update(PINNED_PROJECT_KEY, picked.value);
+    await this.pinProject(picked.value);
+  }
+
+  /**
+   * Make one project the one CodeBrain answers for, or `undefined` to follow the
+   * active editor again. Persisted per workspace, so the choice survives a
+   * reload the same way the picker's did.
+   */
+  public async pinProject(projectPath: string | undefined): Promise<void> {
+    setPinnedProject(projectPath);
+    await this.context.workspaceState.update(PINNED_PROJECT_KEY, projectPath);
     this.refreshStatusBar();
+    this.didChange.fire();
     void vscode.window.showInformationMessage(
-      picked.value
-        ? `CodeBrain now answers for ${picked.value}.`
+      projectPath
+        ? `CodeBrain now answers for ${projectPath}.`
         : 'CodeBrain now follows the active editor again.',
     );
   }
@@ -231,12 +249,16 @@ export class IndexManager implements vscode.Disposable {
     if (!result) {
       void vscode.window.showInformationMessage('CodeBrain indexing was cancelled.');
       this.refreshStatusBar();
+      // A cancelled init can still have left a partial `.codegraph/` behind, so
+      // the views are told to look again either way.
+      this.didChange.fire();
       return false;
     }
 
     this.logResult('init', result);
     this.freshness.invalidate(folder.uri.fsPath);
     this.refreshStatusBar();
+    this.didChange.fire();
     if (result.code !== 0) {
       void vscode.window.showErrorMessage(
         'CodeBrain initialization failed. Open the CodeBrain output channel for details.',
@@ -275,6 +297,7 @@ export class IndexManager implements vscode.Disposable {
     }
     this.logResult('index', result);
     this.freshness.invalidate(folder.uri.fsPath);
+    this.didChange.fire();
     if (result.code !== 0) {
       void vscode.window.showErrorMessage(
         'CodeBrain rebuild failed. Open the CodeBrain output channel for details.',
@@ -309,6 +332,7 @@ export class IndexManager implements vscode.Disposable {
     );
 
     this.logResult('sync', result);
+    this.didChange.fire();
     if (result.code !== 0) {
       void vscode.window.showErrorMessage(
         'CodeBrain refresh failed. Open the CodeBrain output channel for details.',

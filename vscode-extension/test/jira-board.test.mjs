@@ -14,9 +14,13 @@ const {
   needsRefetch,
   normalizeFilters,
   normalizeIssue,
+  normalizeProjects,
   parseProjectKeys,
   sortIssues,
   statusCategoryOf,
+  toggleProjectKey,
+  transitionCategory,
+  transitionsToCategory,
 } = loadTypeScript('jira/model.ts');
 
 const { composeView, projectKeysOf } = loadTypeScript('jira/service.ts', {
@@ -408,6 +412,8 @@ test('composeView joins branches onto the cards it shows', () => {
     loading: false,
     capped: false,
     jql: '',
+    projects: [],
+    projectsLoading: false,
     repository: {
       isRepository: true,
       branch: 'feature/TPLD-1-chart-lag',
@@ -458,4 +464,103 @@ test('project keys come from the loaded issues', () => {
     projectKeysOf([issue({ key: 'TPLD-1' }), issue({ key: 'web-9' })]),
     ['TPLD', 'WEB'],
   );
+});
+
+// -------------------------------------------------------------------- projects
+
+test('the project list drops what cannot be selected and sorts by key', () => {
+  assert.deepEqual(
+    normalizeProjects([
+      { key: 'web', name: 'Web Client' },
+      { key: 'TPLD', name: 'Tool Platform' },
+      { name: 'No key at all' },
+      { key: 'OLD', name: 'Retired', archived: true },
+      { key: 'TPLD', name: 'A duplicate the server returned twice' },
+      { key: 'OPS' },
+    ]),
+    [
+      { key: 'OPS', name: 'OPS' },
+      { key: 'TPLD', name: 'Tool Platform' },
+      { key: 'WEB', name: 'Web Client' },
+    ],
+  );
+});
+
+test('toggling a project key edits the filter text in place', () => {
+  assert.equal(toggleProjectKey('', 'tpld'), 'TPLD');
+  assert.equal(toggleProjectKey('TPLD', 'WEB'), 'TPLD, WEB');
+  assert.equal(toggleProjectKey('TPLD, WEB', 'TPLD'), 'WEB');
+  assert.equal(toggleProjectKey('TPLD', 'tpld'), '');
+  // A box someone typed by hand is normalised on the way through, not doubled.
+  assert.equal(toggleProjectKey('tpld;web', 'OPS'), 'TPLD, WEB, OPS');
+  assert.equal(toggleProjectKey('TPLD', '  '), 'TPLD');
+});
+
+test('composeView reports the selected projects for the chips', () => {
+  const data = {
+    configured: true,
+    issues: [],
+    loading: false,
+    capped: false,
+    jql: '',
+    projects: [{ key: 'TPLD', name: 'Tool Platform' }],
+    projectsLoading: false,
+    repository: { isRepository: false, branches: [] },
+  };
+  const config = {
+    maxIssues: 100,
+    autoRefreshMinutes: 0,
+    warnings: { dueSoonDays: 3, staleDays: 5 },
+    branchTemplate: '{prefix}/{key}-{summary}',
+    jql: '',
+    defaultProject: '',
+    statusBar: true,
+    baseBranch: '',
+    allowWrite: false,
+  };
+
+  const view = composeView(
+    data,
+    normalizeFilters({ ...DEFAULT_FILTERS, projects: 'tpld, web' }),
+    config,
+    NOW,
+  );
+  assert.deepEqual(view.selectedProjects, ['TPLD', 'WEB']);
+});
+
+// ------------------------------------------------------------------ workflow
+
+test('a transition is bucketed by the category of its destination', () => {
+  assert.equal(
+    transitionCategory({ id: '31', name: 'Done', to: { name: 'Closed', statusCategory: { key: 'done' } } }),
+    'done',
+  );
+  assert.equal(
+    transitionCategory({ id: '21', to: { name: 'In Review', statusCategory: { key: 'indeterminate' } } }),
+    'inprogress',
+  );
+  // Server/DC workflows that answer without a category fall back to the name.
+  assert.equal(transitionCategory({ id: '11', to: { name: 'In Progress' } }), 'inprogress');
+  assert.equal(transitionCategory({ id: '12', to: { name: 'Open' } }), 'todo');
+  assert.equal(transitionCategory({ id: '13' }), 'todo');
+});
+
+test('a drop onto a column offers only the transitions that land in it', () => {
+  const transitions = [
+    { id: '11', name: 'Start work', to: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } },
+    { id: '21', name: 'Review', to: { name: 'In Review', statusCategory: { key: 'indeterminate' } } },
+    { id: '31', name: 'Close', to: { name: 'Closed', statusCategory: { key: 'done' } } },
+    // No id: Jira cannot be asked to apply it, so it is never a candidate.
+    { name: 'Broken', to: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } },
+  ];
+
+  assert.deepEqual(
+    transitionsToCategory(transitions, 'inprogress').map((entry) => entry.id),
+    ['11', '21'],
+  );
+  assert.deepEqual(
+    transitionsToCategory(transitions, 'done').map((entry) => entry.id),
+    ['31'],
+  );
+  assert.deepEqual(transitionsToCategory(transitions, 'todo'), []);
 });

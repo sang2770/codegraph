@@ -119,6 +119,11 @@ export function boardHtml(
       <span id="statusChips" class="filter-row"></span>
     </div>
     <div class="filter-row">
+      <span class="label">Projects</span>
+      <button type="button" class="chip pick" id="pickProjects" title="Choose which Jira projects the board loads">Select projects…</button>
+      <span id="projectChips" class="filter-row"></span>
+    </div>
+    <div class="filter-row">
       <select id="due" aria-label="Due date filter">${options(DUE_OPTIONS)}</select>
       <select id="sort" aria-label="Sort order">${options(SORT_OPTIONS)}</select>
       <input type="text" id="projects" placeholder="Project keys" aria-label="Project keys, comma separated" size="12" title="Limit the board to these Jira project keys, for example TPLD, WEB">

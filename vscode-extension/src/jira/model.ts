@@ -16,7 +16,7 @@
  * only ever narrow what the server already returned.
  */
 
-import { JiraIssue, JiraUser } from '../atlassian/client';
+import { JiraIssue, JiraProject, JiraTransition, JiraUser } from '../atlassian/client';
 
 // --------------------------------------------------------------------- issues
 
@@ -131,6 +131,28 @@ export function statusCategoryOf(status: unknown): StatusCategory {
 }
 
 /**
+ * The column a transition would land the issue in.
+ *
+ * The destination status carries the category, so the same mapping the board
+ * uses for an issue answers "would this transition move it to Done?" — and the
+ * name fallback in {@link statusCategoryOf} covers the Server/DC workflows that
+ * return a transition without one.
+ */
+export function transitionCategory(transition: JiraTransition): StatusCategory {
+  return statusCategoryOf(transition.to ?? {});
+}
+
+/** The transitions that would move an issue into a given column. */
+export function transitionsToCategory(
+  transitions: readonly JiraTransition[],
+  category: StatusCategory,
+): JiraTransition[] {
+  return transitions.filter(
+    (transition) => Boolean(transition.id) && transitionCategory(transition) === category,
+  );
+}
+
+/**
  * How a user is identified for "is this mine?".
  *
  * Cloud has `accountId`, Server/DC has `name`/`key`, and a trimmed payload may
@@ -179,6 +201,58 @@ export function normalizeIssue(
     resolved: Boolean(fields.resolution) || statusCategoryOf(fields.status) === 'done',
     url: issueUrl(baseUrl, raw.key),
   };
+}
+
+// ------------------------------------------------------------------- projects
+
+/** One project as the board's picker lists it. */
+export interface BoardProject {
+  key: string;
+  name: string;
+}
+
+/**
+ * Flatten a project payload, dropping anything the board cannot use.
+ *
+ * A project with no key cannot go into JQL and cannot be selected, and an
+ * archived one would only pad a picker with tickets nobody is working on.
+ */
+export function normalizeProject(raw: JiraProject): BoardProject | undefined {
+  const key = firstString(raw.key)?.toUpperCase();
+  if (!key || raw.archived === true) return undefined;
+  return { key, name: firstString(raw.name) ?? key };
+}
+
+/** Flatten and sort a project list by key, which is how people refer to them. */
+export function normalizeProjects(raw: readonly JiraProject[]): BoardProject[] {
+  const seen = new Map<string, BoardProject>();
+  for (const entry of raw) {
+    const project = normalizeProject(entry);
+    if (project && !seen.has(project.key)) seen.set(project.key, project);
+  }
+  return [...seen.values()].sort((left, right) => left.key.localeCompare(right.key));
+}
+
+/**
+ * Add or remove one project key in the filter's free-text box.
+ *
+ * The box stays the single source of truth for the selection — a key typed by
+ * hand and one ticked in the picker are the same state — so toggling goes
+ * through the same parse the JQL does.
+ */
+export function toggleProjectKey(raw: string, key: string): string {
+  const wanted = key.trim().toUpperCase();
+  if (!wanted) return raw;
+  const keys = parseProjectKeys(raw);
+  const at = keys.indexOf(wanted);
+  if (at >= 0) keys.splice(at, 1);
+  else keys.push(wanted);
+  return keys.join(', ');
+}
+
+/** The selection a project picker should open with, in board order. */
+export function selectedProjectKeys(raw: string): string[] {
+  return parseProjectKeys(raw);
 }
 
 // -------------------------------------------------------------------- filters
