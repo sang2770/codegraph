@@ -143,26 +143,32 @@
         "fullName": "CodeBrain",
         "description": "Explain workflows or review code with CodeBrain context.",
         "isSticky": true,
+        "sampleRequest": "How does a login request reach the database?",
         "commands": [
           {
             "name": "explain",
-            "description": "Explain the business workflow and show the concrete code flow with a developer-friendly Markdown and Mermaid report."
+            "description": "Explain the business workflow and show the concrete code flow with a developer-friendly Markdown and Mermaid report.",
+            "sampleRequest": "How does a login request reach the database?"
           },
           {
             "name": "review",
-            "description": "Run one graph-grounded review covering architecture, contracts, blast radius, code correctness, boundary safety, test gaps, and release readiness."
+            "description": "Run one graph-grounded review covering architecture, contracts, blast radius, code correctness, boundary safety, test gaps, and release readiness.",
+            "sampleRequest": "Review my current changes for regression risk and missing tests."
           },
           {
             "name": "impact",
-            "description": "Analyze change impact, detect affected tests, classify risk, and report estimated token savings."
+            "description": "Analyze change impact, detect affected tests, classify risk, and report estimated token savings.",
+            "sampleRequest": "Which tests are affected by my changes?"
           },
           {
             "name": "fix",
-            "description": "Analyze a bug, trace its root cause through the code graph, and propose a concrete solution and validation plan."
+            "description": "Analyze a bug, trace its root cause through the code graph, and propose a concrete solution and validation plan.",
+            "sampleRequest": "Checkout throws a null reference on an empty cart — find the root cause."
           },
           {
             "name": "guide",
-            "description": "Generate a user-facing Markdown guide for using a feature, including prerequisites, steps, examples, and troubleshooting."
+            "description": "Generate a user-facing Markdown guide for using a feature, including prerequisites, steps, examples, and troubleshooting.",
+            "sampleRequest": "Write a user guide for the password reset feature."
           }
         ],
         "disambiguation": [
@@ -183,6 +189,15 @@
               "What can break if I change this?",
               "Check null and undefined handling.",
               "Assess the release risk and missing tests for this diff."
+            ]
+          },
+          {
+            "category": "Feature documentation",
+            "description": "Writes a user-facing guide for one feature: prerequisites, steps, examples, and troubleshooting.",
+            "examples": [
+              "Write a user guide for the export feature.",
+              "How do I use the password reset flow?",
+              "Viết tài liệu hướng dẫn cho chức năng này."
             ]
           },
           {
@@ -662,8 +677,15 @@
           "type": "number",
           "default": 12,
           "minimum": 1,
-          "maximum": 30,
-          "description": "Maximum number of source files returned by CodeBrain for a chat report."
+          "maximum": 40,
+          "description": "Maximum number of source files returned by CodeBrain for a chat report. Leave unset to scale the budget to the size of the indexed project."
+        },
+        "codebrain.chat.maxFollowUpLookups": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 4,
+          "description": "How many extra CodeBrain lookups the model may request while writing a report when the first one left a gap. Set to 0 to answer from a single lookup."
         },
         "codebrain.chat.maxDiffCharacters": {
           "type": "number",

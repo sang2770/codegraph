@@ -63,3 +63,72 @@ test('normalizes feature guides with a user-guide title and flow', () => {
   assert.match(report, /Prerequisites/);
   assert.match(report, /Troubleshooting/);
 });
+
+/** In-memory `workspace.fs` covering only what report pruning touches. */
+function fsStub(names) {
+  const deleted = [];
+  const vscode = {
+    FileType: { File: 1, Directory: 2 },
+    Uri: {
+      joinPath: (base, name) => ({ fsPath: `${base.fsPath}/${name}` }),
+    },
+    workspace: {
+      fs: {
+        readDirectory: async () => names,
+        delete: async (uri) => {
+          deleted.push(uri.fsPath);
+        },
+      },
+    },
+  };
+  return { vscode, deleted };
+}
+
+test('keeps only the most recent reports for a workspace', async () => {
+  // Names are ISO timestamps, so lexical order is chronological order.
+  const entries = Array.from({ length: 25 }, (_value, index) => [
+    `2026-09-07T10-${String(index).padStart(2, '0')}-00-000Z-explain.md`,
+    1,
+  ]);
+  const { vscode, deleted } = fsStub(entries);
+  const { pruneReportDirectory } = loadTypeScript('reports.ts', { vscode });
+
+  await pruneReportDirectory({ fsPath: '/tmp/codebrain-vscode/repo' }, 20);
+
+  assert.equal(deleted.length, 5);
+  assert.ok(deleted[0].endsWith('10-00-00-000Z-explain.md'));
+  assert.ok(deleted.at(-1).endsWith('10-04-00-000Z-explain.md'));
+});
+
+test('leaves directories and non-report files alone', async () => {
+  const { vscode, deleted } = fsStub([
+    ['nested', 2],
+    ['notes.txt', 1],
+    ['2026-09-07T10-00-00-000Z-explain.md', 1],
+  ]);
+  const { pruneReportDirectory } = loadTypeScript('reports.ts', { vscode });
+
+  await pruneReportDirectory({ fsPath: '/tmp/codebrain-vscode/repo' }, 0);
+
+  assert.deepEqual(deleted, [
+    '/tmp/codebrain-vscode/repo/2026-09-07T10-00-00-000Z-explain.md',
+  ]);
+});
+
+test('never fails a report because cleanup could not run', async () => {
+  const vscode = {
+    FileType: { File: 1, Directory: 2 },
+    Uri: { joinPath: (base, name) => ({ fsPath: `${base.fsPath}/${name}` }) },
+    workspace: {
+      fs: {
+        readDirectory: async () => {
+          throw new Error('ENOENT');
+        },
+        delete: async () => {},
+      },
+    },
+  };
+  const { pruneReportDirectory } = loadTypeScript('reports.ts', { vscode });
+
+  await pruneReportDirectory({ fsPath: '/tmp/missing' });
+});

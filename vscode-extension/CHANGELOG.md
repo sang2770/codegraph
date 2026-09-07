@@ -39,8 +39,21 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 - Agent configs and installed skills are repaired automatically after an extension update, so an upgrade no longer silently breaks the server — or leaves an agent following the previous version's guidance — for Claude Code, Codex, Gemini CLI, or Antigravity.
 - Tools for a product you did not configure are never shown to the agent, and a page body or issue description that has to be shortened says so explicitly instead of just ending.
 
+- **Reports now appear as they are written.** `@codebrain` used to sit on a spinner for the whole analysis and then drop the finished document in one block; the text now streams in as the model produces it. `/impact` shows its measured result immediately and adds the interpretation underneath.
+- **`#file`, `#selection` and other attachments are finally used.** Anything you pin to the prompt now steers the graph lookup and reaches the report as evidence — previously CodeBrain read only your active editor and quietly ignored what you attached. Files outside the project are named rather than read, and a very large file is summarized instead of stalling the request.
+- **CodeBrain can fetch what the first lookup missed.** While writing a report the model may ask the graph for a symbol or call path it still needs, instead of filling the gap with a guess. Two extra lookups are allowed by default; change or disable it with `codebrain.chat.maxFollowUpLookups`.
+- **The evidence budget now fits the project.** Leave `codebrain.chat.maxContextFiles` unset and CodeBrain sizes each lookup to the indexed project — a small package no longer pays for a monorepo's budget, and a monorepo is no longer answered from a small package's. An explicit setting is still honoured.
+- **Every file and line in a report is clickable.** Citations that exist on disk are offered as links under the report, and a `/review` also lists the files it covered as a navigable tree.
+- Follow-up questions now carry the earlier turns of the conversation as real chat turns, so "what about the other one?" resolves against what was actually discussed rather than an abbreviated paste.
+- Each command in Chat now suggests a real example question, and asking for documentation ("write a user guide for…", "viết tài liệu hướng dẫn…") reaches `/guide` without typing the command.
+
 ### Fixes
 
+- **Vietnamese prompts reach the right command.** "Phân tích ảnh hưởng của thay đổi này" and "đánh giá code này" were matched in a way that could never succeed for phrases beginning with an accented letter, so both silently fell through to a plain explanation — including the impact example the extension itself advertises. Word-order variants such as "which tests are affected" now work too.
+- **`/review` no longer interrupts with a commit picker you did not ask for.** It reviews your working tree by default; the picker appears only when you mention a commit, and a new follow-up button offers it explicitly.
+- **An exported report is just the report.** The token-cost readout stays in the chat instead of being written into the Markdown you export or share.
+- The follow-up offered after `/guide` said it would review the guide but regenerated it; it now says so, and does what it says.
+- CodeBrain no longer leaves a Markdown file behind in your temporary directory for every question ever asked — only the twenty most recent per workspace are kept.
 - On Linux and macOS, CodeBrain no longer needs you to grant its runtime execute permission by hand. Some hosts — VS Code forks, OpenVSX installs, an extensions folder that was copied or unzipped manually — unpack the extension without unix file permissions, and every command then failed with "permission denied" until you ran `chmod +x` yourself. CodeBrain now restores the execute bit on its own at startup and notes it in the output channel. If the extension folder is read-only or owned by another user, the error says exactly which command to run instead of just reporting a failed command.
 
 ## [1.2.0] - 2026-08-11

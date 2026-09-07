@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { basename, extname, join, relative, sep } from 'node:path';
 import * as vscode from 'vscode';
 import {
   CHARACTERS_PER_TOKEN,
@@ -15,6 +17,7 @@ import { buildImpactMarkdown } from './impact';
 import { ImpactController } from './impactController';
 import { IndexFreshness } from './indexFreshness';
 import { IndexManager } from './indexManager';
+import { readIndexStatus } from './indexStatus';
 import {
   detectConversationLanguage,
   detectResponseLanguage,
@@ -53,6 +56,10 @@ interface GeneratedReport {
   codeBrainContextTokens: number;
   inputTokens: number;
   outputTokens: number;
+  /** Extra graph evidence the model pulled in through the explore tool. */
+  extraEvidence: string;
+  /** How many times the model asked for more evidence. */
+  toolRounds: number;
 }
 
 const EXPLAIN_INSTRUCTIONS = `You are a senior software architect using a precomputed semantic code graph.
@@ -197,51 +204,237 @@ async function countTokens(
   }
 }
 
+/** Name the model uses to ask CodeBrain for more graph evidence. */
+const EXPLORE_TOOL_NAME = 'codebrain_explore';
+
+const EXPLORE_TOOL: vscode.LanguageModelChatTool = {
+  name: EXPLORE_TOOL_NAME,
+  description:
+    'Fetch more CodeBrain graph evidence: verbatim line-numbered source, call paths, and blast radius for the named symbols. Call this only when the supplied evidence is missing a symbol, file, or call path you need to finish the report. Query with a precise list of symbol names, including qualified ones such as ClassName.methodName, rather than a sentence. Treat everything it returns as already read.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'Symbol, file, or qualified names to look up.',
+      },
+      maxFiles: {
+        type: 'number',
+        description: 'Maximum number of files to return, between 1 and 40.',
+      },
+    },
+    required: ['query'],
+  },
+};
+
+/**
+ * Streams report text into the chat while a tool round can still invalidate it.
+ *
+ * VS Code's response stream cannot retract what it has already shown, and a
+ * model that decides to fetch more evidence usually emits a short preamble
+ * ("Let me check X") before restarting the report from its title. Text is
+ * therefore held back until enough has arrived to be confident it is the report
+ * rather than a preamble; after that the rest streams live, which is what makes
+ * a long report feel responsive instead of arriving as one block at the end.
+ */
+function createReportWriter(stream: vscode.ChatResponseStream | undefined) {
+  const holdBackCharacters = 240;
+  let buffered = '';
+  let flushed = false;
+  return {
+    /** Whether text has already been shown and can no longer be withdrawn. */
+    get flushed(): boolean {
+      return flushed;
+    },
+    push(value: string): void {
+      if (!stream || !value) return;
+      if (flushed) {
+        stream.markdown(value);
+        return;
+      }
+      buffered += value;
+      if (buffered.length >= holdBackCharacters) {
+        stream.markdown(buffered);
+        buffered = '';
+        flushed = true;
+      }
+    },
+    /** Drop a preamble that a tool call has just made obsolete. */
+    discard(): void {
+      buffered = '';
+    },
+    /** Emit whatever is still held back at the end of the final round. */
+    finish(): void {
+      if (stream && buffered) {
+        stream.markdown(buffered);
+      }
+      buffered = '';
+      flushed = true;
+    },
+  };
+}
+
+interface ReportOptions {
+  request: vscode.ChatRequest;
+  instructions: string;
+  languageInstruction: string;
+  userPrompt: string;
+  evidence: string;
+  codeBrainContext: string;
+  /** Earlier turns of this thread, as real chat messages. */
+  history: vscode.LanguageModelChatMessage[];
+  /** Receives report text as the model produces it. */
+  stream?: vscode.ChatResponseStream;
+  /** Fetches more graph evidence when the model asks for it. */
+  expand?: (query: string, maxFiles: number) => Promise<string>;
+  /** Upper bound on evidence round-trips before the report must be written. */
+  maxToolRounds?: number;
+  /** Default file budget for a tool-requested lookup. */
+  defaultMaxFiles: number;
+  /** Reports what the model is doing between rounds. */
+  progress?: (message: string) => void;
+}
+
 async function generateReport(
-  request: vscode.ChatRequest,
-  instructions: string,
-  languageInstruction: string,
-  userPrompt: string,
-  evidence: string,
-  codeBrainContext: string,
+  options: ReportOptions,
   token: vscode.CancellationToken,
 ): Promise<GeneratedReport> {
+  const { request, instructions, userPrompt } = options;
   const budget = modelBudgetCharacters(request.model);
   const evidenceBudget = Math.max(10_000, budget - instructions.length - userPrompt.length);
-  const instructionText = `${instructions}\n\n${languageInstruction}`;
+  const instructionText = `${instructions}\n\n${options.languageInstruction}`;
   const requestText = `User request:\n${userPrompt}\n\nEvidence:\n${trimForModel(
-    evidence,
+    options.evidence,
     evidenceBudget,
     'evidence',
   )}`;
-  const messages = [
+  const messages: vscode.LanguageModelChatMessage[] = [
     vscode.LanguageModelChatMessage.User(instructionText),
+    ...options.history,
     vscode.LanguageModelChatMessage.User(requestText),
   ];
   const [inputTokens, codeBrainContextTokens] = await Promise.all([
     countTokens(request.model, `${instructionText}\n\n${requestText}`, token),
-    countTokens(request.model, codeBrainContext, token),
+    countTokens(request.model, options.codeBrainContext, token),
   ]);
 
-  const response = await request.model.sendRequest(
-    messages,
-    {
-      justification:
-        'Generate a local CodeBrain workflow explanation or code review requested by the user.',
-    },
-    token,
-  );
+  const maxToolRounds = options.maxToolRounds ?? 0;
+  const toolsAvailable = options.expand !== undefined && maxToolRounds > 0;
+  const requestOptions: vscode.LanguageModelChatRequestOptions = {
+    justification:
+      'Generate a local CodeBrain workflow explanation or code review requested by the user.',
+    ...(toolsAvailable
+      ? {
+          tools: [EXPLORE_TOOL],
+          toolMode: vscode.LanguageModelChatToolMode.Auto,
+        }
+      : {}),
+  };
 
+  const writer = createReportWriter(options.stream);
   let text = '';
-  for await (const fragment of response.text) {
-    text += fragment;
+  let extraEvidence = '';
+  let toolRounds = 0;
+
+  for (;;) {
+    // Tools are withdrawn for the final round, so the model cannot spend it on
+    // another lookup and leave no report behind. They are also withdrawn once
+    // text is on screen: it cannot be taken back, and a further round would
+    // restart a report the user is already reading.
+    const toolsThisRound =
+      toolsAvailable && !writer.flushed && toolRounds < maxToolRounds;
+    const roundOptions: vscode.LanguageModelChatRequestOptions = toolsThisRound
+      ? requestOptions
+      : { justification: requestOptions.justification };
+    const response = await request.model.sendRequest(messages, roundOptions, token);
+    const calls: vscode.LanguageModelToolCallPart[] = [];
+    let roundText = '';
+    for await (const part of response.stream) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        roundText += part.value;
+        writer.push(part.value);
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        calls.push(part);
+      }
+    }
+
+    const expand = options.expand;
+    if (calls.length === 0 || !expand || toolRounds >= maxToolRounds) {
+      text = roundText;
+      writer.finish();
+      break;
+    }
+
+    // The model wants more evidence. Anything it wrote first was a preamble to
+    // that decision, not the report, so it never reaches the user.
+    writer.discard();
+    if (writer.flushed) {
+      // Rare: the model wrote past the hold-back window and only then asked for
+      // more evidence. The shown text cannot be withdrawn, so mark the seam
+      // rather than letting the restarted report look like a duplication bug.
+      options.stream?.markdown('\n\n---\n\n');
+    }
+    toolRounds += 1;
+    options.progress?.(
+      `Fetching more CodeBrain evidence (round ${toolRounds} of ${maxToolRounds})…`,
+    );
+
+    const assistantParts: Array<
+      vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart
+    > = roundText.trim()
+      ? [new vscode.LanguageModelTextPart(roundText), ...calls]
+      : [...calls];
+    messages.push(vscode.LanguageModelChatMessage.Assistant(assistantParts));
+
+    const resultParts: vscode.LanguageModelToolResultPart[] = [];
+    for (const call of calls) {
+      const input = call.input as { query?: unknown; maxFiles?: unknown };
+      const query = typeof input.query === 'string' ? input.query.trim() : '';
+      let resultText: string;
+      if (call.name !== EXPLORE_TOOL_NAME || !query) {
+        resultText = `Unsupported tool call. Only ${EXPLORE_TOOL_NAME} with a non-empty "query" is available.`;
+      } else {
+        const maxFiles =
+          typeof input.maxFiles === 'number' && Number.isFinite(input.maxFiles)
+            ? Math.max(1, Math.min(40, Math.round(input.maxFiles)))
+            : options.defaultMaxFiles;
+        try {
+          resultText = await expand(query, maxFiles);
+          extraEvidence += `\n\n${resultText}`;
+        } catch (error) {
+          // A failed lookup is a recoverable condition: tell the model so it
+          // finishes the report from what it already has, instead of failing
+          // the whole request over optional extra evidence.
+          resultText = `CodeBrain could not answer that lookup: ${
+            error instanceof Error ? error.message : String(error)
+          }. Write the report from the evidence you already have and state the gap.`;
+        }
+      }
+      resultParts.push(
+        new vscode.LanguageModelToolResultPart(call.callId, [
+          new vscode.LanguageModelTextPart(resultText),
+        ]),
+      );
+    }
+    messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+
+    if (toolRounds >= maxToolRounds) {
+      messages.push(
+        vscode.LanguageModelChatMessage.User(
+          'No further lookups are available. Write the complete report now from the evidence gathered so far, and state any remaining gap under Evidence and limits.',
+        ),
+      );
+    }
   }
+
   const outputTokens = await countTokens(request.model, text, token);
   return {
     text,
     codeBrainContextTokens,
     inputTokens,
     outputTokens,
+    extraEvidence,
+    toolRounds,
   };
 }
 
@@ -313,22 +506,29 @@ export function tokenUsageFooter(
 }
 
 /**
- * Recent turns of this chat thread, so a follow-up like “what about the other
- * one?” has something to refer to.
+ * Recent turns of this chat thread as real chat messages, so a follow-up like
+ * “what about the other one?” has something to refer to.
  *
- * Responses are truncated hard: CodeBrain reports are long, and the useful part
- * for continuity is which subject was discussed, not the whole document.
+ * These used to be pasted into the evidence string as an abbreviated
+ * transcript, which spent evidence budget and hid the turn structure. As proper
+ * User/Assistant messages the model resolves references the way it resolves any
+ * conversation. Assistant turns are still truncated hard: CodeBrain reports are
+ * long, and the useful part for continuity is which subject was discussed, not
+ * the whole document.
  */
-export function conversationContext(
+export function historyMessages(
   history: readonly unknown[],
   maxTurns = 4,
-  maxResponseCharacters = 700,
-): string {
-  const lines: string[] = [];
+  maxResponseCharacters = 1_500,
+): vscode.LanguageModelChatMessage[] {
+  const messages: vscode.LanguageModelChatMessage[] = [];
   for (const turn of history.slice(-maxTurns)) {
     if (turn instanceof vscode.ChatRequestTurn) {
       const command = turn.command ? `/${turn.command} ` : '';
-      lines.push(`User: ${command}${turn.prompt.trim()}`.slice(0, 1_000));
+      const prompt = `${command}${turn.prompt.trim()}`.slice(0, 1_000);
+      if (prompt) {
+        messages.push(vscode.LanguageModelChatMessage.User(prompt));
+      }
       continue;
     }
     if (turn instanceof vscode.ChatResponseTurn) {
@@ -343,20 +543,15 @@ export function conversationContext(
         .replace(/\s+/g, ' ')
         .trim();
       if (text) {
-        lines.push(
-          `CodeBrain (previous answer, abbreviated): ${text.slice(0, maxResponseCharacters)}`,
+        messages.push(
+          vscode.LanguageModelChatMessage.Assistant(
+            `(previous CodeBrain report, abbreviated) ${text.slice(0, maxResponseCharacters)}`,
+          ),
         );
       }
     }
   }
-  if (lines.length === 0) {
-    return '';
-  }
-  return [
-    '## Earlier in this conversation',
-    ...lines,
-    'Resolve pronouns and references such as "it", "that function", or "the other one" against the turns above.',
-  ].join('\n');
+  return messages;
 }
 
 /** User prompts from this thread, oldest first, including the current one. */
@@ -371,37 +566,97 @@ export function historyPrompts(
 }
 
 
-function inferCommand(request: vscode.ChatRequest): ReportKind {
-  if (request.command === 'impact') {
-    return 'impact';
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Whole-phrase match that also works for non-ASCII triggers.
+ *
+ * `\b` is defined over ASCII word characters only, so a phrase beginning or
+ * ending with a Vietnamese letter — `ảnh hưởng`, `đánh giá` — could never
+ * satisfy a `\b` boundary next to a space, and those triggers silently never
+ * fired. Unicode property escapes make the boundary mean what it reads as.
+ */
+export function matchesTrigger(
+  prompt: string,
+  terms: readonly string[],
+): boolean {
+  return terms.some((term) =>
+    new RegExp(
+      `(?<![\\p{L}\\p{N}_])${escapeRegExp(term)}(?![\\p{L}\\p{N}_])`,
+      'iu',
+    ).test(prompt),
+  );
+}
+
+const FIX_TRIGGERS = [
+  'fix',
+  'bug',
+  'debug',
+  'root cause',
+  'cause',
+  'solution',
+  'lỗi',
+  'nguyên nhân',
+  'giải pháp',
+  'sửa lỗi',
+];
+
+const IMPACT_TRIGGERS = [
+  'impact',
+  // Bare "affected", so "which tests are affected" reaches /impact the same way
+  // "affected tests" does. Word order varies; the word itself does not.
+  'affected',
+  'change impact',
+  'ảnh hưởng',
+  'tác động',
+];
+
+const REVIEW_TRIGGERS = [
+  'review',
+  'diff',
+  'risk',
+  'regression',
+  'blast radius',
+  'rủi ro',
+  'đánh giá',
+  'kiểm tra code',
+];
+
+const GUIDE_TRIGGERS = [
+  'user guide',
+  'how to use',
+  'documentation',
+  'hướng dẫn',
+  'tài liệu',
+  'tài liệu sử dụng',
+];
+
+export function inferCommand(request: {
+  command: string | undefined;
+  prompt: string;
+}): ReportKind {
+  const explicit = request.command;
+  if (
+    explicit === 'impact' ||
+    explicit === 'review' ||
+    explicit === 'explain' ||
+    explicit === 'fix' ||
+    explicit === 'guide'
+  ) {
+    return explicit;
   }
-  if (request.command === 'review') {
-    return 'review';
-  }
-  if (request.command === 'explain') {
-    return 'explain';
-  }
-  if (request.command === 'fix') {
+  if (matchesTrigger(request.prompt, FIX_TRIGGERS)) {
     return 'fix';
   }
-  if (request.command === 'guide') {
+  if (matchesTrigger(request.prompt, IMPACT_TRIGGERS)) {
+    return 'impact';
+  }
+  if (matchesTrigger(request.prompt, GUIDE_TRIGGERS)) {
     return 'guide';
   }
-  if (/\b(fix|bug|debug|root cause|cause|solution|lỗi|nguyên nhân|giải pháp)\b/i.test(request.prompt)) {
-    return 'fix';
-  }
-  if (
-    /\b(impact|affected tests?|change impact|ảnh hưởng|test bị ảnh hưởng)\b/i.test(
-      request.prompt,
-    )
-  ) {
-    return 'impact';
-  }
-  return /\b(review|diff|risk|regression|blast radius|rủi ro|đánh giá)\b/i.test(
-    request.prompt,
-  )
-    ? 'review'
-    : 'explain';
+  return matchesTrigger(request.prompt, REVIEW_TRIGGERS) ? 'review' : 'explain';
 }
 
 function buildExplainQuery(prompt: string, editorContext: string): string {
@@ -449,6 +704,354 @@ function buildGuideQuery(prompt: string, editorContext: string): string {
     0,
     6_000,
   );
+}
+
+/** How much of one attachment reaches the model. */
+const MAX_REFERENCE_CHARACTERS = 8_000;
+const MAX_REFERENCES = 8;
+/**
+ * Attachments above this size are named but not read.
+ *
+ * Only the first few thousand characters would survive the budget anyway, and
+ * reading is synchronous — a `#file` pointing at a minified bundle or a large
+ * fixture would otherwise stall the extension host for the whole read.
+ */
+const MAX_REFERENCE_FILE_BYTES = 2_000_000;
+
+const FENCE_LANGUAGES: Record<string, string> = {
+  '.ts': 'ts',
+  '.tsx': 'tsx',
+  '.js': 'js',
+  '.jsx': 'jsx',
+  '.mjs': 'js',
+  '.cjs': 'js',
+  '.py': 'python',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.java': 'java',
+  '.kt': 'kotlin',
+  '.cs': 'csharp',
+  '.rb': 'ruby',
+  '.php': 'php',
+  '.swift': 'swift',
+  '.json': 'json',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.sql': 'sql',
+  '.md': 'markdown',
+};
+
+/**
+ * A reference's file path, whether it arrived as a `Uri` or a `Location`.
+ *
+ * Detection is by shape rather than `instanceof`: chat references cross an
+ * extension-host boundary, and the concrete classes a host hands over are not
+ * guaranteed to be the ones this module imported.
+ */
+function referenceFsPath(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const location = (value as { uri?: { fsPath?: unknown } }).uri;
+  if (location && typeof location.fsPath === 'string') {
+    return location.fsPath;
+  }
+  const uri = (value as { fsPath?: unknown }).fsPath;
+  return typeof uri === 'string' ? uri : undefined;
+}
+
+/** Zero-based line span of a `Location`-shaped reference. */
+function referenceLines(
+  value: unknown,
+): { start: number; end: number } | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const range = (value as {
+    range?: { start?: { line?: unknown }; end?: { line?: unknown } };
+  }).range;
+  const start = range?.start?.line;
+  const end = range?.end?.line;
+  if (typeof start !== 'number' || typeof end !== 'number') {
+    return undefined;
+  }
+  return { start, end };
+}
+
+export interface PromptReference {
+  readonly id: string;
+  readonly value: unknown;
+  readonly modelDescription?: string;
+}
+
+export interface ReferenceEvidence {
+  /** Markdown block describing everything the user attached, or ''. */
+  evidence: string;
+  /** File and symbol names worth adding to the graph query. */
+  hints: string[];
+}
+
+/**
+ * Context the user attached to the prompt with `#file`, `#selection`, and
+ * friends.
+ *
+ * Without this the participant answered from the active editor alone, so an
+ * explicitly attached file was silently ignored — the opposite of what
+ * attaching it means.
+ */
+export function collectPromptReferences(
+  references: readonly PromptReference[],
+  folderPath: string,
+  readFile: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+  maxReferences = MAX_REFERENCES,
+  maxCharacters = MAX_REFERENCE_CHARACTERS,
+): ReferenceEvidence {
+  const blocks: string[] = [];
+  const hints: string[] = [];
+  const root = folderPath.replace(/[\\/]$/, '');
+
+  for (const reference of references.slice(0, maxReferences)) {
+    const filePath = referenceFsPath(reference.value);
+    if (filePath) {
+      const relativePath = relative(root, filePath).replaceAll('\\', '/');
+      // An attachment from outside the project cannot be matched against the
+      // graph and may be anywhere on disk, so it is named but not read.
+      if (!relativePath || relativePath.startsWith(`..${sep}`) || relativePath.startsWith('../')) {
+        blocks.push(`### ${basename(filePath)} (outside the project; not read)`);
+        continue;
+      }
+      const lines = referenceLines(reference.value);
+      let body: string;
+      try {
+        const bytes = statSync(filePath).size;
+        if (bytes > MAX_REFERENCE_FILE_BYTES) {
+          blocks.push(
+            `### ${relativePath} (${Math.round(bytes / 1_000_000)} MB; too large to inline, ask CodeBrain about its symbols instead)`,
+          );
+          hints.push(relativePath, basename(filePath, extname(filePath)));
+          continue;
+        }
+        const text = readFile(filePath);
+        body = lines
+          ? text
+              .split(/\r?\n/)
+              .slice(lines.start, lines.end + 1)
+              .join('\n')
+          : text;
+      } catch {
+        blocks.push(`### ${relativePath} (could not be read)`);
+        continue;
+      }
+      const label = lines
+        ? `${relativePath}:${lines.start + 1}-${lines.end + 1}`
+        : relativePath;
+      const fence = FENCE_LANGUAGES[extname(filePath).toLowerCase()] ?? '';
+      blocks.push(
+        `### ${label}\n\`\`\`${fence}\n${trimForModel(body, maxCharacters, 'attachment')}\n\`\`\``,
+      );
+      hints.push(relativePath, basename(filePath, extname(filePath)));
+      continue;
+    }
+
+    if (typeof reference.value === 'string' && reference.value.trim()) {
+      blocks.push(
+        `### ${reference.id}\n${trimForModel(reference.value.trim(), maxCharacters, 'attachment')}`,
+      );
+      hints.push(reference.value.trim().slice(0, 80));
+      continue;
+    }
+
+    if (reference.modelDescription?.trim()) {
+      blocks.push(`### ${reference.id}\n${reference.modelDescription.trim()}`);
+    }
+  }
+
+  if (blocks.length === 0) {
+    return { evidence: '', hints: [] };
+  }
+  return {
+    evidence: [
+      '## Context the user attached to the prompt',
+      'Treat these attachments as deliberately chosen focus. They are already read; do not ask for them again.',
+      ...blocks,
+    ].join('\n\n'),
+    hints: [...new Set(hints)].filter(Boolean),
+  };
+}
+
+export interface CodeReference {
+  path: string;
+  line: number;
+}
+
+/**
+ * `path:line` citations in a finished report, so the chat can offer them as
+ * clickable locations instead of text the user has to retype.
+ */
+export function extractCodeReferences(
+  report: string,
+  limit = 15,
+): CodeReference[] {
+  const pattern =
+    /(?:^|[\s*_(`[<])((?:[\w@.-]+[/\\])+[\w@.+-]+\.[A-Za-z0-9]+):(\d+)/gm;
+  const found: CodeReference[] = [];
+  const seen = new Set<string>();
+  for (const match of report.matchAll(pattern)) {
+    const path = match[1]?.replaceAll('\\', '/');
+    const line = Number.parseInt(match[2] ?? '', 10);
+    if (!path || path.startsWith('http') || !Number.isFinite(line) || line < 1) {
+      continue;
+    }
+    const key = `${path}:${line}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    found.push({ path, line });
+    if (found.length >= limit) {
+      break;
+    }
+  }
+  return found;
+}
+
+/** Relative paths as the nested shape `ChatResponseStream.filetree` expects. */
+export function buildFileTree(
+  paths: readonly string[],
+): vscode.ChatResponseFileTree[] {
+  const roots: vscode.ChatResponseFileTree[] = [];
+  for (const path of paths) {
+    const segments = path.replaceAll('\\', '/').split('/').filter(Boolean);
+    let level = roots;
+    for (const [index, segment] of segments.entries()) {
+      const isFile = index === segments.length - 1;
+      let node = level.find((entry) => entry.name === segment);
+      if (!node) {
+        node = isFile ? { name: segment } : { name: segment, children: [] };
+        level.push(node);
+      }
+      if (isFile) {
+        break;
+      }
+      node.children ??= [];
+      level = node.children;
+    }
+  }
+  return roots;
+}
+
+/**
+ * How many files one graph lookup should return for a repository this size.
+ *
+ * A single fixed budget under-serves a monorepo and over-serves a small
+ * package: too little evidence and the model fills the gap with guesses, too
+ * much and the report is slower for no gain.
+ */
+export function scaleContextFiles(indexedFiles: number): number {
+  if (!Number.isFinite(indexedFiles) || indexedFiles <= 0) {
+    return 12;
+  }
+  if (indexedFiles < 500) {
+    return 10;
+  }
+  if (indexedFiles < 5_000) {
+    return 16;
+  }
+  if (indexedFiles < 15_000) {
+    return 22;
+  }
+  return 28;
+}
+
+/** Indexed file counts, keyed by root and invalidated with the index. */
+const indexedFileCounts = new Map<string, { generation: number; count: number }>();
+
+/**
+ * File budget for one graph lookup: an explicit setting when the user has one,
+ * otherwise a budget scaled to the repository.
+ *
+ * The count comes from the index rather than the file system, and is cached
+ * against the freshness generation so it costs one status call per change
+ * rather than one per question.
+ */
+async function resolveMaxContextFiles(
+  config: vscode.WorkspaceConfiguration,
+  runtime: RuntimeCommand,
+  folder: vscode.WorkspaceFolder,
+  freshness: IndexFreshness,
+  token: vscode.CancellationToken,
+): Promise<number> {
+  const inspected = config.inspect<number>('chat.maxContextFiles');
+  const explicit =
+    inspected?.workspaceFolderValue ??
+    inspected?.workspaceValue ??
+    inspected?.globalValue;
+  if (typeof explicit === 'number' && explicit > 0) {
+    return explicit;
+  }
+
+  const root = folder.uri.fsPath;
+  const generation = freshness.generation(root);
+  const cached = indexedFileCounts.get(root);
+  if (cached?.generation === generation) {
+    return scaleContextFiles(cached.count);
+  }
+  try {
+    const status = await readIndexStatus(runtime, root, token);
+    const count = status?.fileCount ?? 0;
+    indexedFileCounts.set(root, { generation, count });
+    return scaleContextFiles(count);
+  } catch {
+    // Sizing is an optimization. A failed status call must not fail the report.
+    return scaleContextFiles(cached?.count ?? 0);
+  }
+}
+
+/**
+ * Offer the report's `path:line` citations as clickable locations.
+ *
+ * The report names them either way, but as plain text the user has to retype a
+ * path to get there. Only paths that exist on disk are offered, so a citation
+ * the model invented does not become a dead link.
+ */
+function streamCodeAnchors(
+  stream: vscode.ChatResponseStream,
+  folder: vscode.WorkspaceFolder,
+  report: string,
+  languageCode: string,
+): void {
+  const anchors = extractCodeReferences(report).filter((reference) =>
+    existsSync(join(folder.uri.fsPath, reference.path)),
+  );
+  if (anchors.length === 0) {
+    return;
+  }
+  stream.markdown(
+    languageCode === 'vi' ? '\n\n**Đi tới code:**\n\n' : '\n\n**Jump to code:**\n\n',
+  );
+  for (const anchor of anchors) {
+    stream.anchor(
+      new vscode.Location(
+        vscode.Uri.file(join(folder.uri.fsPath, anchor.path)),
+        new vscode.Position(anchor.line - 1, 0),
+      ),
+      `${anchor.path}:${anchor.line}`,
+    );
+    stream.markdown('\n\n');
+  }
+}
+
+/** Whether the user asked about commits rather than the working tree. */
+export function mentionsCommitHistory(prompt: string): boolean {
+  return matchesTrigger(prompt, [
+    'commit',
+    'commits',
+    'changeset',
+    'sha',
+    'history',
+    'lịch sử',
+    'lần commit',
+  ]);
 }
 
 interface ExploreDeps {
@@ -573,6 +1176,7 @@ function reviewEvidence(
   editorContext: string,
   maxDiffCharacters: number,
   readmeContext: string,
+  attachments: string,
 ): string {
   return [
     gitContext.target
@@ -593,6 +1197,7 @@ function reviewEvidence(
       : '',
     '## Editor focus',
     editorContext || 'No active editor selection.',
+    attachments,
     readmeContext ||
       '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source, call paths, and blast radius',
@@ -617,6 +1222,13 @@ async function selectReviewCommit(
     /(?:commit|changeset|sha)\s+([0-9a-f]{7,40})\b/i,
   )?.[1] ?? prompt.match(/^\s*([0-9a-f]{7,40})\s*$/i)?.[1];
   if (explicit) return { commit: explicit, cancelled: false };
+
+  // Only interrupt with a picker when the user actually asked about commits.
+  // A modal in the middle of a chat request is easy to miss and blocks the
+  // answer; the ordinary "review my changes" case has an obvious target.
+  if (!mentionsCommitHistory(prompt)) {
+    return { cancelled: false };
+  }
 
   const commits = await listGitCommits(root);
   const items: vscode.QuickPickItem[] = [
@@ -647,15 +1259,19 @@ function explainEvidence(
   graphContext: string,
   editorContext: string,
   readmeContext: string,
+  attachments: string,
 ): string {
   return [
     '## Editor focus',
     editorContext || 'No active editor selection.',
+    attachments,
     readmeContext ||
       '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source and workflow evidence',
     graphContext,
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 function fixEvidence(
@@ -664,10 +1280,12 @@ function fixEvidence(
   readmeContext: string,
   gitContext: GitReviewContext,
   maxDiffCharacters: number,
+  attachments: string,
 ): string {
   return [
     '## Reported bug and editor focus',
     editorContext || 'No active editor selection or runtime error was supplied.',
+    attachments,
     '## Git status and recent changes',
     gitContext.status,
     gitContext.stat || 'No diff stat available.',
@@ -680,22 +1298,28 @@ function fixEvidence(
       '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source, failure path, and blast radius',
     graphContext,
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 function guideEvidence(
   graphContext: string,
   editorContext: string,
   readmeContext: string,
+  attachments: string,
 ): string {
   return [
     '## Feature requested and editor focus',
     editorContext || 'No active editor selection was supplied.',
+    attachments,
     readmeContext ||
       '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source and feature workflow evidence',
     graphContext,
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 export function registerChatParticipant(
@@ -753,13 +1377,23 @@ export function registerChatParticipant(
 
 
     const config = vscode.workspace.getConfiguration('codebrain');
-    const maxFiles = config.get<number>('chat.maxContextFiles', 12);
     const maxDiffCharacters = config.get<number>(
       'chat.maxDiffCharacters',
       120_000,
     );
     const showTokenUsage = config.get<boolean>('chat.showTokenUsage', true);
+    const maxToolRounds = Math.max(
+      0,
+      Math.min(4, config.get<number>('chat.maxFollowUpLookups', 2)),
+    );
     const editorContext = activeEditorContext(folder);
+    // Context the user attached with `#file`, `#selection`, and friends. It is
+    // a deliberate choice of focus, so it feeds both the graph query and the
+    // evidence handed to the model.
+    const attached = collectPromptReferences(
+      request.references ?? [],
+      folder.uri.fsPath,
+    );
     const history = chatContext.history ?? [];
     // Take the language from the conversation, not just this message, so a bare
     // follow-up does not flip the report to another language mid-thread.
@@ -769,17 +1403,21 @@ export function registerChatParticipant(
     );
     const languageInstruction =
       responseLanguageInstruction(responseLanguage);
-    const priorTurns = conversationContext(history);
-    /** Prepend the thread's earlier turns so follow-up questions resolve. */
-    const withHistory = (evidence: string): string =>
-      priorTurns ? `${priorTurns}\n\n${evidence}` : evidence;
+    /** Earlier turns of this thread, so follow-up questions resolve. */
+    const priorMessages = historyMessages(history);
     const subject =
       request.prompt.trim() ||
       editorContext.split('\n')[0]?.replace(/^Active file:\s*/, '') ||
       'selected code';
+    /** Prompt plus attachments, so the graph query looks where the user pointed. */
+    const focusPrompt = [request.prompt, ...attached.hints]
+      .filter(Boolean)
+      .join(' ');
 
     try {
       const requestStartedAt = Date.now();
+      // Say what is happening before the first lookup, not after it: sizing the
+      // budget can cost a status call, and silence reads as a hung request.
       stream.progress(
         command === 'impact'
           ? 'Tracing change impact and detecting affected tests…'
@@ -791,17 +1429,38 @@ export function registerChatParticipant(
           ? 'Tracing the feature workflow and preparing a user guide…'
           : 'Tracing the workflow through CodeBrain…',
       );
+      const maxFiles = await resolveMaxContextFiles(
+        config,
+        runtime,
+        folder,
+        freshness,
+        token,
+      );
+      /** Lets the model pull in evidence the first lookup did not cover. */
+      const expand = (query: string, files: number): Promise<string> =>
+        explore(exploreDeps, folder, query, files, request, token);
+      /** Options every command shares when asking the model for a report. */
+      const reportBase = {
+        request,
+        languageInstruction,
+        history: priorMessages,
+        stream,
+        defaultMaxFiles: maxFiles,
+        progress: (message: string) => stream.progress(message),
+      };
 
       let generatedReport: GeneratedReport;
       // Graph output backing the measured context-cost comparison in the footer.
       let evidenceContext = '';
+      /** Files a review touched, shown as a navigable tree under the report. */
+      let changedFiles: readonly string[] = [];
       if (command === 'impact') {
         const gitContext = await collectGitReviewContext(
           folder.uri.fsPath,
           maxDiffCharacters,
         );
         const query = buildReviewQuery(
-          request.prompt || 'Analyze change impact and affected tests.',
+          focusPrompt || 'Analyze change impact and affected tests.',
           gitContext,
           editorContext,
         );
@@ -824,24 +1483,36 @@ export function registerChatParticipant(
           analysis,
           responseLanguage.code,
         );
+        // The deterministic half is already computed, so show it now rather
+        // than making the user wait on the optional model interpretation.
+        stream.markdown(`${deterministicReport.trim()}\n\n`);
         try {
           const aiExplanation = await generateReport(
-            request,
-            IMPACT_INSTRUCTIONS,
-            languageInstruction,
-            request.prompt || 'Explain the deterministic change impact result.',
-            withHistory(`${deterministicReport}\n\n## CodeBrain context\n\n${graphContext}`),
-            graphContext,
+            {
+              ...reportBase,
+              instructions: IMPACT_INSTRUCTIONS,
+              userPrompt:
+                request.prompt || 'Explain the deterministic change impact result.',
+              evidence: [
+                deterministicReport,
+                attached.evidence,
+                `## CodeBrain context\n\n${graphContext}`,
+              ]
+                .filter(Boolean)
+                .join('\n\n'),
+              codeBrainContext: graphContext,
+              // The deterministic report is authoritative here, so extra
+              // lookups cannot change the answer — only slow it down.
+              expand: undefined,
+            },
             token,
           );
           // Keep deterministic facts authoritative. The model contributes an
           // interpretation section instead of rewriting the impact score,
           // paths, tests, or evidence reported by the engine.
           generatedReport = {
+            ...aiExplanation,
             text: `${deterministicReport.trim()}\n\n${aiExplanation.text.trim()}`,
-            codeBrainContextTokens: aiExplanation.codeBrainContextTokens,
-            inputTokens: aiExplanation.inputTokens,
-            outputTokens: aiExplanation.outputTokens,
           };
         } catch (error) {
           if (token.isCancellationRequested) throw error;
@@ -852,6 +1523,8 @@ export function registerChatParticipant(
             codeBrainContextTokens: 0,
             inputTokens: 0,
             outputTokens: 0,
+            extraEvidence: '',
+            toolRounds: 0,
           };
         }
       } else if (command === 'review') {
@@ -873,8 +1546,8 @@ export function registerChatParticipant(
             );
         const query = buildReviewQuery(
           selectedCommit
-            ? `${request.prompt} Review selected commit ${selectedCommit}.`
-            : request.prompt,
+            ? `${focusPrompt} Review selected commit ${selectedCommit}.`
+            : focusPrompt,
           gitContext,
           editorContext,
         );
@@ -887,32 +1560,36 @@ export function registerChatParticipant(
           token,
         );
         evidenceContext = graphContext;
+        changedFiles = gitContext.changedFiles;
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
           editorContext,
         );
         generatedReport = await generateReport(
-          request,
-          customReviewPrompt(REVIEW_INSTRUCTIONS, folder),
-          languageInstruction,
-          request.prompt || 'Review the current workspace changes or selected code.',
-          withHistory(
-            reviewEvidence(
+          {
+            ...reportBase,
+            instructions: customReviewPrompt(REVIEW_INSTRUCTIONS, folder),
+            userPrompt:
+              request.prompt || 'Review the current workspace changes or selected code.',
+            evidence: reviewEvidence(
               graphContext,
               gitContext,
               editorContext,
               maxDiffCharacters,
               readmeContext,
+              attached.evidence,
             ),
-          ),
-          graphContext,
+            codeBrainContext: graphContext,
+            expand,
+            maxToolRounds,
+          },
           token,
         );
       } else if (command === 'guide') {
         const graphContext = await explore(
           exploreDeps,
           folder,
-          buildGuideQuery(request.prompt, editorContext),
+          buildGuideQuery(focusPrompt, editorContext),
           maxFiles,
           request,
           token,
@@ -923,12 +1600,21 @@ export function registerChatParticipant(
           editorContext,
         );
         generatedReport = await generateReport(
-          request,
-          GUIDE_INSTRUCTIONS,
-          languageInstruction,
-          request.prompt || 'Generate a user guide for the selected feature.',
-          withHistory(guideEvidence(graphContext, editorContext, readmeContext)),
-          graphContext,
+          {
+            ...reportBase,
+            instructions: GUIDE_INSTRUCTIONS,
+            userPrompt:
+              request.prompt || 'Generate a user guide for the selected feature.',
+            evidence: guideEvidence(
+              graphContext,
+              editorContext,
+              readmeContext,
+              attached.evidence,
+            ),
+            codeBrainContext: graphContext,
+            expand,
+            maxToolRounds,
+          },
           token,
         );
       } else if (command === 'fix') {
@@ -939,7 +1625,7 @@ export function registerChatParticipant(
         const graphContext = await explore(
           exploreDeps,
           folder,
-          buildFixQuery(request.prompt, editorContext),
+          buildFixQuery(focusPrompt, editorContext),
           maxFiles,
           request,
           token,
@@ -950,24 +1636,27 @@ export function registerChatParticipant(
           editorContext,
         );
         generatedReport = await generateReport(
-          request,
-          FIX_INSTRUCTIONS,
-          languageInstruction,
-          request.prompt || 'Analyze the bug in the selected code and propose a safe solution.',
-          withHistory(
-            fixEvidence(
+          {
+            ...reportBase,
+            instructions: FIX_INSTRUCTIONS,
+            userPrompt:
+              request.prompt || 'Analyze the bug in the selected code and propose a safe solution.',
+            evidence: fixEvidence(
               graphContext,
               editorContext,
               readmeContext,
               gitContext,
               maxDiffCharacters,
+              attached.evidence,
             ),
-          ),
-          graphContext,
+            codeBrainContext: graphContext,
+            expand,
+            maxToolRounds,
+          },
           token,
         );
       } else {
-        const query = buildExplainQuery(request.prompt, editorContext);
+        const query = buildExplainQuery(focusPrompt, editorContext);
         const graphContext = await explore(
           exploreDeps,
           folder,
@@ -982,15 +1671,27 @@ export function registerChatParticipant(
           editorContext,
         );
         generatedReport = await generateReport(
-          request,
-          EXPLAIN_INSTRUCTIONS,
-          languageInstruction,
-          request.prompt || 'Explain the purpose and workflow of the selected code.',
-          withHistory(explainEvidence(graphContext, editorContext, readmeContext)),
-          graphContext,
+          {
+            ...reportBase,
+            instructions: EXPLAIN_INSTRUCTIONS,
+            userPrompt:
+              request.prompt || 'Explain the purpose and workflow of the selected code.',
+            evidence: explainEvidence(
+              graphContext,
+              editorContext,
+              readmeContext,
+              attached.evidence,
+            ),
+            codeBrainContext: graphContext,
+            expand,
+            maxToolRounds,
+          },
           token,
         );
       }
+      // Follow-up lookups are part of what the answer cost, so they belong in
+      // the measured comparison alongside the first one.
+      evidenceContext += generatedReport.extraEvidence;
 
       // Measure what reading the cited files in full would actually have cost,
       // instead of multiplying the context by a constant.
@@ -1016,27 +1717,47 @@ export function registerChatParticipant(
       } catch {
         // Metrics are optional and must never hide an otherwise valid report.
       }
+      // The chat has already shown the model's text as it arrived. The saved
+      // copy is normalized: a guaranteed title and repaired Mermaid, which
+      // matters in the Markdown preview — the place diagrams actually render.
       const normalizedReport = normalizeReport(
         command,
         generatedReport.text,
         subject,
       );
-      const report = showTokenUsage
-        ? `${normalizedReport.trim()}\n\n${tokenUsageFooter(
-            tokenSample,
-            responseLanguage.code,
-            { contextCharacters: evidenceContext.length },
-          )}\n`
-        : normalizedReport;
+      // The token footer is a chat-time diagnostic, not part of the document.
+      // Keeping it out of the stored copy means an exported guide or review
+      // reads as a document rather than a document plus a cost readout.
       const reportUri = await reports.setLatest({
         kind: command,
         title:
-          report.match(/^#\s+(.+)$/m)?.[1] ??
+          normalizedReport.match(/^#\s+(.+)$/m)?.[1] ??
           `CodeBrain ${command} report`,
-        markdown: report,
+        markdown: normalizedReport,
         folder,
       });
-      stream.markdown(report);
+
+      if (!generatedReport.text.trim()) {
+        // Nothing was streamed because the model returned nothing. Show the
+        // normalized fallback rather than leaving the answer silently empty.
+        stream.markdown(normalizedReport);
+      }
+      if (command === 'review' && changedFiles.length > 0) {
+        stream.markdown(
+          responseLanguage.code === 'vi'
+            ? '\n\n**Tệp đã thay đổi:**\n\n'
+            : '\n\n**Changed files:**\n\n',
+        );
+        stream.filetree(buildFileTree(changedFiles), folder.uri);
+      }
+      streamCodeAnchors(stream, folder, normalizedReport, responseLanguage.code);
+      if (showTokenUsage) {
+        stream.markdown(
+          `\n\n${tokenUsageFooter(tokenSample, responseLanguage.code, {
+            contextCharacters: evidenceContext.length,
+          })}\n`,
+        );
+      }
       if (reportUri) {
         stream.reference(reportUri);
       }
@@ -1101,6 +1822,13 @@ export function registerChatParticipant(
             label: 'Deepen highest-risk finding',
             command: 'review',
           },
+          {
+            // "commit" is what re-opens the commit picker, so it has to survive
+            // into the prompt verbatim.
+            prompt: 'Review a specific commit instead of the working tree.',
+            label: 'Review a commit',
+            command: 'review',
+          },
         ];
       }
       if (result.metadata.command === 'fix') {
@@ -1120,8 +1848,11 @@ export function registerChatParticipant(
       if (result.metadata.command === 'guide') {
         return [
           {
-            prompt: 'Review this guide for missing prerequisites, permissions, and troubleshooting steps.',
-            label: 'Review guide completeness',
+            // This re-runs /guide, so the label has to promise a new guide
+            // rather than a review of the previous one.
+            prompt:
+              'Rewrite this guide with the prerequisites, permissions, and troubleshooting steps it is missing.',
+            label: 'Fill the gaps in this guide',
             command: 'guide',
           },
           {

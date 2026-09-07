@@ -191,6 +191,37 @@ function safeSegment(value: string): string {
     .slice(0, 48);
 }
 
+/** Reports kept per workspace before the oldest are removed. */
+export const MAX_KEPT_REPORTS = 20;
+
+/**
+ * Drop all but the most recent reports for a workspace.
+ *
+ * Every request writes a new file to the temporary directory, so without this
+ * the directory grows for as long as the machine keeps its temp files — one
+ * file per question asked, forever. Names are ISO timestamps, so sorting them
+ * lexicographically sorts them chronologically.
+ */
+export async function pruneReportDirectory(
+  directory: vscode.Uri,
+  keep = MAX_KEPT_REPORTS,
+): Promise<void> {
+  try {
+    const entries = await vscode.workspace.fs.readDirectory(directory);
+    const reports = entries
+      .filter(
+        ([name, type]) => type === vscode.FileType.File && name.endsWith('.md'),
+      )
+      .map(([name]) => name)
+      .sort();
+    for (const name of reports.slice(0, Math.max(0, reports.length - keep))) {
+      await vscode.workspace.fs.delete(vscode.Uri.joinPath(directory, name));
+    }
+  } catch {
+    // Housekeeping only: never fail a report because cleanup could not run.
+  }
+}
+
 export async function writeAndPreviewReport(
   kind: ReportKind,
   report: string,
@@ -205,6 +236,7 @@ export async function writeAndPreviewReport(
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const uri = vscode.Uri.joinPath(directory, `${stamp}-${kind}.md`);
   await vscode.workspace.fs.writeFile(uri, Buffer.from(report, 'utf8'));
+  await pruneReportDirectory(directory);
 
   const openPreview = vscode.workspace
     .getConfiguration('codebrain')
