@@ -3,7 +3,7 @@
 # Downloads a self-contained bundle (a vendored Node runtime + the app) from
 # GitHub Releases. No Node.js, no build tools required.
 #
-#   irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/sang2770/codegraph/main/install.ps1 | iex
 #
 # Upgrade with `codegraph upgrade` (or just re-run this). To uninstall: remove
 # $env:LOCALAPPDATA\codegraph and drop its \current\bin entry from your user PATH.
@@ -13,7 +13,7 @@
 #   CODEGRAPH_INSTALL_DIR  install location (default: %LOCALAPPDATA%\codegraph)
 
 $ErrorActionPreference = 'Stop'
-$repo = 'colbymchenry/codegraph'
+$repo = 'sang2770/codegraph'
 $installDir = if ($env:CODEGRAPH_INSTALL_DIR) { $env:CODEGRAPH_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'codegraph' }
 
 # 1. Detect architecture -> target matching the release archives.
@@ -58,7 +58,7 @@ if (($userPath -split ';') -notcontains $binDir) {
 Write-Host "Installed to $dest"
 
 # 5. Warn if a different codegraph earlier on PATH will shadow this install.
-# Most often a stale `npm i -g @colbymchenry/codegraph`, whose launcher keeps
+# Most often a stale `npm i -g @sang2770/codegraph`, whose launcher keeps
 # running its own version-pinned bundle — so `codegraph --version` disagrees
 # with what we just installed (issue #1071). Check both the persisted PATH a
 # fresh shell sees (Machine + User) and this session's PATH (catches dirs a
@@ -85,7 +85,7 @@ if ($shadow) {
   Write-Warning "  $shadow"
   Write-Warning "  (this install: $expected)"
   Write-Warning "If 'codegraph --version' shows an unexpected version, remove the other copy"
-  Write-Warning "(e.g. 'npm rm -g @colbymchenry/codegraph') or put '$binDir' first on your PATH."
+  Write-Warning "(e.g. 'npm rm -g @sang2770/codegraph') or put '$binDir' first on your PATH."
 }
 
 Write-Host "Run: codegraph --help"

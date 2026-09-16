@@ -15,13 +15,27 @@ name: Release
 # Before triggering: bump package.json. CHANGELOG.md entries can live under
 # `## [Unreleased]` — step 2 takes care of moving them.
 #
-# npm auth is OIDC trusted publishing (no NPM_TOKEN): every published package
-# (@colbymchenry/codegraph + the per-platform bundles) has this repo +
-# release.yml configured as its trusted publisher on npmjs.com. Adding a new
-# platform package means configuring its trusted publisher there before the
-# first release that includes it.
+# npm auth is an automation token in the NPM_TOKEN repo secret. Create it at
+# npmjs.com → Access Tokens → Generate → Automation (it bypasses 2FA, which a
+# CI publish cannot answer), then add it under Settings → Secrets and variables
+# → Actions. Every package (@sang2770/codegraph + the per-platform bundles)
+# publishes with that one token, so a NEW platform package needs no extra
+# setup — unlike OIDC trusted publishing, which would need each package name
+# registered on npmjs before its first release.
+#
+# Provenance (a signed attestation tying the tarball to this workflow run) is
+# on by default and still works with a token, because `id-token: write` below
+# grants the OIDC identity it signs with. It requires each package's
+# `repository` field to match THIS repo — scripts/pack-npm.sh writes it. If a
+# first publish ever trips on provenance, re-run with the `provenance` input
+# unticked rather than hand-publishing.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      provenance:
+        description: "Publish with an npm provenance attestation"
+        type: boolean
+        default: true
 
 permissions:
   contents: write      # create the GitHub Release + tag, push the CHANGELOG promote
@@ -93,9 +107,11 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          # No registry-url here: it writes an .npmrc that requires a
-          # NODE_AUTH_TOKEN env var to exist, and we publish via OIDC
-          # trusted publishing instead of a token.
+          # registry-url writes the .npmrc that makes `npm publish` read
+          # NODE_AUTH_TOKEN — set from the NPM_TOKEN secret on the publish
+          # step below. Without this, publish falls back to an anonymous
+          # registry client and fails with E401.
+          registry-url: https://registry.npmjs.org
 
       - name: Upgrade npm for OIDC trusted publishing
         # Trusted publishing needs npm >= 11.5; Node 22 bundles npm 10.
@@ -213,7 +229,7 @@ jobs:
         # was built by this workflow from this repo — SHA256SUMS alone only
         # proves integrity, not origin, since it ships next to the bundles.
         # Verify any downloaded artifact with:
-        #   gh attestation verify <file> -R colbymchenry/codegraph
+        #   gh attestation verify <file> -R sang2770/codegraph
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
@@ -247,12 +263,20 @@ jobs:
           fi
 
       - name: Publish to npm
-        # Auth is OIDC trusted publishing (id-token: write above) — npm mints
-        # a short-lived credential from the workflow's identity; there is no
-        # NPM_TOKEN. Provenance is generated automatically on this path; the
-        # explicit --provenance keeps the intent visible and fails loudly if
-        # OIDC is ever unavailable.
+        # Auth: the NPM_TOKEN automation token, read by npm through the .npmrc
+        # that setup-node's registry-url wrote. Fail early and in plain words
+        # when the secret is missing — otherwise the first sign of trouble is
+        # an E401 from the registry after the GitHub Release already exists.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PROVENANCE: ${{ inputs.provenance }}
         run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN secret is not set. Create an Automation token on npmjs.com and add it under Settings → Secrets and variables → Actions. The GitHub Release above was still created; re-run this workflow once the secret exists." >&2
+            exit 1
+          fi
+          PROV_FLAG=""
+          if [ "${PROVENANCE}" = "true" ]; then PROV_FLAG="--provenance"; fi
           V="${{ steps.ver.outputs.version }}"
           bash scripts/pack-npm.sh "$V"
           # Platform packages first, then the main shim (which depends on them).
@@ -263,10 +287,11 @@ jobs:
               echo "skip $name@$V (already published)"
             else
               echo "publishing $name@$V"
-              # --provenance: publish with an npm provenance attestation
-              # (needs the id-token: write permission above and the
-              # repository field pack-npm.sh writes into each package.json).
-              ( cd "$dir" && npm publish --access public --provenance )
+              # $PROV_FLAG is --provenance unless the run unticked it: an npm
+              # provenance attestation (needs the id-token: write permission
+              # above and the repository field pack-npm.sh writes into each
+              # package.json).
+              ( cd "$dir" && npm publish --access public $PROV_FLAG )
             fi
           done
 
