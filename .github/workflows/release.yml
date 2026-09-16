@@ -103,7 +103,14 @@ jobs:
           # RELEASE_PAT secret with: contents:write on this repo, no other
           # scopes. Rotate per your token policy; the workflow only runs
           # on manual dispatch so the blast radius is small.
-          token: ${{ secrets.RELEASE_PAT }}
+          #
+          # Fall back to github.token when RELEASE_PAT is unset: that ruleset
+          # is a property of the upstream repo, not of this one, and an unset
+          # secret resolves to an EMPTY string — which fails checkout on the
+          # release job's very first step, before anything is built. With
+          # `contents: write` granted above, github.token can push to main on
+          # a repo without such a ruleset. Set RELEASE_PAT only if you add one.
+          token: ${{ secrets.RELEASE_PAT || github.token }}
       - uses: actions/setup-node@v6
         with:
           node-version: 22
