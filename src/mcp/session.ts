@@ -15,8 +15,8 @@
 import * as path from 'path';
 import { JsonRpcRequest, JsonRpcNotification, JsonRpcTransport, ErrorCodes } from './transport';
 import { MCPEngine } from './engine';
-import { tools } from './tools';
-import { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_ROOT_INDEX } from './server-instructions';
+import { tools, isReviewSurfaceActive } from './tools';
+import { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_ROOT_INDEX, withReviewSurface } from './server-instructions';
 import { CodeGraphPackageVersion } from './version';
 import { findNearestCodeGraphRoot } from '../directory';
 import { getTelemetry, ClientInfo } from '../telemetry';
@@ -229,7 +229,9 @@ export class MCPSession {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: {} },
       serverInfo: SERVER_INFO,
-      instructions: initializeInstructions(indexed ? SERVER_INSTRUCTIONS : SERVER_INSTRUCTIONS_NO_ROOT_INDEX),
+      instructions: initializeInstructions(
+        withReviewSurface(indexed ? SERVER_INSTRUCTIONS : SERVER_INSTRUCTIONS_NO_ROOT_INDEX, isReviewSurfaceActive()),
+      ),
     });
 
     if (explicitPath) {

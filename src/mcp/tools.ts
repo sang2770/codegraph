@@ -30,6 +30,7 @@ import {
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { scanDynamicDispatch } from './dynamic-boundaries';
+import { buildReview, isSafeRef, type ReviewOptions } from './review';
 import { getUpdateNotice } from '../upgrade/update-check';
 
 /**
@@ -699,6 +700,56 @@ export const tools: ToolDefinition[] = [
     annotations: READ_ONLY_ANNOTATIONS,
   },
   {
+    name: 'codegraph_review',
+    description: 'REVIEW A CHANGE SET — call ONCE at the start of a code review, before reading anything. Given a diff (a git `base` ref, a raw unified `diff`, or a `files` list) it returns what the diff itself cannot show: which symbols the changed lines live in, who calls them FROM FILES NOT IN THE DIFF (dynamic-dispatch call sites included), signatures that changed or exports that vanished while outside call sites stayed put, the blast radius, and which tests cover it — plus the changed symbols no test reaches. Structure only by default (no source echoed back: you already have the diff), so it is cheap; raise `includeSource` only when you need a body. Use this INSTEAD of grepping for callers of every changed function.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        base: {
+          type: 'string',
+          description: 'Git ref the change is measured against (e.g. "origin/main", "HEAD~1"). REQUIRED for breaking-change detection — it is what lets codegraph re-parse the pre-change code and compare signatures. Omit to review uncommitted work (HEAD → working tree) without that comparison.',
+        },
+        head: {
+          type: 'string',
+          description: 'Git ref for the changed side. Omit to use the working tree. With `base`, the range is a merge-base (three-dot) range — the PR semantic.',
+        },
+        files: {
+          type: 'string',
+          description: 'Comma-separated changed file paths, for when the caller has no local git (e.g. a file list from a PR API). Findings are then per-file rather than per-hunk.',
+        },
+        diff: {
+          type: 'string',
+          description: 'A raw unified diff to analyze, for when the caller already fetched the PR diff. Takes precedence over `base`/`files`.',
+        },
+        includeSource: {
+          type: 'string',
+          description: 'How much verbatim source to include. "none" (default) = structure only — cheapest, and you already hold the diff. "callers" = bodies of call sites outside the diff (the code that actually breaks). "changed" = bodies of the changed symbols. "all" = both.',
+          enum: ['none', 'callers', 'changed', 'all'],
+          default: 'none',
+        },
+        maxCallers: {
+          type: 'number',
+          description: 'Max call sites listed per changed symbol (default: 8)',
+          default: 8,
+        },
+        maxSymbols: {
+          type: 'number',
+          description: 'Max changed symbols analyzed in depth (default: 60)',
+          default: 60,
+        },
+        format: {
+          type: 'string',
+          description: '"markdown" (default, densest for an LLM) or "json" for a programmatic consumer.',
+          enum: ['markdown', 'json'],
+          default: 'markdown',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: [],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
     name: 'codegraph_status',
     description: 'Index health check (files / nodes / edges). Skip unless debugging.',
     inputSchema: {
@@ -782,12 +833,67 @@ function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
  * note in a description only adds once `cg` is loaded; the schemas are static).
  */
 export function getStaticTools(): ToolDefinition[] {
+  const surface = resolveToolSurface();
+  if (surface === 'all') return tools;
+  return tools.filter(t => surface.has(shortToolName(t.name)));
+}
+
+const shortToolName = (s: string): string => s.trim().replace(/^codegraph_/, '');
+
+/**
+ * Named tool surfaces for a non-coding integration (`CODEGRAPH_MCP_PROFILE`).
+ *
+ * The default surface is deliberately ONE tool (see {@link DEFAULT_MCP_TOOLS}):
+ * every extra tool measurably steers a coding agent into mis-picks. A review
+ * integration is a different consumer — it calls a named tool on purpose at a
+ * known moment — so it gets its own surface instead of widening the default
+ * one for everybody. `CODEGRAPH_MCP_TOOLS` still overrides a profile.
+ */
+const TOOL_PROFILES: Record<string, string[]> = {
+  // A third-party reviewer: review for the change set, explore to drill into
+  // any symbol the report names without falling back to Read.
+  review: ['review', 'explore'],
+};
+
+/**
+ * An EXPLICIT surface selection — `CODEGRAPH_MCP_TOOLS`, else
+ * `CODEGRAPH_MCP_PROFILE`. Null when the operator selected nothing.
+ *
+ * This is the allowlist for CALLABILITY, and it is deliberately NOT the same as
+ * the listed surface below: `DEFAULT_MCP_TOOLS` decides what agents are SHOWN,
+ * while every defined tool stays callable by a client that knows its name
+ * (library users, the CLI, and tests all rely on that). Only an explicit
+ * selection narrows what may be called.
+ */
+function explicitToolSurface(): Set<string> | null {
   const raw = process.env.CODEGRAPH_MCP_TOOLS;
-  if (!raw || !raw.trim()) {
-    return tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
+  if (raw && raw.trim()) {
+    const allow = new Set(raw.split(',').map(shortToolName).filter(Boolean));
+    // An allowlist that parses to nothing is treated as "no restriction",
+    // preserving the original behavior for e.g. CODEGRAPH_MCP_TOOLS=",".
+    return allow.size ? allow : null;
   }
-  const allow = new Set(raw.split(',').map(s => s.trim().replace(/^codegraph_/, '')).filter(Boolean));
-  return allow.size ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, ''))) : tools;
+  const profile = process.env.CODEGRAPH_MCP_PROFILE?.trim().toLowerCase();
+  const profileTools = profile ? TOOL_PROFILES[profile] : undefined;
+  return profileTools ? new Set(profileTools) : null;
+}
+
+/**
+ * The tools LISTED to a client: an explicit selection wins, otherwise the
+ * default surface. `'all'` only when an allowlist was set but matched nothing.
+ */
+function resolveToolSurface(): Set<string> | 'all' {
+  const explicit = explicitToolSurface();
+  if (explicit) return explicit;
+  const raw = process.env.CODEGRAPH_MCP_TOOLS;
+  if (raw && raw.trim()) return 'all';
+  return new Set(DEFAULT_MCP_TOOLS);
+}
+
+/** Whether the review surface is active — used to extend the MCP instructions. */
+export function isReviewSurfaceActive(): boolean {
+  const surface = resolveToolSurface();
+  return surface === 'all' || surface.has('review');
 }
 
 /**
@@ -928,11 +1034,10 @@ export class ToolHandler {
    * Matching is on the short form, so "node" and "codegraph_node" both work.
    */
   private toolAllowlist(): Set<string> | null {
-    const raw = process.env.CODEGRAPH_MCP_TOOLS;
-    if (!raw || !raw.trim()) return null;
-    const short = (s: string) => s.trim().replace(/^codegraph_/, '');
-    const set = new Set(raw.split(',').map(short).filter(Boolean));
-    return set.size ? set : null;
+    // Only an EXPLICIT selection restricts what may be CALLED — the default
+    // surface trims what is listed, never what a client that names a tool can
+    // reach (see explicitToolSurface).
+    return explicitToolSurface();
   }
 
   /** Whether a tool name passes the CODEGRAPH_MCP_TOOLS allowlist (if any). */
@@ -948,13 +1053,13 @@ export class ToolHandler {
    * allowlist so a trimmed surface is reflected in ListTools.
    */
   getTools(): ToolDefinition[] {
-    const allow = this.toolAllowlist();
-    // No explicit allowlist → the default 4-tool surface (see
-    // DEFAULT_MCP_TOOLS for the evidence). An allowlist replaces the
-    // default entirely, so any defined tool can be re-enabled.
-    let visible = allow
-      ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, '')))
-      : tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
+    // The LISTED surface: CODEGRAPH_MCP_TOOLS → CODEGRAPH_MCP_PROFILE →
+    // DEFAULT_MCP_TOOLS (see DEFAULT_MCP_TOOLS for the evidence behind the
+    // one-tool default). `'all'` only when an allowlist matched nothing usable.
+    const surface = resolveToolSurface();
+    let visible = surface === 'all'
+      ? tools
+      : tools.filter(t => surface.has(t.name.replace(/^codegraph_/, '')));
     // No default project loaded → no-root-index case (#993): a gateway server
     // started outside any repo, or a monorepo root whose indexes live in
     // sub-projects. With nothing to fall back to, EVERY call needs an explicit
@@ -1001,7 +1106,12 @@ export class ToolHandler {
         'codegraph_node',
       ]);
       if (stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
-        visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
+        // codegraph_review is exempt: the gate above is about a coding agent's
+        // tool CHOICE on flow questions, and review is never chosen that way —
+        // an integration turns it on deliberately and calls it by name. Gating
+        // it out on a small repo would silently break that integration, which
+        // is the one place a small repo makes no difference.
+        visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name) || t.name === 'codegraph_review');
       }
 
       return visible.map(tool => {
@@ -1483,6 +1593,7 @@ export class ToolHandler {
       case 'codegraph_explore': return await this.handleExplore(args);
       case 'codegraph_node': return await this.handleNode(args);
       case 'codegraph_files': return await this.handleFiles(args);
+      case 'codegraph_review': return await this.handleReview(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
   }
@@ -4693,6 +4804,84 @@ export class ToolHandler {
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Handle codegraph_review — diff-aware review context for a third-party
+   * reviewer (a review bot, another agent, a CI step).
+   *
+   * Every failure mode here is EXPECTED, not a malfunction: a ref that doesn't
+   * exist locally, a repo that isn't a git worktree, a diff that touches only
+   * unindexed files. Each returns a SUCCESS-shaped response carrying the
+   * guidance (see the NotIndexedError precedent) — an `isError` teaches the
+   * caller to stop using codegraph for the whole session.
+   */
+  private async handleReview(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    // Refs are handed to `git` as argv; review.ts rejects anything that isn't
+    // ref-shaped, but cap the lengths here so a runaway input never reaches it.
+    const refError = (v: unknown, label: string): ToolResult | null => {
+      if (v === undefined || v === null) return null;
+      if (typeof v !== 'string') return this.errorResult(`${label} must be a string`);
+      if (v.length > 200) return this.errorResult(`${label} is too long (max 200 characters)`);
+      if (!isSafeRef(v)) {
+        // A malformed ref is the caller's typo, not a codegraph malfunction —
+        // answer as a success so it corrects the argument and calls again.
+        return this.textResult(
+          `"${v}" isn't a valid git ref for \`${label}\`. Pass something like "origin/main", ` +
+          '"HEAD~1", or a commit SHA — then call codegraph_review again.'
+        );
+      }
+      return null;
+    };
+    for (const [value, label] of [[args.base, 'base'], [args.head, 'head']] as const) {
+      const err = refError(value, label);
+      if (err) return err;
+    }
+
+    const rawDiff = typeof args.diff === 'string' ? args.diff : undefined;
+    const MAX_DIFF_CHARS = 4_000_000;
+    if (rawDiff && rawDiff.length > MAX_DIFF_CHARS) {
+      return this.textResult(
+        `The supplied diff is ${rawDiff.length} characters, over the ${MAX_DIFF_CHARS} limit. ` +
+        'Review it in slices: pass `files` for one directory at a time, or call again per sub-diff.'
+      );
+    }
+
+    // `files` arrives comma-separated (MCP clients serialize arrays
+    // inconsistently); accept newlines too, which is what a `git diff
+    // --name-only` paste looks like.
+    const files = typeof args.files === 'string'
+      ? args.files.split(/[,\n]/).map(s => s.trim()).filter(Boolean).slice(0, 2000)
+      : undefined;
+
+    // Scale the report cap with repo size, monotonically — same principle as
+    // the explore output budget: a bigger repo's change set legitimately has
+    // more call sites, and a cap that truncates the findings list sends the
+    // reviewer back to grep, which is exactly what this tool exists to avoid.
+    let maxChars = 24000;
+    try {
+      const fileCount = cg.getStats().fileCount;
+      maxChars = fileCount < 500 ? 18000 : fileCount < 5000 ? 24000 : 32000;
+    } catch { /* stats unavailable — keep the default */ }
+
+    const includeSource = args.includeSource as ReviewOptions['includeSource'] | undefined;
+    const format = args.format === 'json' ? 'json' : 'markdown';
+
+    const text = await buildReview(cg, {
+      base: args.base as string | undefined,
+      head: args.head as string | undefined,
+      files,
+      diff: rawDiff,
+      includeSource: includeSource ?? 'none',
+      maxCallers: clamp(Number(args.maxCallers) || 8, 1, 50),
+      maxSymbols: clamp(Number(args.maxSymbols) || 60, 1, 400),
+      maxChars,
+      format,
+    });
+
+    return this.textResult(text);
   }
 
   private textResult(text: string): ToolResult {

@@ -70,6 +70,53 @@ calls; a grep/read exploration is dozens.
 `;
 
 /**
+ * Appended to the instructions when the review surface is active
+ * (`CODEGRAPH_MCP_PROFILE=review`, or an explicit `CODEGRAPH_MCP_TOOLS`
+ * containing `review`) — i.e. when the client is a third-party reviewer rather
+ * than a coding agent.
+ *
+ * It is a separate block, not a line in SERVER_INSTRUCTIONS, for the reason
+ * that keeps the default surface at one tool: a coding session must not read
+ * about a tool it cannot call, and every extra sentence is tokens it pays on
+ * every session. Only the profile that exposes the tool describes it.
+ */
+export const SERVER_INSTRUCTIONS_REVIEW = `
+## Reviewing a change set — start with codegraph_review
+
+When the task is to review a diff / PR / branch, call \`codegraph_review\` ONCE
+before reading anything, passing whichever you have: \`base\` (a git ref such as
+"origin/main" — this is what enables breaking-change detection), a raw unified
+\`diff\`, or a \`files\` list.
+
+It answers, from the pre-built graph, what the diff itself cannot show:
+- which symbols the changed lines live in;
+- who calls them **from files not in the diff** (dynamic-dispatch call sites
+  included — grep cannot follow those);
+- signatures that changed, and exports that were removed while outside
+  references still point at them;
+- the blast radius, which tests cover it, and which changed symbols no test
+  reaches.
+
+Read its Findings section first: each one is a checkable claim with file:line
+evidence. Then drill into any symbol it names with \`codegraph_explore\` —
+do NOT grep for callers of a changed function; the report already has them.
+
+By default the report carries **no source code**, because you already hold the
+diff. Ask for bodies only when you actually need them, with
+\`includeSource: "callers"\` (the code that breaks) or \`"changed"\`.
+`;
+
+/**
+ * Compose the instructions actually sent in `initialize`: the base playbook,
+ * plus the review block only when the review tool is exposed. Both places that
+ * answer the handshake (the session and the proxy's fast path) go through this
+ * so they can never drift apart.
+ */
+export function withReviewSurface(base: string, reviewActive: boolean): string {
+  return reviewActive ? `${base}\n${SERVER_INSTRUCTIONS_REVIEW}` : base;
+}
+
+/**
  * Instructions variant sent when the server's own root has NO codegraph index.
  *
  * The tools are still exposed (gating tool availability on whether `./` has an

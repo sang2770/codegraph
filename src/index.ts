@@ -19,6 +19,7 @@ import {
   SegmentMatch,
   Context,
   GraphStats,
+  UnresolvedReference,
   TaskInput,
   TaskContext,
   BuildContextOptions,
@@ -1516,6 +1517,24 @@ export class CodeGraph {
    */
   getIncomingEdges(nodeId: string): Edge[] {
     return this.queries.getIncomingEdges(nodeId);
+  }
+
+  /**
+   * Call sites that reference `name` but resolved to NO definition in this
+   * index.
+   *
+   * These are the dangling references — and after a symbol is deleted or
+   * renamed, the code that still calls it lands here rather than in the edge
+   * table (an edge needs both endpoints, so a removed definition takes its
+   * incoming edges with it). That makes this the only precise way to answer
+   * "who still uses what this change removed", which `codegraph_review` uses
+   * to turn a removal into a checkable list of file:line sites.
+   *
+   * Expect noise from calls into third-party/stdlib code, which never had a
+   * local definition to resolve to — filter by a name you know was removed.
+   */
+  getUnresolvedReferencesByName(name: string): UnresolvedReference[] {
+    return this.queries.getUnresolvedByName(name);
   }
 
   // ===========================================================================

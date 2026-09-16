@@ -60,4 +60,69 @@ describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
     const res = await new ToolHandler(null).execute('codegraph_search', { query: 'x' });
     expect(res.content[0].text).not.toMatch(/disabled via CODEGRAPH_MCP_TOOLS/);
   });
+
+  it('keeps an UNLISTED tool callable when nothing was selected', async () => {
+    // The default surface trims what agents are SHOWN; it must never trim what
+    // a client that names a tool can CALL (library users, the CLI and the MCP
+    // integration tests all depend on this).
+    delete process.env[ENV];
+    const res = await new ToolHandler(null).execute('codegraph_search', { query: 'x' });
+    expect(res.content[0].text).not.toMatch(/disabled via CODEGRAPH_MCP_TOOLS/);
+  });
+});
+
+/**
+ * CODEGRAPH_MCP_PROFILE — a named surface for a non-coding integration. It must
+ * change what a THIRD-PARTY client sees without widening the default surface a
+ * coding agent gets (every extra listed tool measurably steers mis-picks).
+ */
+describe('CODEGRAPH_MCP_PROFILE=review', () => {
+  const PROFILE = 'CODEGRAPH_MCP_PROFILE';
+  const originalProfile = process.env[PROFILE];
+  const originalTools = process.env[ENV];
+  afterEach(() => {
+    if (originalProfile === undefined) delete process.env[PROFILE];
+    else process.env[PROFILE] = originalProfile;
+    if (originalTools === undefined) delete process.env[ENV];
+    else process.env[ENV] = originalTools;
+  });
+
+  const listed = () => new ToolHandler(null).getTools().map(t => t.name).sort();
+
+  it('is inert by default — the coding surface stays at one tool', () => {
+    delete process.env[PROFILE];
+    delete process.env[ENV];
+    expect(listed()).toEqual(['codegraph_explore']);
+  });
+
+  it('exposes review alongside explore', () => {
+    delete process.env[ENV];
+    process.env[PROFILE] = 'review';
+    expect(listed()).toEqual(['codegraph_explore', 'codegraph_review']);
+  });
+
+  it('is case/whitespace tolerant and ignores an unknown profile', () => {
+    delete process.env[ENV];
+    process.env[PROFILE] = ' Review ';
+    expect(listed()).toEqual(['codegraph_explore', 'codegraph_review']);
+    process.env[PROFILE] = 'nonsense';
+    expect(listed()).toEqual(['codegraph_explore']);
+  });
+
+  it('yields to an explicit CODEGRAPH_MCP_TOOLS allowlist', () => {
+    process.env[PROFILE] = 'review';
+    process.env[ENV] = 'search';
+    expect(listed()).toEqual(['codegraph_search']);
+  });
+
+  it('restricts execute() to the profile surface', async () => {
+    delete process.env[ENV];
+    process.env[PROFILE] = 'review';
+    const denied = await new ToolHandler(null).execute('codegraph_impact', { symbol: 'x' });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toMatch(/disabled/);
+
+    const allowed = await new ToolHandler(null).execute('codegraph_review', {});
+    expect(allowed.content[0].text).not.toMatch(/disabled/);
+  });
 });

@@ -9,6 +9,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Third-party code-review tools can now plug into CodeGraph. A new `codegraph_review` MCP tool takes a change set — a git base ref, a raw unified diff, or just a list of changed files — and returns what a diff on its own can never show: which symbols the changed lines live in, who calls them from files that aren't in the diff (including dynamic call sites like callbacks and event handlers), which signatures changed or exports disappeared while outside callers stayed put, how far the change reaches, which tests cover it, and which changed symbols no test touches at all. Every finding comes with the exact file and line to check, so a reviewer can confirm it without opening a single extra file.
+- Reviews stay cheap. The report contains no source code by default — you already have the diff — so it costs a fraction of what reading the affected files would; pass `includeSource: "callers"` when you want to see the code that would break, or `"changed"` for the changed bodies themselves. Report size also scales with the size of your project so findings never get cut off on a big repository.
+- Turn the review surface on with `CODEGRAPH_MCP_PROFILE=review`, which exposes `codegraph_review` alongside `codegraph_explore` for that client only. The default surface an everyday coding agent sees is unchanged.
 
 ## [1.5.0] - 2026-07-21
 
