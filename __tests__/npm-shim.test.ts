@@ -39,12 +39,12 @@ function mkTmp(label: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `cg-shim-${label}-`));
 }
 
-// A temp dir standing in for the installed @sang2770/codegraph main package.
+// A temp dir standing in for the installed @xuansang2770/codegraph main package.
 function makePkg(version = '9.9.9-test'): string {
   const dir = mkTmp('pkg');
   fs.copyFileSync(SHIM_SRC, path.join(dir, 'npm-shim.js'));
   fs.writeFileSync(path.join(dir, 'package.json'),
-    JSON.stringify({ name: '@sang2770/codegraph', version }) + '\n');
+    JSON.stringify({ name: '@xuansang2770/codegraph', version }) + '\n');
   return dir;
 }
 
@@ -100,10 +100,10 @@ describe('npm-shim windowsHide (#1092)', () => {
 describe.skipIf(isWindows)('npm-shim launcher', () => {
   it('runs the installed optional-dependency bundle without any download', async () => {
     const pkg = makePkg();
-    const platformPkg = path.join(pkg, 'node_modules', '@sang2770', `codegraph-${target}`);
+    const platformPkg = path.join(pkg, 'node_modules', '@xuansang2770', `codegraph-${target}`);
     writeLauncher(path.join(platformPkg, 'bin'));
     fs.writeFileSync(path.join(platformPkg, 'package.json'),
-      JSON.stringify({ name: `@sang2770/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
+      JSON.stringify({ name: `@xuansang2770/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
     const cache = mkTmp('cache');
     const r = await runShim(pkg, ['--probe-abc'], { CODEGRAPH_INSTALL_DIR: cache });
 
@@ -165,7 +165,7 @@ describe.skipIf(isWindows)('npm-shim launcher', () => {
 
     expect(r.status).toBe(1);
     expect(r.stderr).toContain(`no prebuilt bundle for ${target}`);
-    expect(r.stderr).toContain(`@sang2770/codegraph-${target}`);
+    expect(r.stderr).toContain(`@xuansang2770/codegraph-${target}`);
     expect(r.stderr).toContain('--registry=https://registry.npmjs.org');
     expect(r.stderr).toContain('install.sh');
   });
@@ -176,10 +176,10 @@ describe.skipIf(isWindows)('npm-shim launcher', () => {
   // startup. The shim's own parent here is the vitest runner (a real live pid).
   it('threads CODEGRAPH_HOST_PPID to the bundled server (#1185)', async () => {
     const pkg = makePkg();
-    const platformPkg = path.join(pkg, 'node_modules', '@sang2770', `codegraph-${target}`);
+    const platformPkg = path.join(pkg, 'node_modules', '@xuansang2770', `codegraph-${target}`);
     writeHostPpidLauncher(path.join(platformPkg, 'bin'));
     fs.writeFileSync(path.join(platformPkg, 'package.json'),
-      JSON.stringify({ name: `@sang2770/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
+      JSON.stringify({ name: `@xuansang2770/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
     const r = await runShim(pkg, [], { CODEGRAPH_INSTALL_DIR: mkTmp('cache') });
 
     expect(r.status).toBe(0);
@@ -191,10 +191,10 @@ describe.skipIf(isWindows)('npm-shim launcher', () => {
 
   it('does not clobber an already-set CODEGRAPH_HOST_PPID (#1185)', async () => {
     const pkg = makePkg();
-    const platformPkg = path.join(pkg, 'node_modules', '@sang2770', `codegraph-${target}`);
+    const platformPkg = path.join(pkg, 'node_modules', '@xuansang2770', `codegraph-${target}`);
     writeHostPpidLauncher(path.join(platformPkg, 'bin'));
     fs.writeFileSync(path.join(platformPkg, 'package.json'),
-      JSON.stringify({ name: `@sang2770/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
+      JSON.stringify({ name: `@xuansang2770/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
     // An outer launcher already threaded the true host pid — it must win over
     // the shim's own parent, or a chain of launchers would each overwrite it.
     const r = await runShim(pkg, [], { CODEGRAPH_INSTALL_DIR: mkTmp('cache'), CODEGRAPH_HOST_PPID: '424242' });

@@ -8,7 +8,7 @@
  *     canonical installer script (single source of truth) so the download /
  *     version-resolution / PATH logic never drifts between first-install and
  *     upgrade.
- *   - **npm** — installed via `npm i -g @sang2770/codegraph`. Upgrading
+ *   - **npm** — installed via `npm i -g @xuansang2770/codegraph`. Upgrading
  *     shells out to npm.
  *   - **npx** — ephemeral; nothing to upgrade (next `npx` fetches latest).
  *   - **source** — a git checkout running its own `dist/`; `git pull` + rebuild.
@@ -31,7 +31,7 @@ import { spawnSync } from 'child_process';
 import { ansiColorsEnabled } from '../ui/color';
 
 export const REPO = 'sang2770/codegraph';
-export const NPM_PACKAGE = '@sang2770/codegraph';
+export const NPM_PACKAGE = '@xuansang2770/codegraph';
 const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/main`;
 export const INSTALL_SH_URL = `${RAW_BASE}/install.sh`;
 
@@ -103,7 +103,7 @@ export function detectInstallMethod(input: DetectInput): InstallMethod {
   const norm = toPosix(input.filename);
 
   // Path-based checks come FIRST. The npm thin-installer's per-platform
-  // package (@sang2770/codegraph-<platform>-<arch>) is itself a complete
+  // package (@xuansang2770/codegraph-<platform>-<arch>) is itself a complete
   // bundle — vendored node + bin/ launcher — living inside node_modules, so
   // the layout sniff below would misread every npm install as a standalone
   // bundle. `upgrade` would then curl install.sh into ~/.codegraph: a SECOND
@@ -112,7 +112,7 @@ export function detectInstallMethod(input: DetectInput): InstallMethod {
   // self-inflicted). A path under node_modules is authoritative about HOW the
   // user installed, whatever the artifact inside looks like.
 
-  // npx cache: <…>/_npx/<hash>/node_modules/@sang2770/codegraph/…
+  // npx cache: <…>/_npx/<hash>/node_modules/@xuansang2770/codegraph/…
   // (checked before npm — the npx cache path also contains /node_modules/).
   if (norm.includes('/_npx/')) {
     return { kind: 'npx' };

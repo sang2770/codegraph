@@ -1,15 +1,15 @@
 'use strict';
 //
-// Programmatic / embedded SDK entry for @sang2770/codegraph (issue #354).
+// Programmatic / embedded SDK entry for @xuansang2770/codegraph (issue #354).
 //
 // The CLI/MCP `bin` (npm-shim.js) execs the per-platform bundle's OWN Node 24 so
 // the tool never depends on the user's runtime. Embedded library consumers are
 // the opposite case: they already run their own Node and just want the compiled
-// API — `require("@sang2770/codegraph")` returning the CodeGraph class et al.
+// API — `require("@xuansang2770/codegraph")` returning the CodeGraph class et al.
 //
 // The compiled library + its production dependencies (web-tree-sitter,
 // tree-sitter-wasms, …) ship INSIDE the per-platform bundle, at
-//   @sang2770/codegraph-<platform>-<arch>/lib/dist/index.js
+//   @xuansang2770/codegraph-<platform>-<arch>/lib/dist/index.js
 // (with the deps in the sibling lib/node_modules). Re-exporting that bundle keeps
 // the main package thin — no second 50 MB copy of the grammars — while making the
 // SDK work in the consumer's process. Types are a separate concern: the main
@@ -28,7 +28,7 @@ var os = require('os');
 var fs = require('fs');
 
 var target = process.platform + '-' + process.arch; // e.g. darwin-arm64, linux-x64
-var pkg = '@sang2770/codegraph-' + target;
+var pkg = '@xuansang2770/codegraph-' + target;
 
 module.exports = require(resolveLibrary());
 
@@ -56,8 +56,8 @@ function resolveLibrary() {
     'The compiled library ships inside that per-platform optional dependency.\n' +
     'Fixes:\n' +
     '  - install from the official npm registry so the matching bundle is fetched:\n' +
-    '      npm i @sang2770/codegraph --registry=https://registry.npmjs.org\n' +
-    '  - or run the CLI once (e.g. `npx @sang2770/codegraph status`) to\n' +
+    '      npm i @xuansang2770/codegraph --registry=https://registry.npmjs.org\n' +
+    '  - or run the CLI once (e.g. `npx @xuansang2770/codegraph status`) to\n' +
     '    self-heal the bundle into ~/.codegraph, then require() will find it.'
   );
 }

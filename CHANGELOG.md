@@ -17,7 +17,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking Changes
 
-- This build is published as `@sang2770/codegraph` and installs its platform bundles from this repository's releases. Install it with `npm i -g @sang2770/codegraph`, and note that `codegraph upgrade` now follows this repository rather than the upstream project.
+- This build is published as `@xuansang2770/codegraph` and installs its platform bundles from this repository's releases. Install it with `npm i -g @xuansang2770/codegraph`, and note that `codegraph upgrade` now follows this repository rather than the upstream project.
 
 ## [1.5.0] - 2026-07-21
 

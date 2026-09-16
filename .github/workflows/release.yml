@@ -18,7 +18,7 @@ name: Release
 # npm auth is an automation token in the NPM_TOKEN repo secret. Create it at
 # npmjs.com → Access Tokens → Generate → Automation (it bypasses 2FA, which a
 # CI publish cannot answer), then add it under Settings → Secrets and variables
-# → Actions. Every package (@sang2770/codegraph + the per-platform bundles)
+# → Actions. Every package (@xuansang2770/codegraph + the per-platform bundles)
 # publishes with that one token, so a NEW platform package needs no extra
 # setup — unlike OIDC trusted publishing, which would need each package name
 # registered on npmjs before its first release.
@@ -113,8 +113,11 @@ jobs:
           # registry client and fails with E401.
           registry-url: https://registry.npmjs.org
 
-      - name: Upgrade npm for OIDC trusted publishing
-        # Trusted publishing needs npm >= 11.5; Node 22 bundles npm 10.
+      - name: Pin a modern npm
+        # Publishing is token-based now, so the old npm >= 11.5 floor (a
+        # trusted-publishing requirement) no longer applies — Node 22's bundled
+        # npm 10 would do. Pinning npm 11 anyway keeps publish behavior
+        # identical across runner-image updates.
         run: npm install -g npm@11 && npm --version
 
       - name: Sync package-lock.json if version drifted

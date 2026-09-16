@@ -68,7 +68,7 @@ async function loadCodeGraph(): Promise<typeof import('../index')> {
     console.error(`${red}${getGlyphs().err}${reset} Failed to load CodeGraph modules.`);
     console.error(`\n  Node: ${process.version}  Platform: ${process.platform} ${process.arch}`);
     console.error(`\n  Error: ${msg}`);
-    console.error('\n  Try reinstalling with: npm install -g @sang2770/codegraph\n');
+    console.error('\n  Try reinstalling with: npm install -g @xuansang2770/codegraph\n');
     process.exit(1);
   }
 }

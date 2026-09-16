@@ -5,7 +5,7 @@
 # Produces, under release/npm/:
 #   codegraph-<target>/   one per built bundle — the vendored Node + app, tagged
 #                         with os/cpu so npm installs only the matching one.
-#   main/                 the @sang2770/codegraph shim package: a tiny bin
+#   main/                 the @xuansang2770/codegraph shim package: a tiny bin
 #                         that execs the matching platform bundle, with every
 #                         platform package in optionalDependencies.
 #
@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-$(node -p "require('$ROOT/package.json').version")}"
-SCOPE="@sang2770"
+SCOPE="@xuansang2770"
 REL="$ROOT/release"
 NPM="$REL/npm"
 

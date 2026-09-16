@@ -113,7 +113,7 @@ fi
 # 6. PATH sanity. Two ways this install can fail to be the codegraph that runs:
 #   1. $BIN_DIR isn't on PATH at all.
 #   2. A *different* codegraph sits earlier on PATH and shadows ours — most
-#      often a stale `npm i -g @sang2770/codegraph`, whose launcher keeps
+#      often a stale `npm i -g @xuansang2770/codegraph`, whose launcher keeps
 #      running its own version-pinned bundle, so `codegraph --version` disagrees
 #      with what we just installed (issue #1071).
 # Walk PATH once: note whether $BIN_DIR is present and which codegraph wins.
@@ -139,7 +139,7 @@ elif [ -n "$winner" ] && [ "$winner" != "$BIN_DIR/codegraph" ]; then
   echo "  $winner"
   echo "  (this install: $BIN_DIR/codegraph)"
   echo "If 'codegraph --version' shows an unexpected version, remove the other copy"
-  echo "(e.g. 'npm rm -g @sang2770/codegraph') or put $BIN_DIR first on PATH."
+  echo "(e.g. 'npm rm -g @xuansang2770/codegraph') or put $BIN_DIR first on PATH."
 fi
 
 echo ""

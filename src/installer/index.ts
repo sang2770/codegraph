@@ -118,11 +118,11 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
       try {
         // Generous bound (slow networks / cold npm cache) — but bounded, so a
         // wedged npm can't hang the interactive installer forever (#1139).
-        execSync('npm install -g @sang2770/codegraph', { stdio: 'pipe', windowsHide: true, timeout: 120_000 });
+        execSync('npm install -g @xuansang2770/codegraph', { stdio: 'pipe', windowsHide: true, timeout: 120_000 });
         s.stop('Installed codegraph CLI on PATH');
       } catch {
         s.stop('Could not install (permission denied)');
-        clack.log.warn('Try: sudo npm install -g @sang2770/codegraph');
+        clack.log.warn('Try: sudo npm install -g @xuansang2770/codegraph');
       }
     } else {
       clack.log.info('Skipped CLI install — agents will not be able to launch the MCP server without it');
@@ -550,7 +550,7 @@ export async function runUninstaller(opts: RunUninstallerOptions): Promise<void>
         if (result.npm === 'removed') {
           clack.log.success('Removed the npm global package (npm uninstall -g).');
         } else if (result.npm === 'failed') {
-          clack.log.warn('npm uninstall failed — run `npm uninstall -g @sang2770/codegraph` yourself (EACCES usually means it needs sudo).');
+          clack.log.warn('npm uninstall failed — run `npm uninstall -g @xuansang2770/codegraph` yourself (EACCES usually means it needs sudo).');
         }
         for (const p of result.leftovers) {
           clack.log.warn(`Could not remove ${tildify(p)} — delete it manually${process.platform === 'win32' ? ' after this window closes' : ''}.`);
@@ -560,7 +560,7 @@ export async function runUninstaller(opts: RunUninstallerOptions): Promise<void>
           clack.log.info('If your PATH still lists a codegraph bin directory, remove that entry from your user PATH.');
         }
       } else {
-        clack.log.info('Kept the CLI. Remove it later with `codegraph uninstall` or `npm uninstall -g @sang2770/codegraph`.');
+        clack.log.info('Kept the CLI. Remove it later with `codegraph uninstall` or `npm uninstall -g @xuansang2770/codegraph`.');
       }
     }
   }

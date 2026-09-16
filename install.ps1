@@ -58,7 +58,7 @@ if (($userPath -split ';') -notcontains $binDir) {
 Write-Host "Installed to $dest"
 
 # 5. Warn if a different codegraph earlier on PATH will shadow this install.
-# Most often a stale `npm i -g @sang2770/codegraph`, whose launcher keeps
+# Most often a stale `npm i -g @xuansang2770/codegraph`, whose launcher keeps
 # running its own version-pinned bundle — so `codegraph --version` disagrees
 # with what we just installed (issue #1071). Check both the persisted PATH a
 # fresh shell sees (Machine + User) and this session's PATH (catches dirs a
@@ -85,7 +85,7 @@ if ($shadow) {
   Write-Warning "  $shadow"
   Write-Warning "  (this install: $expected)"
   Write-Warning "If 'codegraph --version' shows an unexpected version, remove the other copy"
-  Write-Warning "(e.g. 'npm rm -g @sang2770/codegraph') or put '$binDir' first on your PATH."
+  Write-Warning "(e.g. 'npm rm -g @xuansang2770/codegraph') or put '$binDir' first on your PATH."
 }
 
 Write-Host "Run: codegraph --help"

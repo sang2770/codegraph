@@ -67,7 +67,7 @@ describe('detectInstallMethod', () => {
   });
 
   it('detects a global npm install', () => {
-    const filename = '/usr/local/lib/node_modules/@sang2770/codegraph/dist/bin/codegraph.js';
+    const filename = '/usr/local/lib/node_modules/@xuansang2770/codegraph/dist/bin/codegraph.js';
     const m = detectInstallMethod({
       filename,
       platform: 'linux',
@@ -79,13 +79,13 @@ describe('detectInstallMethod', () => {
 
   it('detects a local (project) npm install as local', () => {
     const cwd = '/home/u/project';
-    const filename = `${cwd}/node_modules/@sang2770/codegraph/dist/bin/codegraph.js`;
+    const filename = `${cwd}/node_modules/@xuansang2770/codegraph/dist/bin/codegraph.js`;
     const m = detectInstallMethod({ filename, platform: 'linux', cwd, exists: () => false });
     expect(m).toEqual({ kind: 'npm', scope: 'local' });
   });
 
   it('detects an npx run from the _npx cache', () => {
-    const filename = '/home/u/.npm/_npx/abc123/node_modules/@sang2770/codegraph/dist/bin/codegraph.js';
+    const filename = '/home/u/.npm/_npx/abc123/node_modules/@xuansang2770/codegraph/dist/bin/codegraph.js';
     const m = detectInstallMethod({ filename, platform: 'linux', cwd: '/home/u', exists: () => false });
     expect(m).toEqual({ kind: 'npx' });
   });
@@ -96,7 +96,7 @@ describe('detectInstallMethod', () => {
   // install.sh into ~/.codegraph — a second install that loses the PATH race
   // to npm's shim, so `codegraph -v` stays on the old version forever.
   it('detects the npm thin-installer platform package as npm, not bundle', () => {
-    const root = '/usr/local/lib/node_modules/@sang2770/codegraph/node_modules/@sang2770/codegraph-linux-x64';
+    const root = '/usr/local/lib/node_modules/@xuansang2770/codegraph/node_modules/@xuansang2770/codegraph-linux-x64';
     const filename = `${root}/lib/dist/bin/codegraph.js`;
     const present = new Set([`${root}/node`, `${root}/bin/codegraph`]);
     const m = detectInstallMethod({
@@ -110,7 +110,7 @@ describe('detectInstallMethod', () => {
 
   it('detects a project-local thin-installer platform package as npm local', () => {
     const cwd = '/home/u/project';
-    const root = `${cwd}/node_modules/@sang2770/codegraph/node_modules/@sang2770/codegraph-darwin-arm64`;
+    const root = `${cwd}/node_modules/@xuansang2770/codegraph/node_modules/@xuansang2770/codegraph-darwin-arm64`;
     const filename = `${root}/lib/dist/bin/codegraph.js`;
     const present = new Set([`${root}/node`, `${root}/bin/codegraph`]);
     const m = detectInstallMethod({ filename, platform: 'darwin', cwd, exists: bundleExists(present) });
@@ -118,7 +118,7 @@ describe('detectInstallMethod', () => {
   });
 
   it('still detects an npx run when the cached platform package has the bundle layout', () => {
-    const root = '/home/u/.npm/_npx/abc123/node_modules/@sang2770/codegraph/node_modules/@sang2770/codegraph-linux-x64';
+    const root = '/home/u/.npm/_npx/abc123/node_modules/@xuansang2770/codegraph/node_modules/@xuansang2770/codegraph-linux-x64';
     const filename = `${root}/lib/dist/bin/codegraph.js`;
     const present = new Set([`${root}/node`, `${root}/bin/codegraph`]);
     const m = detectInstallMethod({ filename, platform: 'linux', cwd: '/home/u', exists: bundleExists(present) });
