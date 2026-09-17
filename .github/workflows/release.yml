@@ -311,14 +311,19 @@ jobs:
           # npm publish can print success without persisting; confirm against the
           # registry (with retries for propagation) so green means really shipped.
           #
-          # --prefer-online is load-bearing, not a nicety: the publish step above
-          # asks `npm view` whether each package already exists, which caches the
-          # PRE-publish packument, and registry.npmjs.org serves it with
-          # max-age=300. Without forcing revalidation this loop re-reads that
-          # stale copy and can burn its whole window inside the 5-minute cache
-          # lifetime — v1.6.0 failed here on linux-x64 while the package was in
-          # fact published and installable. The longer ladder covers genuine
-          # propagation lag on top of that.
+          # The window has to outlast npm's read-after-write lag for the LAST
+          # packages published, not the first. Publish and verify walk the same
+          # order, and each bundle takes minutes to upload, so the early names
+          # have a long head start by the time this loop reaches them while the
+          # later ones have almost none — v1.6.0 verified darwin-arm64,
+          # darwin-x64 and linux-arm64 instantly and then failed on linux-x64,
+          # which was published and installable the whole time. 6x10s was simply
+          # too short; the ladder below is 10x15s.
+          #
+          # --prefer-online is belt and braces: the publish step asks `npm view`
+          # whether each package exists, caching the pre-publish packument, and
+          # registry.npmjs.org serves those with max-age=300. Forcing
+          # revalidation costs nothing and removes the question.
           for dir in release/npm/codegraph-* release/npm/main; do
             name=$(node -p "require('./$dir/package.json').name")
             ok=
