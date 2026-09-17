@@ -9,6 +9,26 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Third-party code-review tools can now plug into CodeGraph. A new `codegraph_review` MCP tool takes a change set — a git base ref, a raw unified diff, or just a list of changed files — and returns what a diff on its own can never show: which symbols the changed lines live in, who calls them from files that aren't in the diff (including dynamic call sites like callbacks and event handlers), which signatures changed or exports disappeared while outside callers stayed put, how far the change reaches, which tests cover it, and which changed symbols no test touches at all. Every finding comes with the exact file and line to check, so a reviewer can confirm it without opening a single extra file.
+- Reviews stay cheap. The report contains no source code by default — you already have the diff — so it costs a fraction of what reading the affected files would; pass `includeSource: "callers"` when you want to see the code that would break, or `"changed"` for the changed bodies themselves. Report size also scales with the size of your project so findings never get cut off on a big repository.
+- Turn the review surface on with `CODEGRAPH_MCP_PROFILE=review`, which exposes `codegraph_review` alongside `codegraph_explore` for that client only. The default surface an everyday coding agent sees is unchanged.
+- Review reports are markedly quieter. Brand-new types are no longer announced as contract changes, types are no longer reported as lacking test coverage, helper functions defined in test files are no longer flagged as unused, and call sites that only matched by name — a private helper "called" from another file, or a same-named function in another language — are left out instead of being presented as code that breaks. On a real nine-file change this cut the report from 23 findings to 8, all of them checkable.
+- `codegraph_review` now takes `maxChars`, so a reviewer can ask for the rest when a report says it was truncated, and both the markdown and JSON reports honor it — the JSON report previously ignored the limit entirely and could come back twice the size of the markdown one. JSON always comes back parseable: it sheds symbol detail, then list entries, before it ever drops a finding, and says in its notes what it dropped.
+
+### Fixes
+
+- A list of changed files sent as a real array (rather than one comma-separated string) is no longer ignored. `codegraph_review` accepted only the string form, so a client sending an array silently got a review of uncommitted work instead of the files it asked about. Arrays, comma-separated strings and `git diff --name-only` pastes all work now, and an unusable `files` value says so rather than reviewing something else.
+- Passing a raw `diff` no longer quietly turns off breaking-change detection. `diff` and `files` only choose what to analyze — `base` is what enables the comparison — so the report now says loudly, above the findings, when no `base` was given, and the tool's own guidance tells callers to pass `base` together with their diff.
+- `head` is now honest about what was compared. Because the "after" side of every comparison comes from the indexed working tree, naming a `head` ref that isn't checked out compared code the caller never asked about; the report now warns when the two disagree instead of presenting the result as that ref.
+- A single diff hunk that both adds a whole function and edits the one above it no longer loses the edited function from the report.
+- The note explaining why a section is missing, and the closing reminder to fetch code through CodeGraph rather than re-reading files, are no longer the first things cut when a report hits its size limit.
+- Removing an exported symbol now lists only the references that actually broke, instead of also listing files that merely import the module.
+
+### Breaking Changes
+
+- This build is published as `@xuansang2770/codegraph` and installs its platform bundles from this repository's releases. Install it with `npm i -g @xuansang2770/codegraph`, and note that `codegraph upgrade` now follows this repository rather than the upstream project.
 
 ## [1.5.0] - 2026-07-21
 

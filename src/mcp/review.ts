@@ -122,12 +122,21 @@ export interface ChangedSymbol {
 export interface ReviewReport {
   base: string | null;
   head: string | null;
+  /** Where the change set came from — it decides what the scope line may claim. */
+  source: 'git' | 'diff' | 'files';
   changedFiles: ChangedFile[];
   symbols: ChangedSymbol[];
   findings: Finding[];
   /** Files outside the diff that depend on changed code. */
   rippleFiles: Array<{ path: string; callSites: number }>;
   affectedTests: string[];
+  /**
+   * Conditions that make the report itself less trustworthy (an after-side that
+   * isn't what `head` names, breaking-change detection switched off). Rendered
+   * at the TOP, above the findings, and never truncated away — unlike
+   * {@link ReviewReport.notes}, which explain a degraded *section*.
+   */
+  warnings: string[];
   /** Why a section is missing/degraded (no git, unindexed files, caps hit). */
   notes: string[];
 }
@@ -210,6 +219,35 @@ export function gitDiff(cwd: string, base?: string, head?: string): string | nul
 /** The pre-change blob, used to diff signatures. Null when git/ref/path is unknown. */
 export function gitShowFile(cwd: string, ref: string, filePath: string): string | null {
   return runGit(cwd, ['show', `${assertSafeRef(ref, 'base')}:${filePath}`]);
+}
+
+/** The commit a ref resolves to, or null when git/the ref is unavailable. */
+function gitRevParse(cwd: string, ref: string): string | null {
+  const out = runGit(cwd, ['rev-parse', '--verify', `${assertSafeRef(ref, 'ref')}^{commit}`]);
+  return out ? out.trim() : null;
+}
+
+/**
+ * Whether the working tree — which is what the INDEX describes — actually is
+ * `ref` *for the files under review*. Only `base` is re-parsed out of git; every
+ * "after" fact in the report (signature, line numbers, call sites) comes from
+ * the index. So a `head` that is not checked out silently answers about
+ * different code, which is the one failure mode a reviewer cannot detect from
+ * the output. Null when git can't say (not a worktree, unknown ref) — then we
+ * make no claim either way.
+ *
+ * Scoped to `paths` on purpose: an unrelated untracked file (`.codegraph/`, a
+ * build dir) says nothing about whether the reviewed code matches `ref`, and
+ * warning on it would train the reader to ignore the warning.
+ */
+export function worktreeMatchesRef(cwd: string, ref: string, paths: string[] = []): boolean | null {
+  const target = gitRevParse(cwd, ref);
+  const head = gitRevParse(cwd, 'HEAD');
+  if (!target || !head) return null;
+  if (target !== head) return false;
+  const status = runGit(cwd, ['status', '--porcelain', '--', ...paths]);
+  if (status === null) return null;
+  return status.trim() === '';
 }
 
 /**
@@ -376,6 +414,14 @@ const CALLER_KINDS = new Set<NodeKind>([
 /** Kinds whose change is a public-surface change worth flagging on its own. */
 const SURFACE_KINDS = new Set<NodeKind>(['route', 'interface', 'protocol', 'trait']);
 
+/** Kinds that carry no runtime behavior, so "no test covers it" says nothing. */
+const TYPE_ONLY_KINDS = new Set<NodeKind>(['interface', 'type_alias', 'protocol', 'trait']);
+
+/** "an interface" / "a route" — the report reads as prose, so it should be prose. */
+function article(word: string): string {
+  return /^[aeiou]/i.test(word) ? 'An' : 'A';
+}
+
 const DEFAULTS = {
   maxChars: 24000,
   maxCallers: 8,
@@ -403,12 +449,18 @@ function selectChangedNodes(nodes: Node[], file: ChangedFile): Node[] {
     if (hits.length === 0) continue;
     // Symbols entirely within the hunk were added/rewritten wholesale — keep all.
     const inside = hits.filter(n => n.startLine >= range.start && n.endLine <= range.end);
-    if (inside.length > 0) {
-      for (const n of inside) picked.set(n.id, n);
-      continue;
-    }
-    let innermost: Node = hits[0] as Node;
-    for (const n of hits) {
+    for (const n of inside) picked.set(n.id, n);
+    // A hunk routinely does BOTH — add a whole function and edit the tail of the
+    // one above it — so keeping only `inside` dropped the edited symbol from the
+    // report entirely. Also keep the innermost symbol the hunk merely OVERLAPS,
+    // excluding any that just contains an `inside` one (the enclosing class of a
+    // newly added method is not itself the change).
+    const overlapping = hits.filter(
+      n => !picked.has(n.id) && !inside.some(i => contains(n, i)),
+    );
+    if (overlapping.length === 0) continue;
+    let innermost: Node = overlapping[0] as Node;
+    for (const n of overlapping) {
       if (n.endLine - n.startLine < innermost.endLine - innermost.startLine) innermost = n;
     }
     picked.set(innermost.id, innermost);
@@ -418,6 +470,30 @@ function selectChangedNodes(nodes: Node[], file: ChangedFile): Node[] {
 
 function contains(outer: Node, inner: Node): boolean {
   return outer.startLine <= inner.startLine && outer.endLine >= inner.endLine;
+}
+
+/**
+ * Whether an incoming edge is a call site worth ASSERTING about.
+ *
+ * Review is not explore: it tells a reviewer "these sites break", so a
+ * name-collision costs them a wasted investigation and, worse, teaches them the
+ * report is guesswork. Two collisions are provable from the graph alone:
+ *
+ *  - a file-private symbol "called" from another file — impossible by language
+ *    rules, so the edge is a name match the resolver could not rule out;
+ *  - a low-confidence name match across a LANGUAGE boundary (a TS helper called
+ *    `contains` "called" by Rust functions). Synthesized (`heuristic`) edges are
+ *    exempt: framework channels legitimately cross languages (template → TS).
+ */
+export function isPlausibleCallSite(target: Node, caller: Node, edge: Edge): boolean {
+  if (!CALLER_KINDS.has(caller.kind)) return false;
+  if (caller.filePath === target.filePath) return true;
+  if (target.isExported === false) return false;
+  if (edge.provenance === 'heuristic') return true;
+  const meta = (edge.metadata ?? {}) as Record<string, unknown>;
+  const confidence = typeof meta.confidence === 'number' ? meta.confidence : 1;
+  if (confidence > 0.5) return true;
+  return detectLanguage(caller.filePath) === detectLanguage(target.filePath);
 }
 
 function normalizeSignature(sig: string | undefined): string {
@@ -433,14 +509,18 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
   const projectRoot = cg.getProjectRoot();
   const gitRoot = gitWorktreeRoot(projectRoot);
   const notes: string[] = [];
+  const warnings: string[] = [];
   const maxCallers = Math.max(1, opts.maxCallers ?? DEFAULTS.maxCallers);
   const maxSymbols = Math.max(1, opts.maxSymbols ?? DEFAULTS.maxSymbols);
 
   // --- 1. Where does the change set come from? ------------------------------
   let changedFiles: ChangedFile[];
+  let source: ReviewReport['source'];
   if (opts.diff && opts.diff.trim()) {
+    source = 'diff';
     changedFiles = parseUnifiedDiff(opts.diff);
   } else if (opts.files && opts.files.length > 0) {
+    source = 'files';
     changedFiles = opts.files.map(f => ({
       path: f,
       status: 'modified' as ChangeStatus,
@@ -452,6 +532,7 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
       'Pass `diff` (a unified diff) or a `base` ref to narrow findings to the changed lines.'
     );
   } else {
+    source = 'git';
     const cwd = gitRoot ?? projectRoot;
     const raw = gitDiff(cwd, opts.base, opts.head);
     if (raw === null) {
@@ -465,6 +546,19 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
     }
   }
 
+  // Breaking-change detection needs `base`, and `diff`/`files` do NOT imply it:
+  // a diff only says which files and hunks to look at. Losing it silently is
+  // losing every HIGH finding, so it is a warning whenever the caller clearly
+  // handed us a change set from elsewhere.
+  if (!opts.base && source !== 'git') {
+    warnings.push(
+      'No `base` ref was given, so signature/removal comparison is OFF — the HIGH findings ' +
+      '(changed signatures, removed exports with live call sites) cannot be produced. Pass `base` ' +
+      '(e.g. "origin/main") **together with** your `diff`/`files`: they select what to analyze, `base` ' +
+      'is what enables the comparison.'
+    );
+  }
+
   // Normalize every path into the index's own relative form.
   for (const f of changedFiles) {
     f.path = normalizeIndexPath(f.path, projectRoot, gitRoot);
@@ -473,6 +567,22 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
   changedFiles = changedFiles.filter(f => f.path);
 
   const changedPaths = new Set(changedFiles.map(f => f.path));
+
+  // The index describes the WORKING TREE, and only `base` is re-read from git —
+  // so a `head` that isn't checked out makes every "after" fact describe other
+  // code while the scope line names `head`. Say so at the top; a reviewer cannot
+  // tell from the output otherwise.
+  if (opts.head && gitRoot && changedPaths.size > 0) {
+    const gitPaths = [...changedPaths].map(p => toGitRelative(p, projectRoot, gitRoot));
+    if (worktreeMatchesRef(gitRoot, opts.head, gitPaths) === false) {
+      warnings.push(
+        `\`head\` was given as \`${opts.head}\`, but the working tree this index describes is NOT at that ref ` +
+        '(different commit, or uncommitted edits in the reviewed files). Signatures, line numbers and call sites ' +
+        `on the AFTER side come from the working tree, not from \`${opts.head}\` — check that ref out (and ` +
+        're-index) before trusting the comparison, or omit `head` to review the working tree.'
+      );
+    }
+  }
 
   // --- 2. Changed lines → changed symbols -----------------------------------
   const symbols: ChangedSymbol[] = [];
@@ -530,7 +640,8 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
     if (grammarsReady) {
       applyBaselineComparison(cg, opts.base, gitRoot, projectRoot, changedFiles, symbols, removed, notes);
     }
-  } else if (!opts.base) {
+  } else if (!opts.base && source === 'git') {
+    // The `diff`/`files` case already warned at the top — don't say it twice.
     notes.push(
       'No `base` ref was given, so signature/removal comparison against the pre-change code was skipped. ' +
       'Pass `base` (e.g. "origin/main") to enable breaking-change detection.'
@@ -568,11 +679,13 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
   return {
     base: opts.base ?? null,
     head: opts.head ?? null,
+    source,
     changedFiles,
     symbols,
     findings,
     rippleFiles,
     affectedTests: [...affectedTests].sort(),
+    warnings,
     notes,
   };
 }
@@ -590,7 +703,8 @@ function buildChangedSymbol(
     // A file/import node is a container, not a call site: listing
     // "src/api.ts:1 src/api.ts" next to the real "src/api.ts:4 handleLogin"
     // is duplicate noise a reviewer pays tokens for and has to skip past.
-    if (!CALLER_KINDS.has(c.node.kind)) continue;
+    // Name collisions are filtered here too — see isPlausibleCallSite.
+    if (!isPlausibleCallSite(node, c.node, c.edge)) continue;
     seen.add(c.node.id);
     callers.push(c);
   }
@@ -788,7 +902,10 @@ function buildFindings(
       });
     }
 
-    if (sym.coveringTests.length === 0 && sym.node.isExported !== false && sym.blastRadius > 0) {
+    // A type has no runtime behavior to cover, so "no test reaches it" is not a
+    // gap a reviewer can act on — it was pure volume at the top of the report.
+    const typeOnly = TYPE_ONLY_KINDS.has(sym.node.kind);
+    if (!typeOnly && sym.coveringTests.length === 0 && sym.node.isExported !== false && sym.blastRadius > 0) {
       findings.push({
         kind: 'missing-test',
         severity: sym.blastRadius >= DEFAULTS.wideBlastRadius ? 'medium' : 'low',
@@ -800,19 +917,24 @@ function buildFindings(
       });
     }
 
-    if (SURFACE_KINDS.has(sym.node.kind)) {
+    // A brand-new contract has no implementor to disagree with it — flagging
+    // every interface in an added file put 7 non-findings at the top of a real
+    // 9-file review, ahead of everything actionable.
+    if (SURFACE_KINDS.has(sym.node.kind) && !sym.isNew) {
       findings.push({
         kind: 'public-surface-change',
         severity: 'medium',
         symbol: label,
         file: sym.node.filePath,
         line: sym.node.startLine,
-        message: `A ${sym.node.kind} changed — this is contract surface; every implementor/consumer has to agree.`,
+        message: `${article(sym.node.kind)} ${sym.node.kind} in this change is contract surface — every implementor/consumer has to agree.`,
         evidence: sym.externalCallers.slice(0, 6).map(c => callSiteLabel(c)),
       });
     }
 
-    if (sym.isNew && sym.callers.length === 0 && sym.node.kind !== 'route') {
+    // A helper defined inside a test file having no caller is how test files are
+    // written, not a finding.
+    if (sym.isNew && sym.callers.length === 0 && sym.node.kind !== 'route' && !isTestFile(sym.node.filePath)) {
       findings.push({
         kind: 'new-symbol-no-callers',
         severity: 'low',
@@ -840,7 +962,10 @@ function buildFindings(
       symbol: r.name,
       file: r.file,
       message,
-      evidence: [...r.danglingSites, ...r.importers],
+      // Proof beats leads: once a dangling reference exists, appending "X imports
+      // this module" lists files that never touched the symbol (they merely
+      // import its module) and reads as if they were broken too.
+      evidence: r.danglingSites.length > 0 ? r.danglingSites : r.importers,
     });
   }
 
@@ -875,14 +1000,17 @@ export function renderReviewMarkdown(
   const includeSource = opts.includeSource ?? 'none';
   const out: string[] = [];
 
-  const scope = report.base
-    ? `${report.base}${report.head ? `...${report.head}` : ' → working tree'}`
-    : 'uncommitted changes (HEAD → working tree)';
-
   out.push(
     `# Review context — ${report.changedFiles.length} file(s), ${report.symbols.length} changed symbol(s)`,
-    `Scope: ${scope}`,
+    `Scope: ${describeScope(report)}`,
   );
+
+  // Above the findings, because these say the findings themselves are partial
+  // or measured against code the caller did not name.
+  if (report.warnings.length > 0) {
+    out.push('');
+    for (const w of report.warnings) out.push(`> ⚠️ ${w}`);
+  }
 
   if (report.changedFiles.length === 0) {
     out.push(
@@ -909,6 +1037,14 @@ export function renderReviewMarkdown(
     }
   } else {
     out.push('', '## Findings (0)', 'No structural risks detected in the changed symbols.');
+  }
+
+  // Notes explain why a section is missing or degraded, so they belong with the
+  // findings they qualify — at the end they were the first thing the char cap
+  // cut, leaving a silently partial report that looked complete.
+  if (report.notes.length > 0) {
+    out.push('', '## Notes');
+    for (const n of report.notes) out.push(`- ${n}`);
   }
 
   // --- Changed symbols + who calls them ------------------------------------
@@ -978,19 +1114,24 @@ export function renderReviewMarkdown(
     }
   }
 
-  if (report.notes.length > 0) {
-    out.push('', '## Notes');
-    for (const n of report.notes) out.push(`- ${n}`);
-  }
-
-  out.push(
-    '',
-    '---',
+  // The footer is the line that keeps a reviewer off Read, so it is appended
+  // AFTER the cut instead of being the first casualty of it.
+  const footer =
+    '\n\n---\n' +
     'Everything above is pre-computed structure — treat the listed call sites as already located. ' +
-    'To read the body of any symbol named here, call `codegraph_explore` with its name instead of opening the file.',
-  );
+    'To read the body of any symbol named here, call `codegraph_explore` with its name instead of opening the file.';
 
-  return truncate(out.join('\n'), maxChars);
+  return truncate(out.join('\n'), Math.max(1000, maxChars - footer.length)) + footer;
+}
+
+/** What the report actually compared — never a range the caller did not ask for. */
+function describeScope(report: ReviewReport): string {
+  if (report.base) {
+    return `${report.base}${report.head ? `...${report.head}` : ' → working tree'}`;
+  }
+  if (report.source === 'diff') return 'the supplied diff (no base ref — no breaking-change comparison)';
+  if (report.source === 'files') return 'the supplied file list (no base ref — no breaking-change comparison)';
+  return 'uncommitted changes (HEAD → working tree)';
 }
 
 /**
@@ -1027,17 +1168,90 @@ function truncate(text: string, maxChars: number): string {
 /** Convenience entry point: analyze + render in the requested format. */
 export async function buildReview(cg: CodeGraph, opts: ReviewOptions = {}): Promise<string> {
   const report = await analyzeReview(cg, opts);
-  if (opts.format === 'json') return JSON.stringify(toJson(report), null, 2);
+  if (opts.format === 'json') return renderReviewJson(report, cg, opts);
   return renderReviewMarkdown(report, cg, opts);
 }
 
-function toJson(report: ReviewReport) {
+/** How many list entries a JSON report carries before it starts saying "+N more". */
+const JSON_LIST_CAP = 40;
+
+/** What the JSON report is currently allowed to carry, tightened until it fits. */
+interface JsonBudget {
+  symbols: number;
+  lists: number;
+  findings: number;
+}
+
+/**
+ * The JSON report, held to the SAME char budget as the markdown one — it used
+ * to ignore `maxChars` entirely and shipped 52K where markdown sent 24K, which
+ * lands on the one consumer (a program, wiring the result into a context) least
+ * able to skim past it. Truncating JSON text would hand back something that no
+ * longer parses, so the budget is met by shedding content in order of what a
+ * reviewer can most afford to lose — symbol detail, then the ripple/test lists,
+ * and only last the findings themselves — recording each drop in `notes`.
+ */
+export function renderReviewJson(report: ReviewReport, cg: CodeGraph, opts: ReviewOptions = {}): string {
+  const maxChars = Math.max(2000, opts.maxChars ?? DEFAULTS.maxChars);
+  const budget: JsonBudget = {
+    symbols: report.symbols.length,
+    lists: JSON_LIST_CAP,
+    findings: report.findings.length,
+  };
+  const render = () => JSON.stringify(toJson(report, cg, opts, budget), null, 2);
+
+  let text = render();
+  while (text.length > maxChars && shrink(budget)) text = render();
+  return text;
+}
+
+/** Tighten the next-cheapest knob. False once nothing is left to give up. */
+function shrink(budget: JsonBudget): boolean {
+  if (budget.symbols > 0) {
+    budget.symbols = budget.symbols > 1 ? Math.floor(budget.symbols / 2) : 0;
+    return true;
+  }
+  if (budget.lists > 0) {
+    budget.lists = budget.lists > 10 ? 10 : 0;
+    return true;
+  }
+  if (budget.findings > 1) {
+    budget.findings = Math.floor(budget.findings / 2);
+    return true;
+  }
+  return false;
+}
+
+function toJson(report: ReviewReport, cg: CodeGraph, opts: ReviewOptions, budget: JsonBudget) {
+  const symbolLimit = budget.symbols;
+  const includeSource = opts.includeSource ?? 'none';
+  const withChanged = includeSource === 'changed' || includeSource === 'all';
+  const withCallers = includeSource === 'callers' || includeSource === 'all';
+  const changedPaths = new Set(report.changedFiles.map(f => f.path));
+  const cap = opts.maxChars ?? DEFAULTS.maxChars;
+  const notes = [...report.notes];
+  if (symbolLimit < report.symbols.length) {
+    notes.push(
+      `Symbol detail was trimmed to ${symbolLimit} of ${report.symbols.length} symbol(s) to fit maxChars=${cap}. ` +
+      'Raise maxChars or narrow `files` for the rest.'
+    );
+  }
+  if (budget.findings < report.findings.length) {
+    notes.push(
+      `${report.findings.length - budget.findings} finding(s) were dropped to fit maxChars=${cap} — ` +
+      'raise maxChars, or review the change set in slices.'
+    );
+  }
   return {
     base: report.base,
     head: report.head,
+    source: report.source,
+    warnings: report.warnings,
     changedFiles: report.changedFiles.map(f => ({ path: f.path, status: f.status, oldPath: f.oldPath })),
-    findings: report.findings,
-    symbols: report.symbols.map(s => ({
+    findingCount: report.findings.length,
+    findings: report.findings.slice(0, budget.findings),
+    symbolCount: report.symbols.length,
+    symbols: report.symbols.slice(0, symbolLimit).map(s => ({
       name: s.node.qualifiedName || s.node.name,
       kind: s.node.kind,
       file: s.node.filePath,
@@ -1052,12 +1266,18 @@ function toJson(report: ReviewReport) {
         file: c.node.filePath,
         line: c.edge.line ?? c.node.startLine,
         dynamic: synthLabel(c.edge),
+        ...(withCallers && !changedPaths.has(c.node.filePath)
+          ? { source: readSymbolSource(cg, c.node) ?? undefined }
+          : {}),
       })),
       externalCallerCount: s.externalCallers.length,
       coveringTests: s.coveringTests,
+      ...(withChanged ? { source: readSymbolSource(cg, s.node) ?? undefined } : {}),
     })),
-    rippleFiles: report.rippleFiles,
-    affectedTests: report.affectedTests,
-    notes: report.notes,
+    rippleFileCount: report.rippleFiles.length,
+    rippleFiles: report.rippleFiles.slice(0, budget.lists),
+    affectedTestCount: report.affectedTests.length,
+    affectedTests: report.affectedTests.slice(0, budget.lists),
+    notes,
   };
 }

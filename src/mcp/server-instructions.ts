@@ -84,9 +84,14 @@ export const SERVER_INSTRUCTIONS_REVIEW = `
 ## Reviewing a change set — start with codegraph_review
 
 When the task is to review a diff / PR / branch, call \`codegraph_review\` ONCE
-before reading anything, passing whichever you have: \`base\` (a git ref such as
-"origin/main" — this is what enables breaking-change detection), a raw unified
-\`diff\`, or a \`files\` list.
+before reading anything.
+
+**Always pass \`base\`** (a git ref such as "origin/main") when the repo has one:
+it is the ONLY thing that enables breaking-change detection — changed signatures
+and removed exports whose call sites are still live, i.e. every HIGH finding.
+\`diff\` (a raw unified diff) and \`files\` (a path array) do NOT replace it; they
+only select what to analyze, so pass them **together with** \`base\`. Pass \`head\`
+only when that ref is the checked-out working tree.
 
 It answers, from the pre-built graph, what the diff itself cannot show:
 - which symbols the changed lines live in;

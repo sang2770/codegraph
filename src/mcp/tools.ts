@@ -486,6 +486,8 @@ interface PropertySchema {
   description: string;
   enum?: string[];
   default?: unknown;
+  /** Element schema for `type: 'array'` properties. */
+  items?: { type: string };
 }
 
 /**
@@ -711,15 +713,16 @@ export const tools: ToolDefinition[] = [
         },
         head: {
           type: 'string',
-          description: 'Git ref for the changed side. Omit to use the working tree. With `base`, the range is a merge-base (three-dot) range — the PR semantic.',
+          description: 'Git ref for the changed side. Omit to use the working tree. With `base`, the range is a merge-base (three-dot) range — the PR semantic. Pass it only when that ref IS checked out: the index describes the working tree, so the "after" side of every comparison comes from there (the report warns when the two disagree).',
         },
         files: {
-          type: 'string',
-          description: 'Comma-separated changed file paths, for when the caller has no local git (e.g. a file list from a PR API). Findings are then per-file rather than per-hunk.',
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Changed file paths, for when the caller has no local git (e.g. a file list from a PR API). An array of project-relative paths; one comma/newline-separated string is accepted too. Findings are then per-file rather than per-hunk. Combine with `base` to keep breaking-change detection.',
         },
         diff: {
           type: 'string',
-          description: 'A raw unified diff to analyze, for when the caller already fetched the PR diff. Takes precedence over `base`/`files`.',
+          description: 'A raw unified diff to analyze, for when the caller already fetched the PR diff. It decides WHICH files and hunks are analyzed (overriding `files`), but it does NOT replace `base` — pass `base` as well, or breaking-change detection (the HIGH findings) stays off.',
         },
         includeSource: {
           type: 'string',
@@ -737,9 +740,13 @@ export const tools: ToolDefinition[] = [
           description: 'Max changed symbols analyzed in depth (default: 60)',
           default: 60,
         },
+        maxChars: {
+          type: 'number',
+          description: 'Hard cap on report size (default: scaled to repo size, 18000–32000). Raise it when the report says it was truncated and you need the rest; both `markdown` and `json` honor it.',
+        },
         format: {
           type: 'string',
-          description: '"markdown" (default, densest for an LLM) or "json" for a programmatic consumer.',
+          description: '"markdown" (default, densest for an LLM) or "json" for a programmatic consumer. Both honor `maxChars` and `includeSource`.',
           enum: ['markdown', 'json'],
           default: 'markdown',
         },
@@ -4849,22 +4856,38 @@ export class ToolHandler {
       );
     }
 
-    // `files` arrives comma-separated (MCP clients serialize arrays
-    // inconsistently); accept newlines too, which is what a `git diff
-    // --name-only` paste looks like.
-    const files = typeof args.files === 'string'
-      ? args.files.split(/[,\n]/).map(s => s.trim()).filter(Boolean).slice(0, 2000)
-      : undefined;
+    // MCP clients serialize arrays inconsistently, so `files` arrives either as
+    // a real array or comma-separated. Accepting only the string form meant an
+    // array was silently dropped and the tool reviewed the working-tree diff
+    // instead — a wrong answer the caller could not see. Newlines count too,
+    // which is what a `git diff --name-only` paste looks like.
+    const splitFiles = (s: string) => s.split(/[,\n]/).map(p => p.trim()).filter(Boolean);
+    const files = Array.isArray(args.files)
+      ? args.files.flatMap(f => (typeof f === 'string' ? splitFiles(f) : [])).slice(0, 2000)
+      : typeof args.files === 'string'
+        ? splitFiles(args.files).slice(0, 2000)
+        : undefined;
+    if (args.files !== undefined && files !== undefined && files.length === 0) {
+      return this.textResult(
+        '`files` was supplied but parsed to no usable path. Pass an array of project-relative paths ' +
+        '(e.g. ["src/auth.ts"]) or one comma-separated string, then call codegraph_review again.'
+      );
+    }
 
     // Scale the report cap with repo size, monotonically — same principle as
     // the explore output budget: a bigger repo's change set legitimately has
     // more call sites, and a cap that truncates the findings list sends the
     // reviewer back to grep, which is exactly what this tool exists to avoid.
+    // An explicit `maxChars` wins: the truncation message tells the caller to
+    // raise it, so the knob has to exist.
     let maxChars = 24000;
     try {
       const fileCount = cg.getStats().fileCount;
       maxChars = fileCount < 500 ? 18000 : fileCount < 5000 ? 24000 : 32000;
     } catch { /* stats unavailable — keep the default */ }
+    if (args.maxChars !== undefined && Number.isFinite(Number(args.maxChars))) {
+      maxChars = clamp(Number(args.maxChars), 2000, 200000);
+    }
 
     const includeSource = args.includeSource as ReviewOptions['includeSource'] | undefined;
     const format = args.format === 'json' ? 'json' : 'markdown';

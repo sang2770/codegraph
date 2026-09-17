@@ -20,9 +20,12 @@ import {
   parseUnifiedDiff,
   normalizeIndexPath,
   isSafeRef,
+  isPlausibleCallSite,
   analyzeReview,
   buildReview,
 } from '../src/mcp/review';
+import { ToolHandler } from '../src/mcp/tools';
+import type { Edge, Node } from '../src/types';
 
 beforeAll(async () => {
   await initGrammars();
@@ -127,6 +130,54 @@ describe('normalizeIndexPath', () => {
     // git reports `app/src/a.ts`; the index root is /repo/app, so the index
     // stores `src/a.ts`. Without the re-base this matches zero nodes (#825).
     expect(normalizeIndexPath('app/src/a.ts', root, '/repo')).toBe('src/a.ts');
+  });
+});
+
+describe('isPlausibleCallSite', () => {
+  const node = (over: Partial<Node>): Node => ({
+    id: 'n', kind: 'function', name: 'contains', qualifiedName: 'contains',
+    filePath: 'src/mcp/review.ts', startLine: 1, endLine: 2, language: 'typescript',
+    ...over,
+  } as Node);
+  const edge = (over: Partial<Edge> = {}): Edge => ({
+    id: 'e', kind: 'calls', sourceId: 'a', targetId: 'n',
+    metadata: { confidence: 0.5, resolvedBy: 'exact-match' },
+    ...over,
+  } as Edge);
+
+  it('keeps same-file call sites whatever the confidence', () => {
+    const target = node({ isExported: false });
+    expect(isPlausibleCallSite(target, node({ id: 'c', name: 'caller' }), edge())).toBe(true);
+  });
+
+  it('drops a cross-FILE caller of a file-private symbol', () => {
+    // Impossible by language rules, so the edge is a name collision the
+    // resolver could not rule out — asserting on it wastes a reviewer's time.
+    const target = node({ isExported: false });
+    const caller = node({ id: 'c', name: 'other', filePath: 'src/other.ts' });
+    expect(isPlausibleCallSite(target, caller, edge())).toBe(false);
+  });
+
+  it('drops a low-confidence name match across a LANGUAGE boundary', () => {
+    const target = node({ isExported: true });
+    const caller = node({ id: 'c', name: 'flush', filePath: 'codegraph-kernel/src/go.rs' });
+    expect(isPlausibleCallSite(target, caller, edge())).toBe(false);
+    // Same collision, but confidently resolved → still a real call site.
+    expect(isPlausibleCallSite(target, caller, edge({ metadata: { confidence: 0.9 } }))).toBe(true);
+  });
+
+  it('keeps synthesized edges, which legitimately cross languages', () => {
+    const target = node({ isExported: true });
+    const caller = node({ id: 'c', name: 'Tpl', filePath: 'src/App.vue' });
+    expect(
+      isPlausibleCallSite(target, caller, edge({ provenance: 'heuristic', metadata: { synthesizedBy: 'vue-handler' } })),
+    ).toBe(true);
+  });
+
+  it('never treats a container node as a call site', () => {
+    const target = node({ isExported: true });
+    const file = node({ id: 'f', kind: 'file', name: 'api.ts', filePath: 'src/api.ts' });
+    expect(isPlausibleCallSite(target, file, edge({ metadata: { confidence: 1 } }))).toBe(false);
   });
 });
 
@@ -313,6 +364,9 @@ describe('analyzeReview over an indexed project', () => {
     expect(full.length).toBeGreaterThan(2000);
     expect(capped.length).toBeLessThan(full.length);
     expect(capped).toContain('report truncated');
+    // The footer is the line that keeps a reviewer off Read, so it is appended
+    // after the cut instead of being its first casualty.
+    expect(capped).toContain('codegraph_explore');
 
     cg.destroy();
   });
@@ -332,6 +386,68 @@ describe('analyzeReview over an indexed project', () => {
     cg.destroy();
   });
 
+  it('keeps a symbol the hunk only overlaps alongside one it fully contains', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
+    writeProject(tmpDir);
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    // One hunk, both shapes at once: it covers all of `logout` (L5-7) and the
+    // tail of `login` (L1-3). Keeping only the fully-contained symbol dropped
+    // the edited one from the report entirely.
+    const report = await analyzeReview(cg, {
+      diff: [
+        'diff --git a/src/service.ts b/src/service.ts',
+        '--- a/src/service.ts',
+        '+++ b/src/service.ts',
+        '@@ -3,5 +3,5 @@',
+        '+  return email;',
+      ].join('\n'),
+    });
+
+    const names = report.symbols.map(s => s.node.name).sort();
+    expect(names).toContain('logout');
+    expect(names, 'the partially-touched symbol must survive too').toContain('login');
+
+    cg.destroy();
+  });
+
+  it('holds the JSON report to the same budget as markdown, and keeps it parseable', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
+    writeProject(tmpDir);
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    for (let i = 0; i < 25; i++) {
+      fs.writeFileSync(
+        path.join(tmpDir!, `src/caller${i}.ts`),
+        [
+          "import { login } from './service';",
+          '',
+          `export function caller${i}(): string {`,
+          '  return login("a@b.c");',
+          '}',
+          '',
+        ].join('\n'),
+      );
+    }
+    await cg.indexAll();
+
+    const opts = { files: ['src/service.ts'], maxCallers: 40, format: 'json' as const };
+    const full = await buildReview(cg, opts);
+    const capped = await buildReview(cg, { ...opts, maxChars: 2500 });
+
+    expect(full.length).toBeGreaterThan(2500);
+    expect(capped.length).toBeLessThanOrEqual(2500);
+    // Cutting JSON text would hand back something that no longer parses, so the
+    // budget is met by dropping symbol detail — findings always survive.
+    const parsed = JSON.parse(capped);
+    expect(Array.isArray(parsed.findings)).toBe(true);
+    expect(parsed.symbolCount).toBeGreaterThan(parsed.symbols.length);
+    expect(parsed.notes.join('\n')).toContain('trimmed');
+
+    cg.destroy();
+  });
+
   it('returns guidance, not an error, when nothing changed', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
     writeProject(tmpDir);
@@ -343,6 +459,83 @@ describe('analyzeReview over an indexed project', () => {
     expect(out).toContain('not an error');
 
     cg.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. The MCP argument surface (what clients actually send)
+// ---------------------------------------------------------------------------
+
+describe('codegraph_review tool arguments', () => {
+  let tmpDir: string | undefined;
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  const runTool = async (dir: string, args: Record<string, unknown>) => {
+    const cg = fs.existsSync(path.join(dir, '.codegraph'))
+      ? CodeGraph.openSync(dir)
+      : CodeGraph.initSync(dir);
+    await cg.indexAll();
+    const res = await new ToolHandler(cg).execute('codegraph_review', args);
+    cg.destroy();
+    return res;
+  };
+
+  it('accepts `files` as a real array as well as a comma-separated string', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-args-'));
+    writeProject(tmpDir);
+
+    // MCP clients serialize arrays inconsistently. Taking only the string form
+    // meant an array was silently dropped and the tool reviewed the working-tree
+    // diff instead — a wrong answer the caller had no way to notice.
+    const asArray = await runTool(tmpDir, { files: ['src/service.ts'] });
+    const asString = await runTool(tmpDir, { files: 'src/service.ts' });
+    for (const res of [asArray, asString]) {
+      expect(res.isError ?? false).toBe(false);
+      expect(res.content[0]!.text).toContain('src/service.ts');
+      expect(res.content[0]!.text).toContain('login');
+    }
+    expect(asArray.content[0]!.text).toBe(asString.content[0]!.text);
+  });
+
+  it('splits a newline-separated `git diff --name-only` paste', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-args-'));
+    writeProject(tmpDir);
+    const res = await runTool(tmpDir, { files: 'src/service.ts\nsrc/api.ts' });
+    expect(res.content[0]!.text).toContain('src/service.ts');
+    expect(res.content[0]!.text).toContain('src/api.ts');
+  });
+
+  it('says so instead of silently reviewing something else when `files` is unusable', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-args-'));
+    writeProject(tmpDir);
+    const res = await runTool(tmpDir, { files: [] });
+    expect(res.isError ?? false, 'a bad argument is the caller’s typo, not a malfunction').toBe(false);
+    expect(res.content[0]!.text).toContain('`files` was supplied');
+  });
+
+  it('honors an explicit maxChars — the knob the truncation message names', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-args-'));
+    writeProject(tmpDir);
+    for (let i = 0; i < 25; i++) {
+      fs.writeFileSync(
+        path.join(tmpDir, `src/caller${i}.ts`),
+        [
+          "import { login } from './service';",
+          '',
+          `export function caller${i}(): string {`,
+          '  return login("a@b.c");',
+          '}',
+          '',
+        ].join('\n'),
+      );
+    }
+    const capped = await runTool(tmpDir, { files: ['src/service.ts'], maxCallers: 40, maxChars: 2200 });
+    const roomy = await runTool(tmpDir, { files: ['src/service.ts'], maxCallers: 40 });
+    expect(capped.content[0]!.text.length).toBeLessThan(roomy.content[0]!.text.length);
+    expect(capped.content[0]!.text).toContain('report truncated');
   });
 });
 
@@ -444,14 +637,108 @@ describe.runIf(hasGit())('breaking-change detection against a base ref', () => {
     cg.destroy();
   });
 
+  it('warns when `head` names a ref the working tree is not at', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-git-'));
+    writeProject(tmpDir);
+    git(tmpDir, ['init']);
+    git(tmpDir, ['config', 'user.email', 'test@example.com']);
+    git(tmpDir, ['config', 'user.name', 'Test']);
+    git(tmpDir, ['add', '-A']);
+    git(tmpDir, ['commit', '-m', 'baseline']);
+
+    // A second commit, so HEAD~1...HEAD is a real range to review.
+    fs.writeFileSync(
+      path.join(tmpDir, 'src/service.ts'),
+      [
+        'export function login(email: string, otp: string): string {',
+        '  return email + otp;',
+        '}',
+        '',
+        'export function logout(token: string): boolean {',
+        '  return Boolean(token);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    git(tmpDir, ['add', '-A']);
+    git(tmpDir, ['commit', '-m', 'change']);
+
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    // Working tree IS head for the reviewed files → the after side is honest.
+    const clean = await analyzeReview(cg, { base: 'HEAD~1', head: 'HEAD' });
+    expect(clean.warnings.join('\n')).not.toContain('AFTER side');
+
+    // Now the working tree — which is what the index describes, and where every
+    // "after" fact comes from — is no longer that ref.
+    fs.writeFileSync(
+      path.join(tmpDir, 'src/service.ts'),
+      [
+        'export function login(email: string, otp: string, trace: boolean): string {',
+        '  return email + otp + String(trace);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    await cg.indexAll();
+
+    const drifted = await analyzeReview(cg, { base: 'HEAD~1', head: 'HEAD' });
+    expect(drifted.warnings.join('\n')).toContain('AFTER side');
+
+    cg.destroy();
+  });
+
+  it('does not call a brand-new interface a contract change', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-git-'));
+    writeProject(tmpDir);
+    git(tmpDir, ['init']);
+    git(tmpDir, ['config', 'user.email', 'test@example.com']);
+    git(tmpDir, ['config', 'user.name', 'Test']);
+    git(tmpDir, ['add', '-A']);
+    git(tmpDir, ['commit', '-m', 'baseline']);
+
+    // A new file of new interfaces: nothing implements them yet, so "every
+    // implementor has to agree" is not a claim about anything.
+    fs.writeFileSync(
+      path.join(tmpDir, 'src/types.ts'),
+      [
+        'export interface Credentials { user: string; pass: string; }',
+        '',
+        'export interface Profile { id: string; }',
+        '',
+      ].join('\n'),
+    );
+
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    const report = await analyzeReview(cg, { base: 'HEAD' });
+    expect(report.symbols.filter(s => s.node.kind === 'interface').every(s => s.isNew)).toBe(true);
+    expect(report.findings.some(f => f.kind === 'public-surface-change')).toBe(false);
+    // Types carry no runtime behavior, so "no test reaches it" says nothing.
+    expect(report.findings.some(f => f.kind === 'missing-test' && f.symbol.includes('Credentials'))).toBe(false);
+
+    cg.destroy();
+  });
+
   it('says so explicitly when no base ref was given', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-git-'));
     writeProject(tmpDir);
     const cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
-    const report = await analyzeReview(cg, { files: ['src/service.ts'] });
-    expect(report.notes.join('\n')).toContain('breaking-change detection');
+    // A caller that handed us a change set from elsewhere is reviewing a PR, so
+    // losing every HIGH finding is a WARNING (rendered above the findings), not
+    // a note at the bottom that the char cap can cut.
+    const supplied = await analyzeReview(cg, { files: ['src/service.ts'] });
+    expect(supplied.warnings.join('\n')).toContain('No `base` ref was given');
+    expect(supplied.warnings.join('\n')).toContain('together with');
+
+    // Reviewing uncommitted work without a base is ordinary, so it stays a note.
+    const uncommitted = await analyzeReview(cg, {});
+    expect(uncommitted.notes.join('\n')).toContain('breaking-change detection');
+    expect(uncommitted.warnings).toHaveLength(0);
 
     cg.destroy();
   });
