@@ -310,12 +310,21 @@ jobs:
           V="${{ steps.ver.outputs.version }}"
           # npm publish can print success without persisting; confirm against the
           # registry (with retries for propagation) so green means really shipped.
+          #
+          # --prefer-online is load-bearing, not a nicety: the publish step above
+          # asks `npm view` whether each package already exists, which caches the
+          # PRE-publish packument, and registry.npmjs.org serves it with
+          # max-age=300. Without forcing revalidation this loop re-reads that
+          # stale copy and can burn its whole window inside the 5-minute cache
+          # lifetime — v1.6.0 failed here on linux-x64 while the package was in
+          # fact published and installable. The longer ladder covers genuine
+          # propagation lag on top of that.
           for dir in release/npm/codegraph-* release/npm/main; do
             name=$(node -p "require('./$dir/package.json').name")
             ok=
-            for i in 1 2 3 4 5 6; do
-              if npm view "$name@$V" version >/dev/null 2>&1; then ok=1; break; fi
-              echo "waiting for $name@$V to appear ($i)…"; sleep 10
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              if npm view --prefer-online "$name@$V" version >/dev/null 2>&1; then ok=1; break; fi
+              echo "waiting for $name@$V to appear ($i)…"; sleep 15
             done
             [ -n "$ok" ] || { echo "::error::$name@$V never appeared on the registry"; exit 1; }
             echo "verified $name@$V"
