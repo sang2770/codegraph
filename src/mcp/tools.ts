@@ -718,7 +718,7 @@ export const tools: ToolDefinition[] = [
         files: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Changed file paths, for when the caller has no local git (e.g. a file list from a PR API). An array of project-relative paths; one comma/newline-separated string is accepted too. Findings are then per-file rather than per-hunk. Combine with `base` to keep breaking-change detection.',
+          description: 'Changed file paths, for when the caller has no local git (e.g. a file list from a PR API). An array of project-relative paths; one comma/newline-separated string is accepted too, and a directory ("src/api/") expands to the indexed files under it — which is how you review a large change set in slices. Findings are then per-file rather than per-hunk. Combine with `base` to keep breaking-change detection.',
         },
         diff: {
           type: 'string',

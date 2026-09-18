@@ -339,6 +339,54 @@ function stripDiffPrefix(p: string): string {
   return p.replace(/^[ab]\//, '');
 }
 
+/** Cap on how many files one directory entry may expand to. */
+const DIR_EXPANSION_CAP = 400;
+
+/**
+ * Expand any `files` entry that names a DIRECTORY into the indexed files under
+ * it, leaving real paths untouched.
+ *
+ * Reviewing a large change set means slicing it, and the natural slice is a
+ * directory — which is also what this tool's own "review the rest with files:
+ * [...]" advice hands back once the list is long. Without expansion that advice
+ * would return "no symbols in the index" for every entry.
+ */
+function expandDirectoryEntries(
+  cg: CodeGraph,
+  entries: string[],
+): { paths: string[]; expanded: number } {
+  const needsExpansion = entries.some(e => e.endsWith('/') || cg.getNodesInFile(e).length === 0);
+  if (!needsExpansion) return { paths: entries, expanded: 0 };
+
+  let indexed: string[] | null = null;
+  const out: string[] = [];
+  let expanded = 0;
+  for (const entry of entries) {
+    if (cg.getNodesInFile(entry).length > 0) {
+      out.push(entry);
+      continue;
+    }
+    const prefix = entry.endsWith('/') ? entry : `${entry}/`;
+    if (indexed === null) {
+      try {
+        indexed = cg.getFiles().map(f => f.path);
+      } catch {
+        indexed = [];
+      }
+    }
+    const under = indexed.filter(p => p.startsWith(prefix)).slice(0, DIR_EXPANSION_CAP);
+    if (under.length > 0) {
+      out.push(...under);
+      expanded++;
+    } else {
+      // Not a directory either — keep it, so the "no symbols in the index" note
+      // still names the path the caller actually passed.
+      out.push(entry);
+    }
+  }
+  return { paths: [...new Set(out)], expanded };
+}
+
 /**
  * Normalize any caller-supplied path to the project-relative, forward-slash
  * form the index stores. Absolute paths, `./` prefixes, Windows separators and
@@ -485,8 +533,26 @@ function contains(outer: Node, inner: Node): boolean {
  *    `contains` "called" by Rust functions). Synthesized (`heuristic`) edges are
  *    exempt: framework channels legitimately cross languages (template → TS).
  */
+/**
+ * A real call whose enclosing symbol is the FILE itself — a top-level
+ * statement, or a callback handed to `it(...)`/`describe(...)`, which no
+ * extractor gives a name to.
+ *
+ * Container nodes are otherwise excluded as bookkeeping, and that cost real
+ * coverage: `__tests__/mcp-tool-annotations.test.ts` calls `getStaticTools()`
+ * inside an `it()` body, so the graph records a `calls` edge from the file node
+ * at the exact call line — dropping it hid the test and let "no test reaches
+ * this symbol" fire on a symbol a test does reach. The discriminator is the
+ * EDGE: `calls` with a line of its own is a call site; `imports`/`contains`
+ * from the same node is bookkeeping.
+ */
+function isTopLevelCall(caller: Node, edge: Edge): boolean {
+  if (caller.kind !== 'file' && caller.kind !== 'module') return false;
+  return edge.kind === 'calls' && edge.line != null;
+}
+
 export function isPlausibleCallSite(target: Node, caller: Node, edge: Edge): boolean {
-  if (!CALLER_KINDS.has(caller.kind)) return false;
+  if (!CALLER_KINDS.has(caller.kind) && !isTopLevelCall(caller, edge)) return false;
   if (caller.filePath === target.filePath) return true;
   if (target.isExported === false) return false;
   if (edge.provenance === 'heuristic') return true;
@@ -521,7 +587,16 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
     changedFiles = parseUnifiedDiff(opts.diff);
   } else if (opts.files && opts.files.length > 0) {
     source = 'files';
-    changedFiles = opts.files.map(f => ({
+    // Normalize before expanding: a directory entry only matches the index's
+    // own relative form (an absolute path or `./src/` would expand to nothing).
+    const normalized = opts.files
+      .map(f => normalizeIndexPath(f, projectRoot, gitRoot))
+      .filter(Boolean);
+    const { paths, expanded } = expandDirectoryEntries(cg, normalized);
+    if (expanded > 0) {
+      notes.push(`${expanded} directory entr(ies) in \`files\` were expanded to the indexed files under them.`);
+    }
+    changedFiles = paths.map(f => ({
       path: f,
       status: 'modified' as ChangeStatus,
       ranges: [],
@@ -588,6 +663,7 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
   const symbols: ChangedSymbol[] = [];
   let unindexed = 0;
   let truncatedSymbols = 0;
+  const unreviewedFiles: string[] = [];
 
   for (const file of changedFiles) {
     if (file.status === 'deleted') continue;
@@ -596,13 +672,16 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
       unindexed++;
       continue;
     }
+    let omittedHere = 0;
     for (const node of selectChangedNodes(nodes, file)) {
       if (symbols.length >= maxSymbols) {
         truncatedSymbols++;
+        omittedHere++;
         continue;
       }
       symbols.push(buildChangedSymbol(cg, node, changedPaths, maxCallers));
     }
+    if (omittedHere > 0) unreviewedFiles.push(file.path);
   }
 
   if (unindexed > 0) {
@@ -612,7 +691,14 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
     );
   }
   if (truncatedSymbols > 0) {
-    notes.push(`${truncatedSymbols} further changed symbol(s) omitted (maxSymbols=${maxSymbols}).`);
+    // Naming the leftover files turns the cap into a next step: the caller can
+    // paste them straight back as `files` (a directory prefix works too) and
+    // finish the review, instead of being told a number and left to guess which
+    // part of the change set went unexamined.
+    notes.push(
+      `${truncatedSymbols} further changed symbol(s) omitted (maxSymbols=${maxSymbols}). ` +
+      `Review the rest by calling again with files: ${formatFileSuggestion(unreviewedFiles)}`
+    );
   }
 
   // --- 3. Pre-change comparison (breaking changes) --------------------------
@@ -717,17 +803,12 @@ function buildChangedSymbol(
     return ax - bx;
   });
 
-  let blastRadius = 0;
+  let blastRadius = callers.length;
   const coveringTests = new Set<string>();
   try {
-    const radius = cg.getImpactRadius(node.id, DEFAULTS.blastRadiusDepth);
-    for (const n of radius.nodes.values()) {
-      if (n.id === node.id) continue;
-      // Count real dependents only — counting the file node that contains a
-      // caller double-counts it and inflates every severity threshold.
-      if (CALLER_KINDS.has(n.kind)) blastRadius++;
-      if (isTestFile(n.filePath)) coveringTests.add(n.filePath);
-    }
+    const radius = computeBlastRadius(cg, node, callers);
+    blastRadius = radius.count;
+    for (const t of radius.tests) coveringTests.add(t);
   } catch {
     // A traversal failure must not sink the whole report — the symbol is still
     // worth reporting with its direct callers.
@@ -743,6 +824,64 @@ function buildChangedSymbol(
     coveringTests: [...coveringTests].sort(),
     isNew: false,
   };
+}
+
+/** How many direct callers we expand a second hop from, to bound the fan-out. */
+const RADIUS_FANOUT = 40;
+
+/**
+ * A ready-to-paste `files` argument for the files a cap left unexamined. Past a
+ * handful it collapses to the shared directories, which `files` accepts.
+ */
+function formatFileSuggestion(files: string[]): string {
+  const list = [...new Set(files)];
+  if (list.length === 0) return '[]';
+  if (list.length <= 8) return JSON.stringify(list);
+  const dirs = [...new Set(list.map(f => {
+    const cut = f.lastIndexOf('/');
+    return cut > 0 ? f.slice(0, cut + 1) : f;
+  }))];
+  return `${JSON.stringify(dirs.slice(0, 8))}${dirs.length > 8 ? ` (+${dirs.length - 8} more dirs)` : ''}`;
+}
+
+/**
+ * Transitive dependents, walked with the SAME plausibility rule as the caller
+ * list — not `getImpactRadius`.
+ *
+ * The number a reviewer reads has to agree with the call sites listed under it.
+ * `getImpactRadius` traverses the raw edge table, so it counted exactly the
+ * name-collision edges the caller list filters out: a file-private `contains`
+ * showed a radius of 42 whose "dependents" were Rust functions of the same
+ * name. A count no evidence backs is worse than no count, because severity
+ * thresholds are derived from it.
+ */
+function computeBlastRadius(
+  cg: CodeGraph,
+  node: Node,
+  callers: Array<{ node: Node; edge: Edge }>,
+): { count: number; tests: Set<string> } {
+  const seen = new Set<string>([node.id]);
+  const tests = new Set<string>();
+  let count = 0;
+
+  const record = (n: Node) => {
+    if (seen.has(n.id)) return false;
+    seen.add(n.id);
+    count++;
+    if (isTestFile(n.filePath)) tests.add(n.filePath);
+    return true;
+  };
+
+  for (const c of callers) record(c.node);
+  // Second hop only (DEFAULTS.blastRadiusDepth): deep enough to show that a
+  // change escapes its immediate neighbourhood, shallow enough to stay honest.
+  for (const c of callers.slice(0, RADIUS_FANOUT)) {
+    for (const up of cg.getCallers(c.node.id, 1)) {
+      if (!isPlausibleCallSite(c.node, up.node, up.edge)) continue;
+      record(up.node);
+    }
+  }
+  return { count, tests };
 }
 
 /**
@@ -974,10 +1113,24 @@ function buildFindings(
   return findings.sort((a, b) => rank[a.severity] - rank[b.severity] || a.file.localeCompare(b.file));
 }
 
+/**
+ * `file:line symbol` for one call site.
+ *
+ * When the edge carries no line of its own we fall back to where the CALLER is
+ * defined — which is a different claim, and silently printing it as if it were
+ * the call line sends a reviewer to a line that does not mention the symbol
+ * (measured: 9 of 94 sites on a real change). Say which one it is.
+ */
 function callSiteLabel(c: { node: Node; edge: Edge }): string {
+  const exact = c.edge.line != null;
   const line = c.edge.line ?? c.node.startLine;
+  const name = c.node.kind === 'file' || c.node.kind === 'module'
+    ? 'top-level'
+    : c.node.qualifiedName || c.node.name;
   const synth = synthLabel(c.edge);
-  return `${c.node.filePath}:${line} ${c.node.qualifiedName || c.node.name}${synth ? `  [${synth}]` : ''}`;
+  return `${c.node.filePath}:${line} ${name}` +
+    (exact ? '' : ' (caller definition — exact call line not recorded)') +
+    (synth ? `  [${synth}]` : '');
 }
 
 // ---------------------------------------------------------------------------

@@ -4,20 +4,11 @@
 
 Already installed? Run `codegraph upgrade`
 
-Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
-
-### Supercharge Claude Code, Cursor, Codex, OpenCode, Hermes Agent, Gemini, Antigravity, and Kiro with Semantic Code Intelligence
+### Supercharge Claude Code, Cursor, Codex, OpenCode, Hermes Agent, Gemini, Antigravity, Kiro, and GitHub Copilot CLI with Semantic Code Intelligence
 
 **The fastest complete code graph · surgical context · built for how agents actually work · 100% local**
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/rust-logo-dark.svg?v=1">
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/rust-logo.svg?v=1" height="30" alt="Rust" align="center">
-</picture>&nbsp; **Kernel powered by Rust**
-
-### [Documentation & Website →](https://colbymchenry.github.io/codegraph/)
-
-[![npm version](https://img.shields.io/npm/v/@colbymchenry/codegraph.svg)](https://www.npmjs.com/package/@colbymchenry/codegraph)
+[![npm version](https://img.shields.io/npm/v/@xuansang2770/codegraph.svg)](https://www.npmjs.com/package/@xuansang2770/codegraph)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Self-contained](https://img.shields.io/badge/Node.js-bundled%20%C2%B7%20none%20required-brightgreen.svg)](https://nodejs.org/)
 [![npm provenance](https://img.shields.io/badge/npm-provenance-brightgreen.svg)](#verified-releases)
@@ -35,14 +26,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 [![Gemini](https://img.shields.io/badge/Gemini-supported-blueviolet.svg)](#supported-agents)
 [![Antigravity](https://img.shields.io/badge/Antigravity-supported-blueviolet.svg)](#supported-agents)
 [![Kiro](https://img.shields.io/badge/Kiro-supported-blueviolet.svg)](#supported-agents)
-
-<br>
-
-**The CodeGraph platform is coming** — for every PR, know exactly what to test, what could break, which flows are affected, and whether business logic is compromised.
-
-<a href="https://getcodegraph.com"><img alt="Join the waitlist for early beta access" src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/waitlist.svg?v=2" height="52"></a>
-
-<sub>Get <b>early beta access</b> to the hosted product · <a href="https://getcodegraph.com">getcodegraph.com</a></sub>
+[![GitHub Copilot CLI](https://img.shields.io/badge/Copilot%20CLI-supported-brightgreen.svg)](#supported-agents)
 
 </div>
 
@@ -78,17 +62,17 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sang2770/codegraph/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/sang2770/codegraph/main/install.ps1 | iex
 ```
 
 <details>
 <summary><b>Already have Node? Use npm instead (works on any version)</b></summary>
 
 ```bash
-npm i -g @colbymchenry/codegraph
+npm i -g @xuansang2770/codegraph
 ```
 
 <sub>CodeGraph bundles its own runtime — nothing to compile, no native build, works the same everywhere. The installer puts `codegraph` on your PATH but **doesn't change your current shell** — open a new terminal before the next step so the command resolves.</sub>
@@ -105,7 +89,7 @@ In a **new terminal**, run the installer to connect CodeGraph to the agents you 
 codegraph install
 ```
 
-<sub>Detects and auto-configures Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, and Kiro — wiring the CodeGraph MCP server into each. **This is the step that connects CodeGraph to your agent;** installing the CLI in step 1 does not do it on its own. It only wires up your agent — it does **not** index any code; building each project's graph is the separate `codegraph init` in step 3. (Shortcut: `npx @colbymchenry/codegraph` downloads and runs this in one go.)</sub>
+<sub>Detects and auto-configures Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, Kiro, and GitHub Copilot CLI — wiring the CodeGraph MCP server into each. **This is the step that connects CodeGraph to your agent;** installing the CLI in step 1 does not do it on its own. It only wires up your agent — it does **not** index any code; building each project's graph is the separate `codegraph init` in step 3. (Shortcut: `npx @xuansang2770/codegraph` downloads and runs this in one go.)</sub>
 
 ### 3. Initialize each project
 
@@ -170,40 +154,40 @@ Package a platform-specific VSIX with `npm run package`.
 Every language below gets the same treatment — full structural extraction and cross-file resolution into one graph, no per-language setup:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/typescript.svg?v=1" width="104" height="104" alt="TypeScript" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/javascript.svg?v=1" width="104" height="104" alt="JavaScript" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/arkts.svg?v=1" width="104" height="104" alt="ArkTS" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/python.svg?v=1" width="104" height="104" alt="Python" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/go.svg?v=1" width="104" height="104" alt="Go" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/rust.svg?v=1" width="104" height="104" alt="Rust" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/java.svg?v=1" width="104" height="104" alt="Java" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/csharp.svg?v=1" width="104" height="104" alt="C#" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/php.svg?v=1" width="104" height="104" alt="PHP" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/ruby.svg?v=1" width="104" height="104" alt="Ruby" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/c.svg?v=1" width="104" height="104" alt="C" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/cpp.svg?v=1" width="104" height="104" alt="C++" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/objective-c.svg?v=1" width="104" height="104" alt="Objective-C" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/metal.svg?v=1" width="104" height="104" alt="Metal" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/cuda.svg?v=1" width="104" height="104" alt="CUDA" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/swift.svg?v=1" width="104" height="104" alt="Swift" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/kotlin.svg?v=1" width="104" height="104" alt="Kotlin" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/scala.svg?v=1" width="104" height="104" alt="Scala" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/dart.svg?v=1" width="104" height="104" alt="Dart" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/svelte.svg?v=1" width="104" height="104" alt="Svelte" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/vue.svg?v=1" width="104" height="104" alt="Vue" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/astro.svg?v=1" width="104" height="104" alt="Astro" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/liquid.svg?v=1" width="104" height="104" alt="Liquid" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/delphi.svg?v=1" width="104" height="104" alt="Pascal / Delphi" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/lua.svg?v=1" width="104" height="104" alt="Lua" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/r.svg?v=1" width="104" height="104" alt="R" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/luau.svg?v=1" width="104" height="104" alt="Luau" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/cfml.svg?v=1" width="104" height="104" alt="CFML" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/cobol.svg?v=1" width="104" height="104" alt="COBOL" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/vbnet.svg?v=1" width="104" height="104" alt="Visual Basic .NET" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/erlang.svg?v=1" width="104" height="104" alt="Erlang" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/solidity.svg?v=1" width="104" height="104" alt="Solidity" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/terraform.svg?v=1" width="104" height="104" alt="Terraform / OpenTofu" />
-  <img src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/languages/nix.svg?v=1" width="104" height="104" alt="Nix" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/typescript.svg?v=1" width="104" height="104" alt="TypeScript" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/javascript.svg?v=1" width="104" height="104" alt="JavaScript" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/arkts.svg?v=1" width="104" height="104" alt="ArkTS" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/python.svg?v=1" width="104" height="104" alt="Python" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/go.svg?v=1" width="104" height="104" alt="Go" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/rust.svg?v=1" width="104" height="104" alt="Rust" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/java.svg?v=1" width="104" height="104" alt="Java" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/csharp.svg?v=1" width="104" height="104" alt="C#" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/php.svg?v=1" width="104" height="104" alt="PHP" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/ruby.svg?v=1" width="104" height="104" alt="Ruby" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/c.svg?v=1" width="104" height="104" alt="C" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/cpp.svg?v=1" width="104" height="104" alt="C++" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/objective-c.svg?v=1" width="104" height="104" alt="Objective-C" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/metal.svg?v=1" width="104" height="104" alt="Metal" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/cuda.svg?v=1" width="104" height="104" alt="CUDA" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/swift.svg?v=1" width="104" height="104" alt="Swift" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/kotlin.svg?v=1" width="104" height="104" alt="Kotlin" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/scala.svg?v=1" width="104" height="104" alt="Scala" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/dart.svg?v=1" width="104" height="104" alt="Dart" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/svelte.svg?v=1" width="104" height="104" alt="Svelte" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/vue.svg?v=1" width="104" height="104" alt="Vue" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/astro.svg?v=1" width="104" height="104" alt="Astro" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/liquid.svg?v=1" width="104" height="104" alt="Liquid" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/delphi.svg?v=1" width="104" height="104" alt="Pascal / Delphi" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/lua.svg?v=1" width="104" height="104" alt="Lua" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/r.svg?v=1" width="104" height="104" alt="R" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/luau.svg?v=1" width="104" height="104" alt="Luau" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/cfml.svg?v=1" width="104" height="104" alt="CFML" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/cobol.svg?v=1" width="104" height="104" alt="COBOL" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/vbnet.svg?v=1" width="104" height="104" alt="Visual Basic .NET" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/erlang.svg?v=1" width="104" height="104" alt="Erlang" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/solidity.svg?v=1" width="104" height="104" alt="Solidity" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/terraform.svg?v=1" width="104" height="104" alt="Terraform / OpenTofu" />
+  <img src="https://raw.githubusercontent.com/sang2770/codegraph/main/assets/languages/nix.svg?v=1" width="104" height="104" alt="Nix" />
 </p>
 
 <sub>Per-language details — extensions, frameworks, and what exactly gets extracted — in [Supported Languages](#supported-languages).</sub>
@@ -327,7 +311,7 @@ agent writes src/Widget.ts
 
 The handful of cases where manual `codegraph sync` makes sense: the watcher is disabled (sandboxed environments, or `CODEGRAPH_NO_DAEMON=1`), or you're scripting against the index outside an agent session and want a pre-flight sync at the start of your script.
 
-→ Full deep-dive in [Guides → Indexing a Project](https://colbymchenry.github.io/codegraph/guides/indexing/#stay-fresh-automatically).
+→ Full deep-dive in [Guides → Indexing a Project](https://sang2770.github.io/codegraph/guides/indexing/#stay-fresh-automatically).
 
 </details>
 
@@ -393,14 +377,14 @@ Each bridge emits edges tagged `provenance:'heuristic'` with `metadata.synthesiz
 ### 1. Run the Installer
 
 ```bash
-npx @colbymchenry/codegraph
+npx @xuansang2770/codegraph
 ```
 
 The installer will:
-- Ask which agent(s) to configure — auto-detects installed ones from: **Claude Code**, **Cursor**, **Codex CLI**, **opencode**, **Hermes Agent**, **Gemini CLI**, **Antigravity IDE**, **Kiro**
+- Ask which agent(s) to configure — auto-detects installed ones from: **Claude Code**, **Cursor**, **Codex CLI**, **opencode**, **Hermes Agent**, **Gemini CLI**, **Antigravity IDE**, **Kiro**, **GitHub Copilot CLI**
 - Prompt to install `codegraph` on your PATH (so agents can launch the MCP server)
 - Ask whether configs apply to all your projects or just this one
-- Write each chosen agent's MCP server config, plus a small marker-fenced CodeGraph section in the agent's instructions file (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`) — that's how subagents and non-MCP agents learn the `codegraph explore` command, since the MCP server's own guidance only reaches the main agent. Removed cleanly by `codegraph uninstall`.
+- Write each chosen agent's MCP server config, plus a small marker-fenced CodeGraph section in the agent's instructions file (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md` / `copilot-instructions.md`) — that's how subagents and non-MCP agents learn the `codegraph explore` command, since the MCP server's own guidance only reaches the main agent. Removed cleanly by `codegraph uninstall`.
 - Set up auto-allow permissions when Claude Code is one of the targets
 
 The installer **wires up your agents only — it does not index your code.** After it finishes, build each project's graph yourself with `codegraph init` (step 3). One global `codegraph install` covers every project; you run `codegraph init` once per project.
@@ -424,7 +408,7 @@ codegraph install --print-config codex               # print snippet, no file wr
 
 ### 2. Restart Your Agent
 
-Restart your agent (Claude Code / Cursor / Codex CLI / opencode / Hermes Agent / Gemini CLI / Antigravity IDE / Kiro) for the MCP server to load.
+Restart your agent (Claude Code / Cursor / Codex CLI / opencode / Hermes Agent / Gemini CLI / Antigravity IDE / Kiro / GitHub Copilot CLI) for the MCP server to load.
 
 ### 3. Initialize Projects
 
@@ -442,7 +426,7 @@ That's it — your agent will use CodeGraph tools automatically when a `.codegra
 
 **Install globally:**
 ```bash
-npm install -g @colbymchenry/codegraph
+npm install -g @xuansang2770/codegraph
 ```
 
 **Add to `~/.claude.json`:**
@@ -600,9 +584,9 @@ API, so both `import` and `require` resolve the `CodeGraph` class in your own
 process — handy for embedding it in an app (e.g. an Electron main process).
 
 ```typescript
-import CodeGraph from '@colbymchenry/codegraph';
+import CodeGraph from '@xuansang2770/codegraph';
 // CommonJS works too:
-//   const { CodeGraph } = require('@colbymchenry/codegraph');
+//   const { CodeGraph } = require('@xuansang2770/codegraph');
 
 const cg = await CodeGraph.init('/path/to/project');
 // Or: const cg = await CodeGraph.open('/path/to/project');
@@ -627,7 +611,7 @@ that drive the graph directly: `DatabaseConnection`, `QueryBuilder`,
 
 **Embedding requirements**
 
-- Install from npm (`npm i @colbymchenry/codegraph`) so the matching
+- Install from npm (`npm i @xuansang2770/codegraph`) so the matching
   per-platform package — which carries the compiled library and its
   dependencies — is fetched alongside the shim.
 - The API runs on **your** runtime, so it needs **Node 22.5+** for the built-in
@@ -749,7 +733,7 @@ carries cryptographic proof of it:
   (SLSA v1.0 Build Level 2). Verify any downloaded bundle:
 
   ```bash
-  gh attestation verify codegraph-darwin-arm64.tar.gz -R colbymchenry/codegraph
+  gh attestation verify codegraph-darwin-arm64.tar.gz -R sang2770/codegraph
   ```
 
 Releases published before July 2026 predate this pipeline and don't carry
@@ -782,6 +766,7 @@ is written):
 - **Gemini CLI**
 - **Antigravity IDE**
 - **Kiro**
+- **GitHub Copilot CLI**
 
 ## Supported Languages
 
@@ -861,7 +846,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 **MCP hits `database is locked`** — current builds shouldn't: CodeGraph bundles its own Node runtime and uses Node's built-in `node:sqlite` in WAL mode, where concurrent reads never block on a writer. If you still see it:
 
-- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex` (Windows), or `npm i -g @colbymchenry/codegraph@latest`.
+- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/sang2770/codegraph/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/sang2770/codegraph/main/install.ps1 | iex` (Windows), or `npm i -g @xuansang2770/codegraph@latest`.
 - **`codegraph status` shows `Journal:` other than `wal`** — WAL couldn't be enabled on this filesystem (common on network shares and WSL2 `/mnt`), so reads can block on writes. Move the project (with its `.codegraph/` folder) onto a local disk.
 
 **MCP server not connecting** — Your agent starts the server itself, so you don't launch it by hand. Make sure the project is initialized and indexed (`codegraph status`) and that the path in your MCP config is correct. If it still won't connect, re-run `codegraph install` to rewrite the config.
@@ -880,8 +865,8 @@ MIT
 
 <div align="center">
 
-**Made for AI coding agents — Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, and Kiro**
+**Made for AI coding agents — Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, Kiro, and GitHub Copilot CLI**
 
-[Report Bug](https://github.com/colbymchenry/codegraph/issues) · [Request Feature](https://github.com/colbymchenry/codegraph/issues)
+[Report Bug](https://github.com/sang2770/codegraph/issues) · [Request Feature](https://github.com/sang2770/codegraph/issues)
 
 </div>

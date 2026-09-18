@@ -386,6 +386,93 @@ describe('analyzeReview over an indexed project', () => {
     cg.destroy();
   });
 
+  it('sees a test that calls the symbol from inside an it() callback', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
+    writeProject(tmpDir);
+    // No enclosing named function: the call sits in a callback, so the graph
+    // records it against the FILE node. Excluding container nodes as
+    // bookkeeping hid exactly this, and "no test reaches this symbol" then
+    // fired on a symbol a test does reach.
+    fs.writeFileSync(
+      path.join(tmpDir, '__tests__/login.test.ts'),
+      [
+        "import { login } from '../src/service';",
+        '',
+        "it('logs in', () => {",
+        '  login("a@b.c");',
+        '});',
+        '',
+      ].join('\n'),
+    );
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    const report = await analyzeReview(cg, { files: ['src/service.ts'] });
+    const login = report.symbols.find(s => s.node.name === 'login')!;
+    expect(login.coveringTests.some(t => t.includes('login.test.ts'))).toBe(true);
+    expect(report.findings.some(f => f.kind === 'missing-test' && f.symbol.includes('login'))).toBe(false);
+    expect(report.affectedTests.some(t => t.includes('login.test.ts'))).toBe(true);
+
+    cg.destroy();
+  });
+
+  it('counts a blast radius the listed call sites actually back', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
+    writeProject(tmpDir);
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    const report = await analyzeReview(cg, { files: ['src/service.ts'] });
+    const login = report.symbols.find(s => s.node.name === 'login')!;
+
+    // login is called by handleLogin (api.ts) and main (cli.ts); nothing calls
+    // those. The number a reviewer reads has to agree with the evidence under
+    // it, so it walks the same plausibility rule as the caller list rather than
+    // the raw edge table.
+    expect(login.callers.map(c => c.node.name).sort()).toEqual(['handleLogin', 'main']);
+    expect(login.blastRadius).toBe(2);
+
+    const logout = report.symbols.find(s => s.node.name === 'logout')!;
+    expect(logout.blastRadius).toBe(logout.callers.length);
+
+    cg.destroy();
+  });
+
+  it('expands a directory entry in `files`, which is what its own advice hands back', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
+    writeProject(tmpDir);
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    const byDir = await analyzeReview(cg, { files: ['src/'] });
+    const paths = byDir.changedFiles.map(f => f.path).sort();
+    expect(paths).toEqual(['src/api.ts', 'src/cli.ts', 'src/service.ts']);
+    expect(byDir.notes.join('\n')).toContain('expanded');
+    // A directory without the trailing slash works the same way.
+    expect((await analyzeReview(cg, { files: ['src'] })).changedFiles).toHaveLength(3);
+    // A path that is neither file nor directory is kept, so the note names it.
+    const bogus = await analyzeReview(cg, { files: ['src/nope.ts'] });
+    expect(bogus.changedFiles.map(f => f.path)).toEqual(['src/nope.ts']);
+
+    cg.destroy();
+  });
+
+  it('names the files a maxSymbols cap left unexamined', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
+    writeProject(tmpDir);
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    // A count alone leaves the caller guessing which part of the change set
+    // went unexamined; the note has to be a next step.
+    const report = await analyzeReview(cg, { files: ['src/'], maxSymbols: 1 });
+    const note = report.notes.find(n => n.includes('maxSymbols'))!;
+    expect(note).toContain('calling again with files:');
+    expect(note).toMatch(/src\/(api|cli|service)\.ts/);
+
+    cg.destroy();
+  });
+
   it('keeps a symbol the hunk only overlaps alongside one it fully contains', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-'));
     writeProject(tmpDir);
