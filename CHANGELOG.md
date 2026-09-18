@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.6.1] - 2026-09-18
+
 ### New Features
 
 - GitHub Copilot CLI is now a supported agent. `codegraph install` detects it, wires the CodeGraph MCP server into `~/.copilot/mcp-config.json` (or `.github/mcp.json` for a single project), and `codegraph uninstall` removes it again — leaving any other MCP servers you have configured untouched. Because Copilot CLI approves tools at launch rather than in a config file, the installer prints the `copilot --allow-tool='codegraph'` command that skips its per-call prompts.
@@ -19,7 +22,6 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The "blast radius" number in a review report now counts only the dependents the report can actually show you. It was walking the raw graph, so it could quote a large number built partly on same-name matches in unrelated files — while the call sites listed underneath, correctly, did not include them.
 - Tests that call the changed code straight from inside a test callback are seen again. Because such a call has no enclosing named function, it was being discarded as bookkeeping — so a symbol a test really does cover could be reported as covered by nothing.
 - A call site whose exact line the graph never recorded now says so, instead of quietly printing the line where the calling function is defined as though the reference were there.
-
 
 ## [1.6.0] - 2026-09-17
 
@@ -748,3 +750,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.5.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.5.0
 [1.5.0]: https://github.com/sang2770/codegraph/releases/tag/v1.5.0
 [1.6.0]: https://github.com/sang2770/codegraph/releases/tag/v1.6.0
+[1.6.1]: https://github.com/sang2770/codegraph/releases/tag/v1.6.1
