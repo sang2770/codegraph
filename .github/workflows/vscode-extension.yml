@@ -1,6 +1,8 @@
 name: VS Code extension
 
-# Pushes build and test the six platform packages and leave them as artifacts.
+# Pushes build and test the universal package and leave it as an artifact. The
+# CodeGraph runtime is not in the package — the extension installs
+# @xuansang2770/codegraph from npm on first activation and keeps it updated.
 # Publishing to the marketplace is never automatic: it happens only when a
 # maintainer runs this workflow by hand with `publish` ticked. Publishing is a
 # one-way action on a shared store — a bad version cannot be recalled, only
@@ -26,20 +28,12 @@ on:
         default: false
   push:
     paths:
-      - "src/**"
-      - "scripts/build-bundle.sh"
-      - "scripts/build-kernel.sh"
-      - "codegraph-kernel/**"
-      - "package.json"
-      - "package-lock.json"
       - "vscode-extension/**"
       - ".github/workflows/vscode-extension.yml"
 
 jobs:
-  # Everything that can reject a release is settled before six runners spend
-  # twenty minutes building runtimes: the token has to exist, and the changelog
-  # has to name this version. Both cost seconds here and a whole build if they
-  # only surface at the end.
+  # Everything that can reject a release is settled before anything is built:
+  # the token has to exist, and the changelog has to name this version.
   preflight:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
     runs-on: ubuntu-latest
@@ -105,28 +99,12 @@ jobs:
           echo "Promoted the changelog to **v$version**" >> "$GITHUB_STEP_SUMMARY"
 
   package:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     needs: preflight
     # preflight is skipped on a push, and a skipped dependency would otherwise
     # skip this job with it. `!cancelled()` keeps that from also reviving the
     # job after someone cancels the run.
     if: ${{ !cancelled() && needs.preflight.result != 'failure' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: darwin-arm64
-            os: macos-15
-          - target: darwin-x64
-            os: macos-15-intel
-          - target: linux-arm64
-            os: ubuntu-24.04-arm
-          - target: linux-x64
-            os: ubuntu-latest
-          - target: win32-arm64
-            os: windows-11-arm
-          - target: win32-x64
-            os: windows-latest
 
     steps:
       # Build the promoted commit when there is one, so the packaged changelog
@@ -140,14 +118,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            vscode-extension/package-lock.json
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install CodeGraph dependencies
-        run: npm ci
+          cache-dependency-path: vscode-extension/package-lock.json
 
       - name: Install extension dependencies
         working-directory: vscode-extension
@@ -157,35 +128,26 @@ jobs:
         working-directory: vscode-extension
         run: npm test
 
-      - name: Package target
+      - name: Package
         working-directory: vscode-extension
         shell: bash
         env:
-          CODEGRAPH_REQUIRE_NATIVE_KERNEL: "1"
           # A pre-release has to be stamped in at package time; it cannot be
           # decided later when the archive is uploaded.
           PRE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.pre_release }}
         run: |
-          args=(--target "${{ matrix.target }}")
+          args=(--out codebrain.vsix)
           if [ "$PRE_RELEASE" = "true" ]; then
             args+=(--pre-release)
           fi
           npm run package -- "${args[@]}"
 
-      - name: Verify native kernel in packaged runtime
-        shell: bash
-        run: test -f "vscode-extension/runtime/${{ matrix.target }}/lib/kernel/codegraph-kernel.node"
-
       - uses: actions/upload-artifact@v4
         with:
-          name: codebrain-${{ matrix.target }}
-          path: vscode-extension/codebrain-${{ matrix.target }}.vsix
+          name: codebrain
+          path: vscode-extension/codebrain.vsix
           if-no-files-found: error
 
-  # One job, one `vsce publish` carrying all six packages. Uploading them one
-  # at a time would leave a half-published version on the marketplace if a
-  # later upload failed, and some users would then get a platform package that
-  # does not exist.
   publish:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
     needs: [preflight, package]
@@ -206,11 +168,10 @@ jobs:
         working-directory: vscode-extension
         run: npm ci
 
-      - name: Download every platform package
+      - name: Download the package
         uses: actions/download-artifact@v4
         with:
-          pattern: codebrain-*
-          merge-multiple: true
+          name: codebrain
           path: packages
 
       - name: Verify and publish

@@ -1,32 +1,41 @@
 import * as vscode from 'vscode';
 import { AtlassianIntegration } from './atlassianSetup';
-import {
-  codeBrainEnvironment,
-  locateRuntime,
-  RuntimeCommand,
-} from './runtime';
+import { codeBrainEnvironment } from './runtime';
+import { RuntimeManager } from './runtimeManager';
 import { getWorkspaceFolder } from './workspace';
 
 const PROVIDER_ID = 'codebrain.runtime';
 
 export function registerMcpProvider(
   context: vscode.ExtensionContext,
-  runtime: RuntimeCommand,
+  runtime: RuntimeManager,
   atlassian: AtlassianIntegration,
 ): void {
   const didChange = new vscode.EventEmitter<void>();
   context.subscriptions.push(didChange);
 
-  const version = String(context.extension.packageJSON.version);
+  const extensionVersion = String(context.extension.packageJSON.version);
 
   const provider: vscode.McpServerDefinitionProvider = {
     onDidChangeMcpServerDefinitions: didChange.event,
     provideMcpServerDefinitions: async () => {
+      // Waits out the first install; a failed one leaves no servers to offer
+      // until the next attempt succeeds and fires a change.
+      let command;
+      try {
+        command = await runtime.resolve();
+      } catch {
+        return [];
+      }
+      // The runtime version is part of the definition's version, so VS Code
+      // restarts a running server after an update instead of keeping the old
+      // binary alive.
+      const version = `${extensionVersion}+${runtime.currentVersion() ?? 'local'}`;
       const workspaceFolder = getWorkspaceFolder();
       const codeBrain = new vscode.McpStdioServerDefinition(
         'CodeBrain',
-        runtime.command,
-        [...runtime.baseArgs, 'serve', '--mcp'],
+        command.command,
+        [...command.baseArgs, 'serve', '--mcp'],
         codeBrainEnvironment(),
         version,
       );
@@ -40,7 +49,7 @@ export function registerMcpProvider(
 
       const atlassianServer = new vscode.McpStdioServerDefinition(
         'CodeBrain Atlassian',
-        runtime.command,
+        command.command,
         [atlassian.serverScriptPath()],
         await atlassian.serverEnvironment(),
         version,
@@ -56,6 +65,7 @@ export function registerMcpProvider(
     // Credentials moved, or a URL changed: the Atlassian definition's env is
     // baked in at provide time, so VS Code has to ask for it again.
     atlassian.onDidChange(() => didChange.fire()),
+    runtime.onDidChange(() => didChange.fire()),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (
         event.affectsConfiguration('codebrain.autoRefresh.enabled') ||
@@ -66,10 +76,4 @@ export function registerMcpProvider(
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => didChange.fire()),
   );
-}
-
-export function validateBundledRuntime(
-  context: vscode.ExtensionContext,
-): RuntimeCommand {
-  return locateRuntime(context.extensionUri);
 }

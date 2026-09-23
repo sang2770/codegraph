@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { accessSync, chmodSync, constants, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
+import { runtimeTarget } from './runtimeInstaller';
 
 const MAX_PROCESS_OUTPUT = 2_000_000;
 
@@ -25,6 +26,29 @@ export interface RuntimeCommand {
   repairedExecutables: string[];
 }
 
+/**
+ * Where commands get their runtime from. The runtime is installed from npm
+ * after activation and replaced by auto-update while the extension runs, so
+ * callers ask for it per command instead of holding one fixed value.
+ */
+export interface CodeBrainRuntime {
+  /** The runtime to use now; waits for the first install when there is none yet. */
+  resolve(): Promise<RuntimeCommand>;
+  /** The runtime in use, or `undefined` while the first install is still running. */
+  current(): RuntimeCommand | undefined;
+}
+
+/**
+ * The runtime right now, for writes that embed its path (agent MCP entries).
+ * Callers await `resolve()` before any user-facing write, so reaching the
+ * throw means a background repair ran before the first install finished.
+ */
+export function requireRuntime(runtime: CodeBrainRuntime): RuntimeCommand {
+  const current = runtime.current();
+  if (!current) throw new Error('the CodeGraph runtime is still being installed.');
+  return current;
+}
+
 export interface ProcessResult {
   code: number;
   stdout: string;
@@ -46,20 +70,6 @@ export interface RunOptions {
   onStderr?: (chunk: string) => void;
 }
 
-function runtimeTarget(): string {
-  if (
-    (process.platform !== 'darwin' &&
-      process.platform !== 'linux' &&
-      process.platform !== 'win32') ||
-    (process.arch !== 'x64' && process.arch !== 'arm64')
-  ) {
-    throw new Error(
-      `CodeBrain does not include a runtime for ${process.platform}-${process.arch}.`,
-    );
-  }
-  return `${process.platform}-${process.arch}`;
-}
-
 function isExecutable(path: string): boolean {
   try {
     accessSync(path, constants.X_OK);
@@ -70,12 +80,12 @@ function isExecutable(path: string): boolean {
 }
 
 /**
- * Restore the execute bit on the bundled runtime, and report what needed it.
+ * Restore the execute bit on the installed runtime, and report what needed it.
  *
- * A `.vsix` records unix file modes, but not everything that unpacks one keeps
- * them: VS Code forks and OpenVSX-based hosts, installs done by unzipping the
- * archive by hand, a copied or rsynced extensions directory, and any package
- * built on Windows all land `node` as a plain non-executable file. Every
+ * npm and the system `tar` both keep unix file modes, but not everything that
+ * touches the install afterwards does: a copied or rsynced storage directory,
+ * a restored backup, or a runtime unpacked on a filesystem mounted without
+ * exec semantics can all leave `node` as a plain non-executable file. Every
  * CodeBrain command then dies with `EACCES` and the user has to run `chmod +x`
  * themselves before the extension works at all. Doing it here means they never
  * have to — the repair is idempotent, so a healthy install pays one `access()`
@@ -112,7 +122,7 @@ export function ensureRuntimeExecutable(root: string): string[] {
 
   if (unrepairable.length > 0) {
     throw new Error(
-      `The bundled CodeBrain runtime for ${root} is not executable and could not be ` +
+      `The CodeGraph runtime in ${root} is not executable and could not be ` +
         `repaired automatically. Run: chmod +x ${unrepairable
           .map((path) => `"${path}"`)
           .join(' ')}`,
@@ -122,16 +132,17 @@ export function ensureRuntimeExecutable(root: string): string[] {
   return repaired;
 }
 
-export function locateRuntime(extensionUri: vscode.Uri): RuntimeCommand {
-  const target = runtimeTarget();
-  const root = join(extensionUri.fsPath, 'runtime', target);
+/**
+ * Describe the runtime installed in `root` — a directory holding `node`,
+ * `lib/` and `bin/`, the layout of the `@xuansang2770/codegraph-<target>` npm
+ * package — repairing its execute bits on the way.
+ */
+export function describeRuntime(root: string, target = runtimeTarget()): RuntimeCommand {
   const command = join(root, process.platform === 'win32' ? 'node.exe' : 'node');
   const entrypoint = join(root, 'lib', 'dist', 'bin', 'codegraph.js');
 
   if (!existsSync(command) || !existsSync(entrypoint)) {
-    throw new Error(
-      `Bundled CodeBrain runtime is missing for ${target}. Reinstall the platform-specific extension package.`,
-    );
+    throw new Error(`The CodeGraph runtime in ${root} is incomplete.`);
   }
 
   const repairedExecutables = ensureRuntimeExecutable(root);
@@ -155,15 +166,14 @@ export function locateRuntime(extensionUri: vscode.Uri): RuntimeCommand {
 /**
  * Turn a bare `spawn ... EACCES` into something the user can act on. The
  * execute bit is repaired at activation, so reaching this means the runtime
- * lost it afterwards (an extension update that unpacked without modes, a
- * restored backup) — say which file and how to fix it instead of leaking errno.
+ * lost it afterwards (a restored backup, a copied storage directory) — say which file and how to fix it instead of leaking errno.
  */
 function describeSpawnFailure(error: unknown, command: string): unknown {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   if (code !== 'EACCES' && code !== 'EPERM') return error;
   return new Error(
-    `CodeBrain could not execute its bundled runtime (${command}): permission denied. ` +
-      `Run: chmod +x "${command}" — or reinstall the extension.`,
+    `CodeBrain could not execute its CodeGraph runtime (${command}): permission denied. ` +
+      `Run: chmod +x "${command}" — or run "CodeBrain: Reinstall CodeGraph Runtime".`,
     { cause: error },
   );
 }
@@ -249,11 +259,12 @@ export async function runProcess(
 }
 
 export async function runCodeBrain(
-  runtime: RuntimeCommand,
+  runtime: CodeBrainRuntime,
   args: readonly string[],
   options: RunOptions,
 ): Promise<ProcessResult> {
-  return runProcess(runtime.command, [...runtime.baseArgs, ...args], options);
+  const resolved = await runtime.resolve();
+  return runProcess(resolved.command, [...resolved.baseArgs, ...args], options);
 }
 
 export function codeBrainEnvironment(): Record<string, string> {
@@ -263,6 +274,10 @@ export function codeBrainEnvironment(): Record<string, string> {
 
   return {
     CODEGRAPH_WATCH_DEBOUNCE_MS: String(debounceMs),
+    // The extension installs and updates the runtime itself. The server's own
+    // "run `codegraph upgrade`" notice would send the agent after a CLI that
+    // is not on its PATH.
+    CODEGRAPH_NO_UPDATE_CHECK: '1',
     ...(autoRefresh ? {} : { CODEGRAPH_NO_WATCH: '1' }),
   };
 }

@@ -37,7 +37,7 @@ import {
 } from './atlassian/connection';
 import { McpServerEntry } from './agents/mcpTargets';
 import { McpRegistrar } from './agents/registration';
-import { RuntimeCommand } from './runtime';
+import { CodeBrainRuntime, requireRuntime } from './runtime';
 
 const JIRA_TOKEN_SECRET = 'codebrain.atlassian.jiraToken';
 const CONFLUENCE_TOKEN_SECRET = 'codebrain.atlassian.confluenceToken';
@@ -66,7 +66,7 @@ export class AtlassianIntegration implements vscode.Disposable {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly runtime: RuntimeCommand,
+    private readonly runtime: CodeBrainRuntime,
   ) {
     this.output = vscode.window.createOutputChannel('CodeBrain Atlassian');
     this.registrar = new McpRegistrar({
@@ -156,12 +156,12 @@ export class AtlassianIntegration implements vscode.Disposable {
   }
 
   /**
-   * The command every agent runs. The extension's bundled Node is used rather
-   * than a `node` on PATH: GUI-launched agents get a stripped PATH, and this
-   * runtime is guaranteed present and version-correct.
+   * The command every agent runs. The CodeGraph runtime's vendored Node is used
+   * rather than a `node` on PATH: GUI-launched agents get a stripped PATH, and
+   * this one is guaranteed present and version-correct.
    */
   serverEntry(): McpServerEntry {
-    return { command: this.runtime.command, args: [this.serverScriptPath()] };
+    return { command: requireRuntime(this.runtime).command, args: [this.serverScriptPath()] };
   }
 
   /**
@@ -393,7 +393,14 @@ export class AtlassianIntegration implements vscode.Disposable {
   // -------------------------------------------------------- agent targeting
 
   /** Ask which agents to register with, then write their config files. */
-  install(): Promise<void> {
+  async install(): Promise<void> {
+    // The entry names the runtime's path, so it has to exist first. A failed
+    // install has already said why in its own notification.
+    try {
+      await this.runtime.resolve();
+    } catch {
+      return;
+    }
     return this.registrar.install();
   }
 
@@ -404,6 +411,7 @@ export class AtlassianIntegration implements vscode.Disposable {
 
   /** Repair entries left pointing at the previous extension version's path. */
   refreshInstalledTargets(): void {
+    if (!this.runtime.current()) return;
     this.registrar.refreshInstalledTargets();
   }
 

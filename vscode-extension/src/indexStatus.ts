@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import {
   codeBrainEnvironment,
   runCodeBrain,
-  RuntimeCommand,
+  CodeBrainRuntime,
 } from './runtime';
 
 /** Completeness of the last full index run, as reported by the runtime. */
@@ -144,7 +144,7 @@ export function parseIndexedFiles(text: string): IndexedFile[] {
 }
 
 export async function readIndexStatus(
-  runtime: RuntimeCommand,
+  runtime: CodeBrainRuntime,
   root: string,
   token?: vscode.CancellationToken,
 ): Promise<IndexStatus | undefined> {
@@ -160,7 +160,7 @@ export async function readIndexStatus(
 }
 
 export async function readIndexedFiles(
-  runtime: RuntimeCommand,
+  runtime: CodeBrainRuntime,
   root: string,
   token?: vscode.CancellationToken,
 ): Promise<{ files: IndexedFile[]; truncated: boolean }> {

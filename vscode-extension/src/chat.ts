@@ -35,7 +35,7 @@ import { customReviewPrompt } from './reviewInstructions';
 import {
   codeBrainEnvironment,
   runCodeBrain,
-  RuntimeCommand,
+  CodeBrainRuntime,
 } from './runtime';
 import {
   activeEditorContext,
@@ -976,7 +976,7 @@ const indexedFileCounts = new Map<string, { generation: number; count: number }>
  */
 async function resolveMaxContextFiles(
   config: vscode.WorkspaceConfiguration,
-  runtime: RuntimeCommand,
+  runtime: CodeBrainRuntime,
   folder: vscode.WorkspaceFolder,
   freshness: IndexFreshness,
   token: vscode.CancellationToken,
@@ -1055,7 +1055,7 @@ export function mentionsCommitHistory(prompt: string): boolean {
 }
 
 interface ExploreDeps {
-  runtime: RuntimeCommand;
+  runtime: CodeBrainRuntime;
   freshness: IndexFreshness;
   cache: GraphCache<string>;
   log: (message: string) => void;
@@ -1130,20 +1130,20 @@ async function explore(
         cache.set(cacheKey, generation, text);
         return text;
       }
-      log('[explore] MCP tool returned no text; falling back to the bundled CLI.');
+      log('[explore] MCP tool returned no text; falling back to the CodeGraph CLI.');
     } catch (error) {
-      // MCP discovery/activation is best-effort: the bundled CLI below is the
+      // MCP discovery/activation is best-effort: the CodeGraph CLI below is the
       // same engine, so reports still work. But swallowing this silently means
       // a permanently broken MCP connection looks like "CodeBrain is just slow"
       // forever, so it is always recorded.
       log(
-        `[explore] MCP tool ${mcpTool.name} failed, falling back to the bundled CLI: ${
+        `[explore] MCP tool ${mcpTool.name} failed, falling back to the CodeGraph CLI: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     }
   } else {
-    log('[explore] no CodeBrain MCP tool is registered; using the bundled CLI.');
+    log('[explore] no CodeBrain MCP tool is registered; using the CodeGraph CLI.');
   }
 
   const result = await runCodeBrain(
@@ -1324,7 +1324,7 @@ function guideEvidence(
 
 export function registerChatParticipant(
   context: vscode.ExtensionContext,
-  runtime: RuntimeCommand,
+  runtime: CodeBrainRuntime,
   indexManager: IndexManager,
   impactController: ImpactController,
   metrics: MetricsStore,

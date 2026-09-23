@@ -13,7 +13,7 @@ import {
   codeBrainEnvironment,
   ProcessResult,
   runCodeBrain,
-  RuntimeCommand,
+  CodeBrainRuntime,
 } from './runtime';
 import {
   discoverIndexedProjects,
@@ -42,7 +42,7 @@ export class IndexManager implements vscode.Disposable {
   public readonly onDidChangeIndex = this.didChange.event;
 
   public constructor(
-    private readonly runtime: RuntimeCommand,
+    private readonly runtime: CodeBrainRuntime,
     private readonly context: vscode.ExtensionContext,
     private readonly freshness: IndexFreshness,
   ) {
@@ -115,7 +115,7 @@ export class IndexManager implements vscode.Disposable {
       : `$(warning) CodeBrain: Refresh off${label}`;
     this.statusBar.tooltip = [
       autoRefresh
-        ? 'Index is initialized. The bundled runtime keeps it fresh while active.'
+        ? 'Index is initialized. The CodeGraph runtime keeps it fresh while active.'
         : 'Index is initialized, but automatic refresh is disabled.',
       pinned
         ? `Pinned project: ${pinned}`

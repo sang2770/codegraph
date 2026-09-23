@@ -121,22 +121,15 @@ test('the skill shipped with the extension parses', () => {
 
 // -------------------------------------------------------------- descriptors
 
-test('each scope offers the agents that actually have somewhere to put it', () => {
-  const global = describeSkillTargets(SKILL, 'global');
-  assert.deepEqual(
-    global.filter((target) => target.supported).map((target) => target.id),
-    ['claude', 'codex', 'gemini', 'antigravity'],
-  );
-  // Copilot's instructions file belongs to the repository, so global is wrong.
-  assert.match(global.find((target) => target.id === 'copilot').detail, /workspace scope/);
-
-  const project = describeSkillTargets(SKILL, 'project');
-  assert.deepEqual(
-    project.filter((target) => target.supported).map((target) => target.id),
-    ['claude', 'gemini', 'copilot'],
-  );
-  for (const id of ['codex', 'antigravity']) {
-    assert.match(project.find((target) => target.id === id).detail, /install it globally/);
+test('every agent takes a native skill at both scopes', () => {
+  for (const scope of ['global', 'project']) {
+    const targets = describeSkillTargets(SKILL, scope);
+    assert.deepEqual(
+      targets.map((target) => target.id),
+      ['claude', 'codex', 'gemini', 'antigravity', 'copilot', 'cursor', 'opencode'],
+    );
+    assert.ok(targets.every((target) => target.supported), `${scope}: all supported`);
+    assert.ok(targets.every((target) => target.detail.includes('/codebrain/SKILL.md')));
   }
 
   for (const id of SKILL_TARGET_IDS) {
@@ -146,116 +139,108 @@ test('each scope offers the agents that actually have somewhere to put it', () =
 
 // ---------------------------------------------------------------- installs
 
-test('Claude Code gets the skill file verbatim, at either scope', () => {
-  const paths = sandbox();
+const NATIVE_PATHS = {
+  claude: { global: ['.claude', 'skills'], project: ['.claude', 'skills'] },
+  codex: { global: ['.agents', 'skills'], project: ['.agents', 'skills'] },
+  gemini: { global: ['.gemini', 'skills'], project: ['.gemini', 'skills'] },
+  antigravity: { global: ['.gemini', 'config', 'skills'], project: ['.agents', 'skills'] },
+  copilot: { global: ['.copilot', 'skills'], project: ['.github', 'skills'] },
+  cursor: { global: ['.cursor', 'skills'], project: ['.cursor', 'skills'] },
+  opencode: { global: ['.config', 'opencode', 'skills'], project: ['.opencode', 'skills'] },
+};
 
-  const created = installSkill(SKILL, 'claude', paths, 'global');
-  assert.equal(created.action, 'created');
-  assert.equal(created.path, join(paths.homeDir, '.claude', 'skills', 'codebrain', 'SKILL.md'));
-  // Frontmatter and all: Claude Code's skill format is the one we author in.
-  assert.equal(read(created.path), `${SOURCE.trim()}\n`);
+test('each agent gets SKILL.md in its own skills directory, at either scope', () => {
+  for (const id of SKILL_TARGET_IDS) {
+    const paths = sandbox();
+    for (const scope of ['global', 'project']) {
+      const base = scope === 'global' ? paths.homeDir : paths.workspaceRoot;
+      const result = installSkill(SKILL, id, paths, scope);
+      assert.equal(result.action, 'created', `${id} ${scope}`);
+      assert.equal(result.path, join(base, ...NATIVE_PATHS[id][scope], 'codebrain', 'SKILL.md'));
+      assert.equal(installSkill(SKILL, id, paths, scope).action, 'unchanged', `${id} ${scope} rerun`);
+    }
 
-  assert.equal(installSkill(SKILL, 'claude', paths, 'global').action, 'unchanged');
-
-  const project = installSkill(SKILL, 'claude', paths, 'project');
-  assert.equal(project.action, 'created');
-  assert.equal(
-    project.path,
-    join(paths.workspaceRoot, '.claude', 'skills', 'codebrain', 'SKILL.md'),
-  );
-
-  // Uninstall with no scope sweeps both.
-  const removed = removeSkill(SKILL, 'claude', paths);
-  assert.equal(removed.action, 'removed');
-  assert.equal(removed.paths.length, 2);
-  assert.equal(existsSync(created.path), false);
-  assert.equal(existsSync(project.path), false);
-  assert.equal(removeSkill(SKILL, 'claude', paths).action, 'not-found');
+    const removed = removeSkill(SKILL, id, paths);
+    assert.equal(removed.action, 'removed', id);
+    for (const path of removed.paths) assert.equal(existsSync(path), false);
+    // The skill's own folder goes with it; the skills directory stays.
+    assert.equal(existsSync(join(paths.homeDir, ...NATIVE_PATHS[id].global, 'codebrain')), false);
+    assert.equal(existsSync(join(paths.homeDir, ...NATIVE_PATHS[id].global)), true);
+    assert.equal(removeSkill(SKILL, id, paths).action, 'not-found', `${id} second removal`);
+  }
 });
 
-test('Codex gets a prompt file, Gemini a TOML command', () => {
+test('Claude Code gets the file verbatim; the others get standard frontmatter only', () => {
+  // Frontmatter and all: Claude Code's skill format is the one we author in.
+  assert.equal(renderSkill('claude', SKILL), `${SOURCE.trim()}\n`);
+
+  for (const id of SKILL_TARGET_IDS.filter((target) => target !== 'claude')) {
+    const rendered = renderSkill(id, SKILL);
+    assert.ok(rendered.startsWith('---\nname: codebrain\ndescription: Use CodeBrain'), id);
+    // Keys a strict loader does not know would get the skill skipped.
+    assert.ok(!rendered.includes('user-invocable'), id);
+    assert.ok(!rendered.includes('argument-hint'), id);
+    assert.ok(rendered.includes('`codegraph_explore`'), id);
+  }
+});
+
+test('a description YAML would misread is quoted', () => {
+  const awkward = parseSkill('---\nname: x\ndescription: Use it: when "tracing"\n---\n\n# X\n\nbody', 'x');
+  const rendered = renderSkill('codex', awkward);
+  assert.ok(rendered.includes('description: "Use it: when \\"tracing\\""'));
+});
+
+test('an install replaces the copy an earlier release wrote at the same scope', () => {
   const paths = sandbox();
+  const prompt = join(paths.homeDir, '.codex', 'prompts', 'codebrain.md');
+  const command = join(paths.workspaceRoot, '.gemini', 'commands', 'codebrain.toml');
+  const geminiMd = join(paths.homeDir, '.gemini', 'GEMINI.md');
+  const copilotMd = join(paths.workspaceRoot, '.github', 'copilot-instructions.md');
+  mkdirSync(join(paths.homeDir, '.codex', 'prompts'), { recursive: true });
+  mkdirSync(join(paths.workspaceRoot, '.gemini', 'commands'), { recursive: true });
+  mkdirSync(join(paths.workspaceRoot, '.github'), { recursive: true });
+  mkdirSync(join(paths.homeDir, '.gemini'), { recursive: true });
+  writeFileSync(prompt, 'old prompt\n');
+  writeFileSync(command, 'prompt = "old"\n');
+  const block = `${SKILL_BLOCK_START}\n## CodeBrain\n\nold\n${SKILL_BLOCK_END}\n`;
+  writeFileSync(geminiMd, `# My instructions\n\n${block}`);
+  writeFileSync(copilotMd, `Team rules.\n\n${block}`);
 
   const codex = installSkill(SKILL, 'codex', paths, 'global');
-  assert.equal(codex.path, join(paths.homeDir, '.codex', 'prompts', 'codebrain.md'));
-  const prompt = read(codex.path);
-  assert.ok(prompt.startsWith(SKILL.description));
-  assert.ok(prompt.includes('codegraph_explore'));
-  // A prompt file is the whole prompt — no frontmatter to leak into it.
-  assert.ok(!prompt.includes('user-invocable'));
+  assert.deepEqual(codex.migrated, [prompt]);
+  assert.equal(existsSync(prompt), false);
 
-  const gemini = installSkill(SKILL, 'gemini', paths, 'global');
-  assert.equal(gemini.path, join(paths.homeDir, '.gemini', 'commands', 'codebrain.toml'));
-  const toml = read(gemini.path);
-  assert.ok(toml.startsWith('description = "Use CodeBrain for fast code understanding."'));
-  // A literal string keeps the backticks and quotes in the body intact.
-  assert.ok(toml.includes("prompt = '''"));
-  assert.ok(toml.includes('`codegraph_explore`'));
+  // A global Gemini install leaves the project's legacy command alone.
+  assert.equal(installSkill(SKILL, 'gemini', paths, 'global').migrated, undefined);
+  assert.equal(existsSync(command), true);
+  assert.deepEqual(installSkill(SKILL, 'gemini', paths, 'project').migrated, [command]);
+  assert.equal(existsSync(command), false);
 
-  assert.equal(installSkill(SKILL, 'gemini', paths, 'global').action, 'unchanged');
-  assert.equal(removeSkill(SKILL, 'gemini', paths).action, 'removed');
-  assert.equal(existsSync(gemini.path), false);
+  // Marked blocks come out; the user's own text stays.
+  installSkill(SKILL, 'antigravity', paths, 'global');
+  assert.equal(read(geminiMd), '# My instructions\n');
+  installSkill(SKILL, 'copilot', paths, 'project');
+  assert.equal(read(copilotMd), 'Team rules.\n');
 });
 
-test('a body containing triple quotes falls back to an escaped TOML string', () => {
-  const awkward = parseSkill("---\nname: x\ndescription: d\n---\n\n# X\n\nhas ''' inside", 'x');
-  const toml = renderSkill('gemini', awkward);
-  assert.ok(toml.includes('prompt = """'));
-  assert.ok(toml.includes("has ''' inside"));
-});
-
-test('Antigravity and Copilot get a marked block that leaves the file alone', () => {
+test('uninstall sweeps legacy copies too', () => {
   const paths = sandbox();
-  const gemini = join(paths.homeDir, '.gemini', 'GEMINI.md');
-  mkdirSync(join(paths.homeDir, '.gemini'), { recursive: true });
-  writeFileSync(gemini, '# My instructions\n\nAlways answer in Vietnamese.\n');
+  const prompt = join(paths.homeDir, '.codex', 'prompts', 'codebrain.md');
+  mkdirSync(join(paths.homeDir, '.codex', 'prompts'), { recursive: true });
+  writeFileSync(prompt, 'old prompt\n');
 
-  const written = installSkill(SKILL, 'antigravity', paths, 'global');
-  assert.equal(written.action, 'updated');
-  assert.equal(written.path, gemini);
-
-  const content = read(gemini);
-  assert.ok(content.startsWith('# My instructions\n\nAlways answer in Vietnamese.'));
-  assert.ok(content.includes(SKILL_BLOCK_START));
-  assert.ok(content.includes(SKILL_BLOCK_END));
-  // The block demotes the skill's own `#` heading so it nests under the file.
-  assert.ok(content.includes('## CodeBrain'));
-  assert.ok(!content.includes('\n# CodeBrain\n'));
-
-  assert.equal(installSkill(SKILL, 'antigravity', paths, 'global').action, 'unchanged');
-
-  const copilot = installSkill(SKILL, 'copilot', paths, 'project');
-  assert.equal(copilot.action, 'created');
-  assert.equal(
-    copilot.path,
-    join(paths.workspaceRoot, '.github', 'copilot-instructions.md'),
-  );
-
-  // Removal takes the block out and leaves the user's own instructions.
-  assert.equal(removeSkill(SKILL, 'antigravity', paths).action, 'removed');
-  assert.equal(read(gemini), '# My instructions\n\nAlways answer in Vietnamese.\n');
-  assert.equal(existsSync(gemini), true);
+  const removed = removeSkill(SKILL, 'codex', paths);
+  assert.equal(removed.action, 'removed');
+  assert.deepEqual(removed.paths, [prompt]);
+  assert.equal(existsSync(prompt), false);
 });
 
-test('an agent with no config at the chosen scope is skipped with a reason', () => {
-  const paths = sandbox();
-
-  for (const id of ['codex', 'antigravity']) {
-    const result = installSkill(SKILL, id, paths, 'project');
-    assert.equal(result.action, 'skipped');
-    assert.match(result.reason, /install it globally/);
-    assert.deepEqual(skillArtifacts(id, SKILL, paths, 'project'), []);
-  }
-
-  const copilot = installSkill(SKILL, 'copilot', paths, 'global');
-  assert.equal(copilot.action, 'skipped');
-  assert.match(copilot.reason, /install it for the workspace/);
-
-  // Project scope with no folder open has nowhere to write.
-  const homeOnly = { homeDir: paths.homeDir };
-  const claude = installSkill(SKILL, 'claude', homeOnly, 'project');
-  assert.equal(claude.action, 'skipped');
-  assert.match(claude.reason, /no folder is open/);
+test('project scope with no folder open has nowhere to write', () => {
+  const homeOnly = { homeDir: sandbox().homeDir };
+  const result = installSkill(SKILL, 'claude', homeOnly, 'project');
+  assert.equal(result.action, 'skipped');
+  assert.match(result.reason, /no folder is open/);
+  assert.deepEqual(skillArtifacts('claude', SKILL, homeOnly, 'project'), []);
 });
 
 // ----------------------------------------------------------------- refresh
@@ -282,4 +267,15 @@ test('an installed skill is detected as stale once the extension ships new text'
 
   // An agent that never opted in is left alone.
   assert.deepEqual(readInstalledSkills(SKILL, 'codex', paths), []);
+});
+
+test('a legacy copy is always stale, so a refresh migrates it', () => {
+  const paths = sandbox();
+  mkdirSync(join(paths.homeDir, '.gemini', 'commands'), { recursive: true });
+  writeFileSync(join(paths.homeDir, '.gemini', 'commands', 'codebrain.toml'), 'prompt = "old"\n');
+
+  const installed = readInstalledSkills(SKILL, 'gemini', paths);
+  assert.equal(installed.length, 1);
+  assert.equal(installed[0].artifact.kind, 'legacy-file');
+  assert.equal(isSkillStale(installed[0], SKILL, 'gemini'), true);
 });

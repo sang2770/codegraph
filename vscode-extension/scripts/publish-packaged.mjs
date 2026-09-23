@@ -1,32 +1,21 @@
 #!/usr/bin/env node
 /**
- * Publish `.vsix` files that were built somewhere else.
+ * Publish a `.vsix` that was built somewhere else — the CI half of
+ * `publish-extension.mjs`: the package job builds and uploads an artifact, and
+ * this verifies it and pushes it.
  *
- * This is the CI half of `publish-extension.mjs`. That script packages and
- * publishes on one machine, which is right for a maintainer's laptop and
- * impossible in CI: each platform's runtime can only be built on its own
- * runner, so the six packages arrive as six separate artifacts and the thing
- * left to do is upload the set.
- *
- * Two properties are carried over from `publish-extension.mjs` deliberately:
- *
- *  - **One `vsce publish` for every target.** Publishing them one at a time
- *    leaves a half-published version on the marketplace if the fourth upload
- *    fails — some users then get a platform package that does not exist.
- *  - **Read the archive back before uploading it.** A `.vsix` carrying the
- *    wrong platform's runtime, or a `node` with no execute bit, installs
- *    cleanly and then fails on every command. Better caught here than by a
- *    user.
+ * The archive is read back before uploading: a package that accidentally
+ * carries a development runtime, or is missing an entry point, installs
+ * cleanly and then misbehaves — better caught here than by a user.
  *
  * Usage:
  *   node scripts/publish-packaged.mjs --dir <dir>              # verify only
  *   node scripts/publish-packaged.mjs --dir <dir> --publish    # verify + push
  *
  * Options:
- *   --dir <path>       Directory holding codebrain-<target>.vsix (required).
- *   --targets <list>   Comma-separated targets (default: every supported one).
+ *   --dir <path>       Directory holding codebrain.vsix (required).
  *   --publish          Upload to the VS Code Marketplace. Needs VSCE_PAT.
- *   --pre-release      Publish as a pre-release (the packages must have been
+ *   --pre-release      Publish as a pre-release (the package must have been
  *                      built with --pre-release too).
  *   --skip-duplicate   Succeed instead of failing when the version already
  *                      exists on the marketplace.
@@ -36,20 +25,17 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { assertTarget, SUPPORTED_TARGETS } from './runtime-target.mjs';
 import { verifyPackage } from './verify-vsix.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const extensionRoot = resolve(scriptDir, '..');
 
 const USAGE =
-  'usage: node scripts/publish-packaged.mjs --dir <dir> [--targets a,b] ' +
-  '[--publish] [--pre-release] [--skip-duplicate]';
+  'usage: node scripts/publish-packaged.mjs --dir <dir> [--publish] [--pre-release] [--skip-duplicate]';
 
 const { values } = parseArgs({
   options: {
     dir: { type: 'string' },
-    targets: { type: 'string' },
     publish: { type: 'boolean', default: false },
     'pre-release': { type: 'boolean', default: false },
     'skip-duplicate': { type: 'boolean', default: false },
@@ -62,10 +48,6 @@ if (!values.dir) {
 }
 
 const packageDirectory = resolve(values.dir);
-const targets = (values.targets ? values.targets.split(',') : SUPPORTED_TARGETS)
-  .map((target) => target.trim())
-  .filter(Boolean)
-  .map(assertTarget);
 
 const manifest = JSON.parse(readFileSync(join(extensionRoot, 'package.json'), 'utf8'));
 const extensionId = `${manifest.publisher}.${manifest.name}`;
@@ -102,26 +84,17 @@ function megabytes(path) {
 
 async function main() {
   console.log(`[publish] ${extensionId} v${manifest.version}`);
-  console.log(`[publish] packages in ${packageDirectory}`);
+  console.log(`[publish] package in ${packageDirectory}`);
 
-  // Every package is located and verified before anything is uploaded: a
-  // missing artifact must not surface halfway through a publish.
-  const packages = [];
-  for (const target of targets) {
-    const vsix = join(packageDirectory, `codebrain-${target}.vsix`);
-    if (!existsSync(vsix)) {
-      throw new Error(
-        `Missing ${vsix}. The ${target} package job did not produce an artifact — ` +
-          'publish the whole set or narrow --targets deliberately.',
-      );
-    }
-    await verifyPackage(vsix, target);
-    console.log(`[publish] ${target}: ok (${megabytes(vsix)})`);
-    packages.push(vsix);
+  const vsix = join(packageDirectory, 'codebrain.vsix');
+  if (!existsSync(vsix)) {
+    throw new Error(`Missing ${vsix}. The package job did not produce an artifact.`);
   }
+  await verifyPackage(vsix);
+  console.log(`[publish] ok (${megabytes(vsix)})`);
 
   if (!values.publish) {
-    console.log(`\n[publish] verified ${packages.length} package(s); nothing was uploaded.`);
+    console.log('\n[publish] verified the package; nothing was uploaded.');
     return;
   }
 
@@ -134,7 +107,8 @@ async function main() {
   run(process.execPath, [
     resolveVsce(),
     'publish',
-    ...packages.flatMap((path) => ['-i', path]),
+    '-i',
+    vsix,
     ...(values['pre-release'] ? ['--pre-release'] : []),
     ...(values['skip-duplicate'] ? ['--skip-duplicate'] : []),
   ]);

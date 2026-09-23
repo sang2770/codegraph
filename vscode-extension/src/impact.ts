@@ -16,7 +16,7 @@ import {
 import {
   codeBrainEnvironment,
   runCodeBrain,
-  RuntimeCommand,
+  CodeBrainRuntime,
 } from './runtime';
 import { activeEditorContext } from './workspace';
 
@@ -411,7 +411,7 @@ function exploreQuery(changedFiles: string[]): string {
 
 export class ImpactAnalysisService {
   public constructor(
-    private readonly runtime: RuntimeCommand,
+    private readonly runtime: CodeBrainRuntime,
     private readonly metrics: MetricsStore,
     private readonly freshness: IndexFreshness,
     private readonly exploreCache = new GraphCache<string>(),
@@ -584,8 +584,8 @@ export class ImpactAnalysisService {
       depthTruncated,
       root: folder.uri.fsPath,
       generatedAt: new Date().toISOString(),
-      runtimeTarget: this.runtime.target,
-      nativeKernel: this.runtime.nativeKernel,
+      runtimeTarget: this.runtime.current()?.target ?? 'unknown',
+      nativeKernel: this.runtime.current()?.nativeKernel ?? false,
       changedFiles,
       affectedTests: affected.affectedTests,
       dependentFiles: affected.dependentFiles,

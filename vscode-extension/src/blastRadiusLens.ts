@@ -5,7 +5,7 @@ import { IndexFreshness } from './indexFreshness';
 import {
   codeBrainEnvironment,
   runCodeBrain,
-  RuntimeCommand,
+  CodeBrainRuntime,
 } from './runtime';
 import { hasIndex, indexedRootForPath } from './workspace';
 
@@ -54,7 +54,7 @@ export class BlastRadiusLensProvider
   public readonly onDidChangeCodeLenses = this.changeEmitter.event;
 
   public constructor(
-    private readonly runtime: RuntimeCommand,
+    private readonly runtime: CodeBrainRuntime,
     private readonly freshness: IndexFreshness,
     private readonly log: (message: string) => void,
   ) {

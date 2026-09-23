@@ -19,6 +19,7 @@ const {
   removeTarget,
   targetConfigFiles,
   targetDisplayName,
+  targetEntry,
   targetWriteFile,
 } = loadTypeScript('agents/mcpTargets.ts');
 
@@ -147,7 +148,7 @@ test('every target is described at both scopes, and only some support project', 
   const project = describeTargets(MCP_SERVER_KEY, 'project');
   assert.deepEqual(
     project.filter((target) => target.supported).map((target) => target.id),
-    ['claude', 'gemini'],
+    ['claude', 'gemini', 'copilot', 'cursor', 'opencode'],
   );
   for (const id of ['codex', 'antigravity']) {
     const target = project.find((entry) => entry.id === id);
@@ -458,4 +459,98 @@ test('an entry is stale only when the command or its arguments moved', () => {
     isEntryStale({ command: GRAPH_ENTRY.command, args: ['serve', '--mcp'] }, GRAPH_ENTRY),
     true,
   );
+});
+
+test('Copilot CLI gets mcp-config.json globally and .github/mcp.json per project', () => {
+  const paths = sandbox();
+
+  const global = install('copilot', ENTRY, paths, 'global');
+  assert.equal(global.path, join(paths.homeDir, '.copilot', 'mcp-config.json'));
+  const entry = JSON.parse(read(global.path)).mcpServers[MCP_SERVER_KEY];
+  // Copilot CLI only exposes the tools an entry lists.
+  assert.deepEqual(entry, { type: 'stdio', ...ENTRY, tools: ['*'] });
+
+  const project = install('copilot', ENTRY, paths, 'project');
+  // Not `./.mcp.json`: that file is the Claude Code target's.
+  assert.equal(project.path, join(paths.workspaceRoot, '.github', 'mcp.json'));
+  assert.equal(install('copilot', ENTRY, paths, 'project').action, 'unchanged');
+
+  assert.equal(installedEntries('copilot', paths).length, 2);
+  assert.equal(uninstall('copilot', paths).action, 'removed');
+  assert.deepEqual(installedEntries('copilot', paths), []);
+});
+
+test('Cursor entries carry --path, because Cursor launches servers from the wrong cwd', () => {
+  const paths = sandbox();
+
+  const global = install('cursor', ENTRY, paths, 'global');
+  assert.equal(global.path, join(paths.homeDir, '.cursor', 'mcp.json'));
+  const globalEntry = JSON.parse(read(global.path)).mcpServers[MCP_SERVER_KEY];
+  assert.equal(globalEntry.type, 'stdio');
+  assert.deepEqual(globalEntry.args, [...ENTRY.args, '--path', '${workspaceFolder}']);
+
+  const project = install('cursor', ENTRY, paths, 'project');
+  assert.equal(project.path, join(paths.workspaceRoot, '.cursor', 'mcp.json'));
+  assert.deepEqual(
+    JSON.parse(read(project.path)).mcpServers[MCP_SERVER_KEY].args,
+    [...ENTRY.args, '--path', paths.workspaceRoot],
+  );
+
+  // The refresh pass compares against the stored shape, so --path alone must
+  // never make an entry look stale.
+  for (const { file, entry } of installedEntries('cursor', paths)) {
+    assert.equal(isEntryStale(entry, targetEntry('cursor', ENTRY, paths, file.scope)), false);
+    assert.equal(isEntryStale(entry, ENTRY), true);
+  }
+  assert.deepEqual(targetEntry('claude', ENTRY, paths, 'project'), ENTRY);
+});
+
+test('opencode is edited in place, keeping the comments in opencode.jsonc', () => {
+  const paths = sandbox();
+  const directory = join(paths.homeDir, '.config', 'opencode');
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, 'opencode.jsonc');
+  writeFileSync(file, '{\n  // my theme\n  "theme": "dark",\n}\n');
+
+  const result = install('opencode', { ...ENTRY, env: { A: '1' } }, paths, 'global');
+  assert.equal(result.action, 'updated');
+  assert.equal(result.path, file);
+  const text = read(file);
+  assert.ok(text.includes('// my theme'), 'comment survives');
+  assert.ok(text.includes('"theme": "dark"'));
+  assert.equal(install('opencode', { ...ENTRY, env: { A: '1' } }, paths, 'global').action, 'unchanged');
+
+  assert.deepEqual(soleEntry('opencode', paths), { command: ENTRY.command, args: ENTRY.args });
+
+  assert.equal(uninstall('opencode', paths).action, 'removed');
+  const after = read(file);
+  assert.ok(after.includes('// my theme'));
+  assert.ok(!after.includes(MCP_SERVER_KEY));
+  // The `mcp` section was ours alone, so it goes too.
+  assert.ok(!after.includes('"mcp"'));
+});
+
+test('opencode uses an existing opencode.json and creates .jsonc for a new project', () => {
+  const paths = sandbox();
+  writeFileSync(join(paths.workspaceRoot, 'opencode.json'), '{"model": "x"}\n');
+  assert.equal(install('opencode', ENTRY, paths, 'project').path, join(paths.workspaceRoot, 'opencode.json'));
+
+  const fresh = sandbox();
+  const created = install('opencode', ENTRY, fresh, 'project');
+  assert.equal(created.action, 'created');
+  assert.equal(created.path, join(fresh.workspaceRoot, 'opencode.jsonc'));
+  const config = JSON.parse(read(created.path));
+  assert.deepEqual(config.mcp[MCP_SERVER_KEY], {
+    type: 'local',
+    command: [ENTRY.command, ...ENTRY.args],
+    enabled: true,
+  });
+});
+
+test('a broken opencode.jsonc is refused rather than rebuilt without its comments', () => {
+  const paths = sandbox();
+  const file = join(paths.workspaceRoot, 'opencode.jsonc');
+  writeFileSync(file, '{ "theme": ');
+  assert.throws(() => install('opencode', ENTRY, paths, 'project'), /not valid JSON/);
+  assert.equal(read(file), '{ "theme": ');
 });

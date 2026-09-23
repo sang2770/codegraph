@@ -8,11 +8,11 @@ Everything runs locally. No source code leaves your machine; only the prompts yo
 
 ### 1. Install
 
-CodeBrain ships as a platform-specific `.vsix` containing a bundled Node.js runtime and a native Rust kernel. **You do not need Node.js or any CLI installed.**
+CodeBrain ships as one small `.vsix` for every OS. The CodeGraph runtime — a self-contained Node.js, the indexer and MCP server, and the native Rust kernel — comes from npm as `@xuansang2770/codegraph`, and CodeBrain installs and updates it for you. **You do not need Node.js or any CLI installed.**
 
-1. Command Palette (`Ctrl+Shift+P`) → **Extensions: Install from VSIX...**
-2. Pick the file matching your OS and architecture: `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`, `win32-arm64`, `win32-x64`
-3. Reload VS Code when prompted
+1. Command Palette (`Ctrl+Shift+P`) → **Extensions: Install from VSIX...** → `codebrain-<version>.vsix`
+2. Reload VS Code when prompted
+3. On first start CodeBrain downloads the runtime for your platform (about 100 MB, once). After that it updates in the background — **CodeBrain: Update CodeGraph Runtime** checks now. Behind a corporate mirror set `codebrain.runtime.registry`; on an offline machine point `codebrain.runtime.path` at an unpacked `@xuansang2770/codegraph-<platform>` package
 
 ### 2. Index your repository
 
@@ -154,7 +154,7 @@ The **CodeBrain Reviewer** custom agent in VS Code Chat has CodeBrain's graph to
 
 Two things make CodeBrain useful to an AI agent: the **MCP server**, which gives it the graph tools, and the **skill**, which tells it when and how to use them.
 
-Inside VS Code, GitHub Copilot gets both from the extension automatically. Every other agent reads its own configuration files, so run **CodeBrain: Install CodeBrain for Agents (Claude, Codex, Gemini…)**, choose a scope, choose what to install, tick the agents you use, and restart them.
+Inside VS Code, GitHub Copilot gets both from the extension automatically. Every other agent reads its own configuration files, so run **CodeBrain: Install MCP + Skill for Agents (Claude, Codex, Gemini, Antigravity, Copilot…)**, choose a scope, choose what to install, tick the agents you use, and restart them.
 
 **MCP server**
 
@@ -164,24 +164,29 @@ Inside VS Code, GitHub Copilot gets both from the extension automatically. Every
 | Codex CLI | `~/.codex/config.toml` | — |
 | Gemini CLI | `~/.gemini/settings.json` | `<workspace>/.gemini/settings.json` |
 | Antigravity | `~/.gemini/config/mcp_config.json` | — |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `<workspace>/.github/mcp.json` |
+| Cursor | `~/.cursor/mcp.json` (with `--path ${workspaceFolder}`) | `<workspace>/.cursor/mcp.json` |
+| opencode | `~/.config/opencode/opencode.jsonc` | `<workspace>/opencode.jsonc` |
 
-**Skill** — installed through each agent's own mechanism wherever it has one, because a skill or slash command is loaded only when it is relevant, while an instructions file is loaded into every request:
+**Skill** — a native Agent Skill (`codebrain/SKILL.md`) for every agent, loaded only when a request matches it:
 
-| Agent | Mechanism | Global | This workspace only |
-|---|---|---|---|
-| Claude Code | skill | `~/.claude/skills/codebrain/SKILL.md` | `<workspace>/.claude/skills/codebrain/SKILL.md` |
-| Codex CLI | prompt — run `/codebrain` | `~/.codex/prompts/codebrain.md` | — |
-| Gemini CLI | command — run `/codebrain` | `~/.gemini/commands/codebrain.toml` | `<workspace>/.gemini/commands/codebrain.toml` |
-| Antigravity | instructions section | `~/.gemini/GEMINI.md` | — |
-| GitHub Copilot | instructions section | — | `<workspace>/.github/copilot-instructions.md` |
+| Agent | Global | This workspace only |
+|---|---|---|
+| Claude Code | `~/.claude/skills/codebrain/` | `<workspace>/.claude/skills/codebrain/` |
+| Codex CLI | `~/.agents/skills/codebrain/` | `<workspace>/.agents/skills/codebrain/` |
+| Gemini CLI | `~/.gemini/skills/codebrain/` | `<workspace>/.gemini/skills/codebrain/` |
+| Antigravity | `~/.gemini/config/skills/codebrain/` | `<workspace>/.agents/skills/codebrain/` |
+| GitHub Copilot | `~/.copilot/skills/codebrain/` | `<workspace>/.github/skills/codebrain/` |
+| Cursor | `~/.cursor/skills/codebrain/` | `<workspace>/.cursor/skills/codebrain/` |
+| opencode | `~/.config/opencode/skills/codebrain/` | `<workspace>/.opencode/skills/codebrain/` |
 
-Every agent is given the same text, so there is no second copy to drift. The instructions-file sections are wrapped in `<!-- CODEBRAIN_SKILL_START -->` / `<!-- CODEBRAIN_SKILL_END -->` markers: anything you wrote around them is preserved, and uninstalling removes only the marked section.
+Every agent is given the same text, so there is no second copy to drift: when to use `codegraph_explore` instead of grep and file reads, and how to query it. Older installs (a Codex prompt, a Gemini command, a marked section in `GEMINI.md` or `copilot-instructions.md`) are replaced by the native skill automatically, keeping anything you wrote around them.
 
-**Which scope?** Global is usually what you want: the MCP entry carries no workspace path, so each agent starts the server in whatever folder you are working in and CodeBrain answers from the nearest indexed project — one installation covers every repository you open. Pick the workspace scope when it should travel with the repository (`.mcp.json` and the skill files hold no tokens, so they are safe to commit). Codex CLI and Antigravity have no project-scoped configuration and are only offered globally; Copilot's instructions file belongs to a repository and is only offered for the workspace.
+**Which scope?** Global is usually what you want: the MCP entry carries no workspace path, so each agent starts the server in whatever folder you are working in and CodeBrain answers from the nearest indexed project — one installation covers every repository you open. Pick the workspace scope when it should travel with the repository (`.mcp.json` and the skill files hold no tokens, so they are safe to commit). Codex CLI and Antigravity have no project-scoped MCP configuration, so their server entry is only offered globally; the skill works at both scopes for every agent.
 
-Every MCP entry points at the extension's own bundled runtime — no Node.js install, no `npm i -g`, and no PATH surprises when an agent is launched from a GUI. A repository with no `.codegraph/` simply reports that it is not indexed; run **CodeBrain: Initialize Workspace** there.
+Every MCP entry runs the CodeGraph runtime CodeBrain installed, with its own Node — no `npm i -g`, and no PATH surprises when an agent is launched from a GUI. A repository with no `.codegraph/` simply reports that it is not indexed; run **CodeBrain: Initialize Workspace** there.
 
-Extension updates move the bundled runtime's path and can change the skill text. CodeBrain rewrites what it already owns on the next activation, at whichever scope you installed it, so a registered agent keeps working across upgrades. **CodeBrain: Uninstall CodeBrain from Agents** sweeps both scopes and both halves.
+Each runtime version lives in its own folder, and extension updates can change the skill text. CodeBrain rewrites what it already owns after every update and on each start, at whichever scope you installed it, so a registered agent keeps working across upgrades. **CodeBrain: Uninstall CodeBrain from Agents** sweeps both scopes and both halves.
 
 **Restart the agent after installing** — MCP servers are only read at startup.
 
@@ -251,7 +256,8 @@ Seven read tools: `confluence_search`, `confluence_get_page`, `confluence_get_pa
 | CodeBrain: Generate Commit Message | Write the commit message |
 | CodeBrain: Choose Commit Message Format | Pick the commit style |
 | CodeBrain: Customize Commit Message Template | Edit the repository's template |
-| CodeBrain: Install / Uninstall CodeBrain for Agents | MCP server + skill for other agents |
+| CodeBrain: Update CodeGraph Runtime | Check npm for a newer runtime now |
+| CodeBrain: Install MCP + Skill for Agents / Uninstall CodeBrain from Agents | MCP server + skill for other agents |
 | CodeBrain: Configure Atlassian (Collab + Jira) | Connection settings |
 | CodeBrain: Test Atlassian Connection | Verify access |
 | CodeBrain: Register / Unregister Atlassian MCP with Agents | Atlassian server for other agents |
@@ -266,7 +272,7 @@ Seven read tools: `confluence_search`, `confluence_get_page`, `confluence_get_pa
 
 ## Requirements and limitations
 
-- **VS Code 1.100 or newer.** No Node.js or external CLI needed — the runtime is bundled
+- **VS Code 1.100 or newer.** No Node.js or external CLI needed — the runtime is installed from npm on first start (network access to the registry, or a `codebrain.runtime.registry` mirror, is needed once)
 - **A filesystem-backed workspace.** Virtual and untrusted workspaces are not supported: CodeBrain runs a local binary and reads workspace files
 - **Chat, review, commit messages and other AI commands need a language model** available through the VS Code Language Model API. Indexing, the workflow graph, affected-test detection, the dashboard and export do not
 - **A language the parsers do not support is absent from the graph**, so any analysis that should have crossed it is incomplete. Check **Show Index Status** for coverage gaps
@@ -279,9 +285,10 @@ Seven read tools: `confluence_search`, `confluence_get_page`, `confluence_get_pa
 | Impact analysis looks incomplete | Open **Show Index Status** and look for coverage gaps and tracked-only files. Raise `codebrain.impact.maxDepth` if counts are reported as `≥ N` |
 | No AI model available | Sign in to a model provider, or run **CodeBrain: Choose AI Model** |
 | Commit message is not in the format you expect | Check **Choose Commit Message Format**, and whether a `.codebrain/commit-template.md` in the repository is overriding it |
-| CodeBrain tools missing in Claude Code / Codex / Gemini / Antigravity | Run **Install CodeBrain for Agents** and restart the agent — MCP servers are only read at startup. A workspace-scoped install applies only to that folder |
+| Runtime install failed | Pick **Retry**, or set `codebrain.runtime.registry` (mirror / proxy) or `codebrain.runtime.path` (offline). Details are in the CodeBrain output channel |
+| CodeBrain tools missing in Claude Code / Codex / Gemini / Antigravity / Copilot CLI / Cursor / opencode | Run **Install MCP + Skill for Agents** and restart the agent — MCP servers are only read at startup. A workspace-scoped install applies only to that folder |
 | Atlassian tools missing in Copilot | The server only appears once a product is fully configured — both a base URL and a token. Run **Configure Atlassian**, then **Test Atlassian Connection** |
 | Token rejected (401) | Server/DC tokens authenticate as bearer and need no username. Cloud API tokens need the account email in `codebrain.atlassian.username` |
 | Confluence returns 404 for everything | A Confluence Cloud URL must include the `/wiki` context path |
 | Atlassian host behind a private CA | Set `codebrain.atlassian.sslVerify` to `false`, or export `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false` for agents launched outside VS Code |
-| `permission denied` running the runtime (Linux/macOS) | CodeBrain repairs the execute bit itself at startup. If the extension folder is read-only, the error message names the exact `chmod` command to run |
+| `permission denied` running the runtime (Linux/macOS) | CodeBrain repairs the execute bit itself at startup. If the runtime folder is read-only, the error message names the exact `chmod` command to run |

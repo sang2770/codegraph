@@ -13,13 +13,13 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadTypeScript } from './helpers/load.mjs';
 
-const { ensureRuntimeExecutable, locateRuntime } = loadTypeScript('runtime.ts');
+const { describeRuntime, ensureRuntimeExecutable } = loadTypeScript('runtime.ts');
 
 const posixOnly = { skip: process.platform === 'win32' };
 
 /**
- * A runtime tree shaped like the one the `.vsix` ships, staged with the modes a
- * host that dropped unix file permissions would leave behind.
+ * A runtime tree shaped like the `@xuansang2770/codegraph-<target>` package,
+ * staged with the modes a copy that dropped unix file permissions leaves behind.
  */
 function withRuntime(mode, run) {
   const root = mkdtempSync(join(tmpdir(), 'codebrain-runtime-'));
@@ -76,9 +76,9 @@ test('a missing launcher is not a permission problem', posixOnly, () => {
   });
 });
 
-test('locating the runtime repairs it on the way', posixOnly, () => {
-  withRuntime(0o644, (target, root) => {
-    const runtime = locateRuntime({ fsPath: root });
+test('describing the runtime repairs it on the way', posixOnly, () => {
+  withRuntime(0o644, (target) => {
+    const runtime = describeRuntime(target);
 
     assert.equal(runtime.command, join(target, 'node'));
     assert.deepEqual(runtime.repairedExecutables, [

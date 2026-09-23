@@ -7,12 +7,15 @@
  * config file, so this module writes one entry per agent, at the scope the
  * user picked:
  *
- *   | Agent       | Global                             | Project                      |
- *   |-------------|------------------------------------|------------------------------|
- *   | Claude Code | `~/.claude.json`                   | `<workspace>/.mcp.json`      |
- *   | Codex CLI   | `~/.codex/config.toml`             | — (no project config)        |
- *   | Gemini CLI  | `~/.gemini/settings.json`          | `<workspace>/.gemini/…json`  |
- *   | Antigravity | `~/.gemini/config/mcp_config.json` | — (no project config)        |
+ *   | Agent       | Global                              | Project                        |
+ *   |-------------|-------------------------------------|--------------------------------|
+ *   | Claude Code | `~/.claude.json`                    | `<workspace>/.mcp.json`        |
+ *   | Codex CLI   | `~/.codex/config.toml`              | — (no project config)          |
+ *   | Gemini CLI  | `~/.gemini/settings.json`           | `<workspace>/.gemini/…json`    |
+ *   | Antigravity | `~/.gemini/config/mcp_config.json`  | — (no project config)          |
+ *   | Copilot CLI | `~/.copilot/mcp-config.json`        | `<workspace>/.github/mcp.json` |
+ *   | Cursor      | `~/.cursor/mcp.json`                | `<workspace>/.cursor/mcp.json` |
+ *   | opencode    | `~/.config/opencode/opencode.jsonc` | `<workspace>/opencode.jsonc`   |
  *
  * Codex and Antigravity genuinely have no project-scoped MCP config, so asking
  * for one is reported as `skipped` with a reason rather than written somewhere
@@ -48,9 +51,17 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { applyEdits, modify, parse as parseJsonc, ParseError } from 'jsonc-parser';
 import { buildTomlTable, removeTomlTable, upsertTomlTable } from './toml';
 
-export type AgentTargetId = 'claude' | 'codex' | 'gemini' | 'antigravity';
+export type AgentTargetId =
+  | 'claude'
+  | 'codex'
+  | 'gemini'
+  | 'antigravity'
+  | 'copilot'
+  | 'cursor'
+  | 'opencode';
 
 /** `global` = every project on this machine; `project` = this workspace only. */
 export type McpScope = 'global' | 'project';
@@ -73,7 +84,8 @@ export type WriteAction = 'created' | 'updated' | 'unchanged' | 'skipped';
 export interface TargetConfigFile {
   path: string;
   scope: McpScope;
-  format: 'json' | 'toml';
+  /** `jsonc` is opencode's config: `mcp.<key>`, edited so user comments survive. */
+  format: 'json' | 'toml' | 'jsonc';
 }
 
 export interface TargetWriteResult {
@@ -108,6 +120,9 @@ export const AGENT_TARGET_IDS: readonly AgentTargetId[] = [
   'codex',
   'gemini',
   'antigravity',
+  'copilot',
+  'cursor',
+  'opencode',
 ];
 
 export const MCP_SCOPES: readonly McpScope[] = ['global', 'project'];
@@ -115,7 +130,7 @@ export const MCP_SCOPES: readonly McpScope[] = ['global', 'project'];
 /** Agents whose only config is user-wide — asking for project scope is a no-op. */
 function supportsScope(id: AgentTargetId, scope: McpScope): boolean {
   if (scope === 'global') return true;
-  return id === 'claude' || id === 'gemini';
+  return id !== 'codex' && id !== 'antigravity';
 }
 
 /**
@@ -168,6 +183,33 @@ export function describeTargets(
           supported: true,
         }
       : unsupported('antigravity', 'Antigravity'),
+    {
+      id: 'copilot',
+      displayName: 'GitHub Copilot CLI',
+      detail:
+        scope === 'global'
+          ? '~/.copilot/mcp-config.json — mcpServers'
+          : '<workspace>/.github/mcp.json — mcpServers',
+      supported: true,
+    },
+    {
+      id: 'cursor',
+      displayName: 'Cursor',
+      detail:
+        scope === 'global'
+          ? '~/.cursor/mcp.json — mcpServers, pinned to ${workspaceFolder}'
+          : '<workspace>/.cursor/mcp.json — mcpServers',
+      supported: true,
+    },
+    {
+      id: 'opencode',
+      displayName: 'opencode',
+      detail:
+        scope === 'global'
+          ? '~/.config/opencode/opencode.jsonc — mcp (comments kept)'
+          : '<workspace>/opencode.jsonc — mcp (comments kept)',
+      supported: true,
+    },
   ];
 }
 
@@ -258,9 +300,69 @@ export function targetConfigFiles(
         },
       );
       break;
+    case 'copilot':
+      // Project scope uses `.github/mcp.json` rather than `./.mcp.json`, which
+      // Copilot CLI also reads: that file belongs to the Claude Code target,
+      // and two targets sharing one entry means removing either breaks both.
+      files.push({
+        path: join(paths.homeDir, '.copilot', 'mcp-config.json'),
+        scope: 'global',
+        format: 'json',
+      });
+      if (paths.workspaceRoot) project(join(paths.workspaceRoot, '.github', 'mcp.json'));
+      break;
+    case 'cursor':
+      files.push({ path: join(paths.homeDir, '.cursor', 'mcp.json'), scope: 'global', format: 'json' });
+      if (paths.workspaceRoot) project(join(paths.workspaceRoot, '.cursor', 'mcp.json'));
+      break;
+    case 'opencode':
+      files.push({
+        path: opencodeConfigPath(join(paths.homeDir, '.config', 'opencode')),
+        scope: 'global',
+        format: 'jsonc',
+      });
+      if (paths.workspaceRoot) {
+        files.push({
+          path: opencodeConfigPath(paths.workspaceRoot),
+          scope: 'project',
+          format: 'jsonc',
+        });
+      }
+      break;
   }
 
   return scope ? files.filter((file) => file.scope === scope) : files;
+}
+
+/**
+ * opencode reads `opencode.jsonc` or `opencode.json`. Edit whichever already
+ * exists — `.jsonc` first, which is what opencode itself creates — and create
+ * `.jsonc` when neither does.
+ */
+export function opencodeConfigPath(directory: string): string {
+  const jsonc = join(directory, 'opencode.jsonc');
+  const json = join(directory, 'opencode.json');
+  if (existsSync(jsonc)) return jsonc;
+  if (existsSync(json)) return json;
+  return jsonc;
+}
+
+/**
+ * The entry exactly as this target stores it.
+ *
+ * Cursor launches MCP servers from the wrong working directory and never tells
+ * the server its workspace, so its entry carries `--path`: the absolute folder
+ * at project scope, and Cursor's own `${workspaceFolder}` variable globally.
+ */
+export function targetEntry(
+  id: AgentTargetId,
+  entry: McpServerEntry,
+  paths: TargetPaths,
+  scope: McpScope,
+): McpServerEntry {
+  if (id !== 'cursor') return entry;
+  const folder = scope === 'project' && paths.workspaceRoot ? paths.workspaceRoot : '${workspaceFolder}';
+  return { ...entry, args: [...entry.args, '--path', folder] };
 }
 
 /** The single file an install writes, or `undefined` when there is none. */
@@ -329,12 +431,32 @@ export function installTarget(
     };
   }
 
-  // Claude Code accepts (and its own docs use) the explicit stdio type.
-  // Antigravity, by contrast, rejects entries carrying it — the servers it
-  // manages itself omit the field, and including it keeps the server out of its
-  // Customizations UI. Gemini's schema has no `type` either, and no `trust`
-  // means it keeps asking before running a tool, which stays the user's call.
-  const payload = id === 'claude' ? { type: 'stdio', ...entry } : { ...entry };
+  const stored = targetEntry(id, entry, paths, scope);
+
+  if (file.format === 'jsonc') {
+    // opencode's own shape: one `command` array, `environment` for env.
+    const payload: Record<string, unknown> = {
+      type: 'local',
+      command: [stored.command, ...stored.args],
+      enabled: true,
+      ...(stored.env && Object.keys(stored.env).length > 0 ? { environment: stored.env } : {}),
+    };
+    const action = upsertJsoncEntry(file.path, ['mcp', serverKey], payload);
+    return { target: id, displayName, scope, action, path: file.path };
+  }
+
+  // Claude Code, Copilot CLI and Cursor accept (and document) the explicit
+  // stdio type. Antigravity, by contrast, rejects entries carrying it — the
+  // servers it manages itself omit the field, and including it keeps the
+  // server out of its Customizations UI. Gemini's schema has no `type` either,
+  // and no `trust` means it keeps asking before running a tool, which stays
+  // the user's call. Copilot CLI only exposes the tools an entry lists.
+  const payload =
+    id === 'claude' || id === 'cursor'
+      ? { type: 'stdio', ...stored }
+      : id === 'copilot'
+        ? { type: 'stdio', ...stored, tools: ['*'] }
+        : { ...stored };
   const action = upsertJsonEntry(file.path, 'mcpServers', serverKey, payload);
   return { target: id, displayName, scope, action, path: file.path };
 }
@@ -381,6 +503,8 @@ export function removeTarget(
         );
         touched.push(file.path);
       }
+    } else if (file.format === 'jsonc') {
+      if (removeJsoncEntry(file.path, ['mcp', serverKey])) touched.push(file.path);
     } else if (removeJsonEntry(file.path, 'mcpServers', serverKey)) {
       touched.push(file.path);
     }
@@ -429,6 +553,18 @@ export function readInstalledEntries(
           ),
         },
       });
+      continue;
+    }
+
+    if (file.format === 'jsonc') {
+      const mcp = readJsoncFile(file.path).mcp as Record<string, { command?: unknown }> | undefined;
+      const command = mcp?.[serverKey]?.command;
+      if (Array.isArray(command) && command.length > 0) {
+        found.push({
+          file,
+          entry: { command: String(command[0]), args: command.slice(1).map(String) },
+        });
+      }
       continue;
     }
 
@@ -489,6 +625,68 @@ function upsertJsonEntry(
   config[section] = { ...servers, [serverKey]: entry };
   writeTextFileAtomic(path, `${JSON.stringify(config, null, 2)}\n`);
   return existed ? 'updated' : 'created';
+}
+
+const JSONC_FORMATTING = { tabSize: 2, insertSpaces: true, eol: '\n' };
+
+function readJsoncFile(path: string): Record<string, unknown> {
+  const raw = readTextFile(path);
+  if (!raw.trim()) return {};
+  const errors: ParseError[] = [];
+  const parsed = parseJsonc(raw, errors, { allowTrailingComma: true }) as unknown;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Set one value in a JSONC file with a surgical text edit, so the user's
+ * comments and formatting around it survive. A file that does not parse is
+ * left alone rather than rebuilt: unlike `readJsonFile`'s backup-and-replace,
+ * there is no way to rebuild a commented config without losing the comments.
+ */
+function upsertJsoncEntry(path: string, keyPath: string[], value: unknown): WriteAction {
+  const existed = existsSync(path);
+  const raw = readTextFile(path);
+  const errors: ParseError[] = [];
+  const parsed = raw.trim() ? (parseJsonc(raw, errors, { allowTrailingComma: true }) as unknown) : {};
+  if (errors.length > 0 || !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${path} is not valid JSON with comments; fix it and try again.`);
+  }
+
+  let current: unknown = parsed;
+  for (const key of keyPath) {
+    current = current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined;
+  }
+  if (deepEqual(current, value)) return 'unchanged';
+
+  const base = raw.trim() ? raw : '{}\n';
+  const edits = modify(base, keyPath, value, { formattingOptions: JSONC_FORMATTING });
+  writeTextFileAtomic(path, applyEdits(base, edits));
+  return existed ? 'updated' : 'created';
+}
+
+function removeJsoncEntry(path: string, keyPath: string[]): boolean {
+  const raw = readTextFile(path);
+  const parsed = readJsoncFile(path);
+  const parent = keyPath
+    .slice(0, -1)
+    .reduce<unknown>((node, key) => (node && typeof node === 'object' ? (node as Record<string, unknown>)[key] : undefined), parsed);
+  const leaf = keyPath[keyPath.length - 1] ?? '';
+  if (!parent || typeof parent !== 'object' || !(leaf in parent)) return false;
+
+  let next = applyEdits(raw, modify(raw, keyPath, undefined, { formattingOptions: JSONC_FORMATTING }));
+  // Drop the section too once it is empty — ours to remove, since we added it.
+  const section = keyPath.slice(0, -1);
+  const remaining = section.reduce<unknown>(
+    (node, key) => (node && typeof node === 'object' ? (node as Record<string, unknown>)[key] : undefined),
+    parseJsonc(next, [], { allowTrailingComma: true }) as unknown,
+  );
+  if (section.length > 0 && remaining && typeof remaining === 'object' && Object.keys(remaining).length === 0) {
+    next = applyEdits(next, modify(next, section, undefined, { formattingOptions: JSONC_FORMATTING }));
+  }
+  writeTextFileAtomic(path, next);
+  return true;
 }
 
 function removeJsonEntry(path: string, section: string, serverKey: string): boolean {

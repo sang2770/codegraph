@@ -7,9 +7,18 @@ user-invocable: true
 
 # CodeBrain
 
-Use the `codegraph_explore` MCP tool before grep, repository-wide search, or opening a chain of source files when the project has a `.codegraph/` index.
+Use the `codegraph_explore` MCP tool (from the `codebrain` MCP server) before grep, repository-wide search, or opening a chain of source files when the project has a `.codegraph/` index.
 
 One focused query should name the question, relevant symbols, file paths, or workflow endpoints. Treat returned line-numbered source as already read. It also includes call paths and a blast-radius summary.
+
+## How to query the MCP tool
+
+- **Name the symbols that span the flow.** A bag of names — `Class.method`, function names, file paths — beats a vague sentence: `OrderService.submit PaymentGateway.charge` returns both bodies plus the call path between them, including callback and event hops grep cannot follow.
+- **One call first, then narrow.** Most questions need one call. If something is missing, call `codegraph_explore` again with the more specific names it surfaced — do not switch to Read or grep for indexed code, and do not re-verify its results with grep.
+- **Editing is safe from its output.** The returned source is the current, line-numbered file content; edit from it directly.
+- **Several projects or a monorepo:** pass `projectPath` pointing at the project (or any folder inside it) whose `.codegraph/` should answer.
+- **Staleness banner:** when a response starts with "⚠️ Some files referenced below were edited since the last index sync", read only the files it lists; everything else is fresh.
+- **Not indexed:** if the tool reports no `.codegraph/` for a project, stop calling it for that project and use normal tools there. Indexing is the user's choice — suggest **CodeBrain: Initialize Workspace** in VS Code (or `codegraph init`), never run it yourself.
 
 For explanations:
 
@@ -29,4 +38,4 @@ For reviews:
 4. Treat changes to shared contracts, persistence, authentication, concurrency, lifecycle, or broad fan-out code as high risk until tests prove otherwise.
 5. Review only. Do not edit code unless the user separately asks for a fix.
 
-If no `.codegraph/` index exists, explain that the workspace must be initialized and use normal editor tools for the current request.
+If the `codegraph_explore` tool is not available at all, the MCP server is not registered for this agent — tell the user to run **CodeBrain: Install MCP + Skill for Agents** in VS Code, then answer with normal tools.

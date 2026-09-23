@@ -6,6 +6,6 @@ tmp/**
 tsconfig.json
 package-lock.json
 DEVELOPMENT.md
-runtime/**/*.map
 **/*.tsbuildinfo
 *.vsix
+runtime/**

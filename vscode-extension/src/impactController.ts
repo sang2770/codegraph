@@ -10,7 +10,7 @@ import { IndexFreshness } from './indexFreshness';
 import { detectResponseLanguage } from './language';
 import { MetricsStore } from './metrics';
 import { ReportManager } from './reportManager';
-import { RuntimeCommand } from './runtime';
+import { CodeBrainRuntime } from './runtime';
 import { getWorkspaceFolder, hasIndex } from './workspace';
 
 export class ImpactController implements vscode.Disposable {
@@ -20,7 +20,7 @@ export class ImpactController implements vscode.Disposable {
 
   public constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly runtime: RuntimeCommand,
+    private readonly runtime: CodeBrainRuntime,
     private readonly metrics: MetricsStore,
     private readonly reports: ReportManager,
     freshness: IndexFreshness,
@@ -127,7 +127,7 @@ export class ImpactController implements vscode.Disposable {
         this.context.extensionUri,
         analysis,
         this.metrics.snapshot(),
-        this.runtime.nativeKernel,
+        this.runtime.current()?.nativeKernel ?? false,
       );
       return analysis;
     } catch (error) {
@@ -144,7 +144,7 @@ export class ImpactController implements vscode.Disposable {
       this.context.extensionUri,
       this.latest,
       this.metrics.snapshot(),
-      this.runtime.nativeKernel,
+      this.runtime.current()?.nativeKernel ?? false,
     );
   }
 
@@ -153,7 +153,7 @@ export class ImpactController implements vscode.Disposable {
       this.context.extensionUri,
       this.latest,
       this.metrics.snapshot(),
-      this.runtime.nativeKernel,
+      this.runtime.current()?.nativeKernel ?? false,
     );
   }
 

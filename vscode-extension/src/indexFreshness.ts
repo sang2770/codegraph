@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import {
   codeBrainEnvironment,
   runCodeBrain,
-  RuntimeCommand,
+  CodeBrainRuntime,
 } from './runtime';
 import { INDEX_DIRECTORY } from './workspace';
 
@@ -79,7 +79,7 @@ export class IndexFreshness implements vscode.Disposable {
   public readonly onDidChangeProject = this.onDidChangeEmitter.event;
 
   public constructor(
-    private readonly runtime: RuntimeCommand,
+    private readonly runtime: CodeBrainRuntime,
     private readonly log: (message: string) => void,
   ) {
     const watcher = vscode.workspace.createFileSystemWatcher('**/*');

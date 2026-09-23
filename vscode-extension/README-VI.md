@@ -11,24 +11,19 @@ CodeBrain giúp AI hiểu source code bằng semantic graph thay vì phải tìm
    - macOS: `Cmd + Shift + P`
    - Windows/Linux: `Ctrl + Shift + P`
 3. Chạy lệnh **Extensions: Install from VSIX...**
-4. Chọn file phù hợp với máy, ví dụ:
-
-```text
-codebrain-darwin-arm64.vsix
-```
-
+4. Chọn file `codebrain-<version>.vsix` — **một file duy nhất cho mọi hệ điều hành** (hoặc cài từ Marketplace).
 5. Reload VS Code khi được yêu cầu.
 
-Mỗi VSIX chỉ chứa runtime của một nền tảng:
+### Runtime CodeGraph được cài và cập nhật tự động
 
-- `darwin-arm64`: macOS Apple Silicon
-- `darwin-x64`: macOS Intel
-- `linux-arm64`
-- `linux-x64`
-- `win32-arm64`
-- `win32-x64`
+Extension không còn đóng gói runtime bên trong VSIX. Runtime (Node.js riêng, indexer, MCP server và native Rust kernel) được phát hành trên npm với tên [`@xuansang2770/codegraph`](https://www.npmjs.com/package/@xuansang2770/codegraph):
 
-Extension đã đóng gói sẵn Node.js, CodeBrain runtime và native Rust kernel. Người dùng không cần cài Node.js hoặc CLI riêng.
+- Lần khởi động đầu, CodeBrain tự tải runtime đúng nền tảng (macOS / Linux / Windows, x64 / arm64 — khoảng 100 MB, chỉ một lần) vào thư mục lưu trữ riêng của extension; có thông báo tiến trình.
+- Sau đó CodeBrain kiểm tra npm ở chế độ nền và tự chuyển sang bản mới, không cần reload. Các agent đã đăng ký được trỏ sang bản mới tự động (restart agent để nhận bản mới).
+- Máy có `npm`: CodeBrain dùng npm, nên registry / proxy / token trong `.npmrc` được áp dụng. Máy không có npm: tải thẳng từ registry và kiểm tra checksum.
+- Chạy **CodeBrain: Update CodeGraph Runtime** để kiểm tra ngay.
+
+Người dùng **không** cần tự cài Node.js hoặc CLI.
 
 ## 2. Khởi tạo CodeBrain cho project
 
@@ -64,6 +59,8 @@ Các setting liên quan:
 
 ```json
 {
+  "codebrain.runtime.autoUpdate": true,
+  "codebrain.runtime.version": "latest",
   "codebrain.autoRefresh.enabled": true,
   "codebrain.autoRefresh.debounceMs": 1000
 }
@@ -377,7 +374,7 @@ Markdown giữ nguyên heading, tables, code blocks và Mermaid chart. File nh�
 
 ## 10a. CodeBrain cho mọi agent — MCP server + Skill
 
-Agent cần hai thứ để dùng CodeBrain hiệu quả: **MCP server** cung cấp tool đồ thị, và **skill** cho agent biết khi nào và dùng tool đó ra sao. Trong VS Code, Copilot nhận cả hai trực tiếp từ extension. Các agent khác đọc file riêng của chúng, nên hãy chạy **CodeBrain: Install CodeBrain for Agents (Claude, Codex, Gemini…)**, chọn phạm vi, chọn cài gì, tích agent đang dùng, rồi restart agent đó.
+Agent cần hai thứ để dùng CodeBrain hiệu quả: **MCP server** cung cấp tool đồ thị, và **skill** cho agent biết khi nào và dùng tool đó ra sao. Trong VS Code, Copilot nhận cả hai trực tiếp từ extension. Các agent khác đọc file riêng của chúng, nên hãy chạy **CodeBrain: Install MCP + Skill for Agents (Claude, Codex, Gemini, Antigravity, Copilot…)**, chọn phạm vi, chọn cài gì, tích agent đang dùng, rồi restart agent đó.
 
 **MCP server**
 
@@ -387,24 +384,31 @@ Agent cần hai thứ để dùng CodeBrain hiệu quả: **MCP server** cung c�
 | Codex CLI | `~/.codex/config.toml` | — |
 | Gemini CLI | `~/.gemini/settings.json` | `<workspace>/.gemini/settings.json` |
 | Antigravity | `~/.gemini/config/mcp_config.json` | — |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `<workspace>/.github/mcp.json` |
+| Cursor | `~/.cursor/mcp.json` | `<workspace>/.cursor/mcp.json` |
+| opencode | `~/.config/opencode/opencode.jsonc` | `<workspace>/opencode.jsonc` |
 
-**Skill** — cài bằng đúng cơ chế gốc của từng agent nếu agent đó có, vì skill hay slash command chỉ được nạp khi thật sự cần, còn file instructions thì nạp vào **mọi** request:
+Cursor khởi động MCP server sai thư mục, nên entry của Cursor có thêm `--path` (`${workspaceFolder}` khi cài global, đường dẫn tuyệt đối khi cài cho workspace). File `opencode.jsonc` được sửa tại chỗ nên comment của bạn được giữ nguyên.
 
-| Agent | Cơ chế | Global | Chỉ workspace này |
-| :--- | :--- | :--- | :--- |
-| Claude Code | skill | `~/.claude/skills/codebrain/SKILL.md` | `<workspace>/.claude/skills/codebrain/SKILL.md` |
-| Codex CLI | prompt — gõ `/codebrain` | `~/.codex/prompts/codebrain.md` | — |
-| Gemini CLI | command — gõ `/codebrain` | `~/.gemini/commands/codebrain.toml` | `<workspace>/.gemini/commands/codebrain.toml` |
-| Antigravity | mục trong instructions | `~/.gemini/GEMINI.md` | — |
-| GitHub Copilot | mục trong instructions | — | `<workspace>/.github/copilot-instructions.md` |
+**Skill** — mọi agent đều nhận một [Agent Skill](https://agentskills.io) gốc (`codebrain/SKILL.md`), chỉ được nạp khi yêu cầu khớp với mô tả của skill — không chèn vào file instructions vốn bị gửi kèm **mọi** request:
 
-Mọi agent nhận cùng một nội dung — `skills/codebrain/SKILL.md`, đúng file Copilot đang dùng — nên không có bản sao thứ hai để lệch nhau. Phần ghi vào file instructions được bọc trong marker `<!-- CODEBRAIN_SKILL_START -->` / `<!-- CODEBRAIN_SKILL_END -->`: nội dung bạn tự viết xung quanh được giữ nguyên, và khi gỡ thì chỉ mục có marker bị xoá. Copilot trong VS Code vốn đã có skill đóng gói sẵn, nên entry ở đây là để Copilot ở nơi khác dùng được — github.com, CLI, editor khác.
+| Agent | Global | Chỉ workspace này |
+| :--- | :--- | :--- |
+| Claude Code | `~/.claude/skills/codebrain/` | `<workspace>/.claude/skills/codebrain/` |
+| Codex CLI | `~/.agents/skills/codebrain/` | `<workspace>/.agents/skills/codebrain/` |
+| Gemini CLI | `~/.gemini/skills/codebrain/` | `<workspace>/.gemini/skills/codebrain/` |
+| Antigravity | `~/.gemini/config/skills/codebrain/` | `<workspace>/.agents/skills/codebrain/` |
+| GitHub Copilot (CLI, github.com, editor khác) | `~/.copilot/skills/codebrain/` | `<workspace>/.github/skills/codebrain/` |
+| Cursor | `~/.cursor/skills/codebrain/` | `<workspace>/.cursor/skills/codebrain/` |
+| opencode | `~/.config/opencode/skills/codebrain/` | `<workspace>/.opencode/skills/codebrain/` |
 
-**Chọn phạm vi nào?** Global thường là lựa chọn hợp lý: entry MCP **không** ghim đường dẫn workspace, agent khởi động server ngay trong thư mục bạn đang làm việc và CodeBrain trả lời theo project đã index gần nhất — cài một lần dùng được cho mọi repo. Chọn phạm vi workspace khi muốn nó đi kèm repository (`.mcp.json` và các file skill commit được vì không chứa token) hoặc chỉ muốn project này thấy. Codex CLI và Antigravity không có cấu hình theo project nên chỉ hiện ở global; file instructions của Copilot thuộc về repository nên chỉ hiện ở phạm vi workspace.
+Mọi agent nhận cùng một nội dung — `skills/codebrain/SKILL.md`, đúng file Copilot trong VS Code đang dùng — nên không có bản sao thứ hai để lệch nhau. Skill hướng dẫn agent khi nào dùng `codegraph_explore` thay cho grep/đọc file, và cách query: nêu tên các symbol trải dọc flow, truyền `projectPath` khi làm monorepo, tin vào source trả về thay vì đọc lại file. Nếu bản trước đã cài skill dạng prompt của Codex, command của Gemini, hoặc mục có marker trong `GEMINI.md` / `copilot-instructions.md`, bản cũ đó được thay bằng skill gốc tự động; nội dung bạn tự viết xung quanh marker được giữ nguyên.
 
-Mỗi entry MCP trỏ tới runtime đóng gói sẵn trong extension, nên không cần cài Node.js, không cần `npm i -g`, và không lo PATH bị rút gọn khi agent được mở từ GUI. Repo chưa có `.codegraph/` thì server chỉ báo là chưa index; chạy **CodeBrain: Initialize Workspace** ở repo đó.
+**Chọn phạm vi nào?** Global thường là lựa chọn hợp lý: entry MCP **không** ghim đường dẫn workspace, agent khởi động server ngay trong thư mục bạn đang làm việc và CodeBrain trả lời theo project đã index gần nhất — cài một lần dùng được cho mọi repo. Chọn phạm vi workspace khi muốn nó đi kèm repository (`.mcp.json` và các file skill không chứa token) hoặc chỉ muốn project này thấy. Codex CLI và Antigravity không có cấu hình MCP theo project nên phần MCP chỉ hiện ở global; skill thì dùng được ở cả hai phạm vi với mọi agent.
 
-Mỗi lần cập nhật extension, đường dẫn runtime đổi theo version và nội dung skill cũng có thể đổi. CodeBrain tự ghi lại những gì nó đã tạo ở lần activate kế tiếp — đúng phạm vi bạn đã cài — nên agent vẫn chạy sau khi nâng cấp mà bạn không phải làm gì thêm. **CodeBrain: Uninstall CodeBrain from Agents** quét cả hai phạm vi và cả hai phần nên không sót gì.
+Mỗi entry MCP chạy runtime CodeGraph mà CodeBrain đã cài (bằng Node đi kèm runtime), nên không cần `npm i -g` và không lo PATH bị rút gọn khi agent được mở từ GUI. Repo chưa có `.codegraph/` thì server chỉ báo là chưa index; chạy **CodeBrain: Initialize Workspace** ở repo đó.
+
+Mỗi version runtime nằm trong một thư mục riêng, và nội dung skill có thể đổi theo extension. Ngay sau mỗi lần cập nhật và mỗi lần khởi động, CodeBrain tự ghi lại những gì nó đã tạo — đúng phạm vi bạn đã cài — nên agent vẫn chạy mà bạn không phải làm gì thêm (restart agent để nhận bản mới). **CodeBrain: Uninstall CodeBrain from Agents** quét cả hai phạm vi và cả hai phần nên không sót gì.
 
 ## 10b. Tìm kiếm Collab (Confluence) và Jira cho mọi agent
 
@@ -508,6 +512,8 @@ Thêm vào `.vscode/settings.json`:
 }
 ```
 
+`runtime.autoUpdate` tự cài bản runtime mới từ npm. `runtime.version` nhận dist-tag (`latest`) hoặc một version cụ thể (ví dụ `1.6.1`) để ghim. Dùng mirror nội bộ thì đặt `codebrain.runtime.registry`; máy offline thì giải nén `@xuansang2770/codegraph-<platform>` và trỏ `codebrain.runtime.path` tới đó (tắt cài qua npm và auto-update).
+
 `releaseNotes.showOnUpdate` mở trang **What's new** ở lần khởi động đầu tiên sau khi extension được cập nhật, gom đủ mọi bản phát hành kể từ version bạn đang dùng trước đó. Không hiện khi mới cài lần đầu, không hiện lại cho cùng một version. Mở thủ công bằng command **CodeBrain: What's New**.
 
 Nếu dùng phần Collab + Jira, thêm (token **không** đặt ở đây — nhập qua command để lưu vào keychain):
@@ -524,7 +530,7 @@ Nếu dùng phần Collab + Jira, thêm (token **không** đặt ở đây — n
 }
 ```
 
-`allowWrite` là công tắc duy nhất quyết định agent có được sửa Jira/Confluence hay không. Nó áp dụng cho **mọi** agent đang dùng chung bộ credential này (Copilot, Claude Code, Codex, Gemini CLI, Antigravity), vì cờ này được ghi kèm vào `~/.codebrain/atlassian.env`.
+`allowWrite` là công tắc duy nhất quyết định agent có được sửa Jira/Confluence hay không. Nó áp dụng cho **mọi** agent đang dùng chung bộ credential này (Copilot, Claude Code, Codex, Gemini CLI, Antigravity, Cursor, opencode), vì cờ này được ghi kèm vào `~/.codebrain/atlassian.env`.
 
 ## 13. Demo nhanh
 
@@ -595,9 +601,9 @@ Kiểm tra:
 
 Server Atlassian chỉ xuất hiện khi một sản phẩm đã cấu hình **đủ** base URL và token. Chạy **CodeBrain: Configure Atlassian (Collab + Jira)**, sau đó **CodeBrain: Test Atlassian Connection**.
 
-### Claude Code / Codex / Gemini / Antigravity không thấy tool CodeBrain
+### Claude Code / Codex / Gemini / Antigravity / Copilot CLI / Cursor / opencode không thấy tool CodeBrain
 
-Chạy **CodeBrain: Install CodeBrain for Agents** rồi restart agent — agent chỉ đọc danh sách MCP server lúc khởi động. Đăng ký theo phạm vi workspace chỉ có tác dụng trong đúng folder đó; muốn dùng ở mọi repo thì đăng ký global.
+Chạy **CodeBrain: Install MCP + Skill for Agents** rồi restart agent — agent chỉ đọc danh sách MCP server lúc khởi động. Đăng ký theo phạm vi workspace chỉ có tác dụng trong đúng folder đó; muốn dùng ở mọi repo thì đăng ký global.
 
 ### Claude Code / Codex / Gemini / Antigravity không thấy tool Jira/Confluence
 
@@ -615,15 +621,23 @@ URL Confluence Cloud phải có context path `/wiki`, ví dụ `https://site.atl
 
 Đặt `codebrain.atlassian.sslVerify` thành `false`, hoặc export `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false` cho agent chạy ngoài VS Code.
 
+### Cài runtime thất bại
+
+Thông báo lỗi nêu rõ nguyên nhân (không có mạng, registry từ chối, sai checksum). Chọn **Retry**, hoặc mở Settings từ thông báo: sau proxy/mirror công ty thì đặt `codebrain.runtime.registry` (hoặc cấu hình `.npmrc` của npm); máy offline thì giải nén `@xuansang2770/codegraph-<platform>` và đặt `codebrain.runtime.path`. Mọi bước đều được ghi vào Output channel **CodeBrain**.
+
+### Runtime không lên bản mới
+
+Chạy **CodeBrain: Update CodeGraph Runtime**. Nếu `codebrain.runtime.version` đang ghim một version, hoặc `codebrain.runtime.path` được đặt, CodeBrain sẽ không tự cập nhật.
+
 ### Runtime báo "permission denied" trên Linux/macOS
 
-Không cần `chmod` thủ công nữa: khi khởi động, CodeBrain tự kiểm tra và cấp lại quyền thực thi cho runtime đi kèm (`runtime/<target>/node` và `runtime/<target>/bin/codegraph`) nếu trình cài đặt đã làm mất bit executable. Việc sửa được ghi vào Output channel **CodeBrain**.
+Không cần `chmod` thủ công: khi khởi động, CodeBrain tự kiểm tra và cấp lại quyền thực thi cho `node` và `bin/codegraph` của runtime nếu bit executable bị mất. Việc sửa được ghi vào Output channel **CodeBrain**.
 
-Chỉ khi thư mục extension ở chế độ chỉ đọc hoặc thuộc user khác thì việc tự sửa mới thất bại — lúc đó thông báo lỗi in ra đúng câu lệnh `chmod +x` cần chạy.
+Chỉ khi thư mục runtime ở chế độ chỉ đọc hoặc thuộc user khác thì việc tự sửa mới thất bại — lúc đó thông báo lỗi in ra đúng câu lệnh `chmod +x` cần chạy.
 
 ### Runtime báo WASM fallback
 
-VSIX đang cài có thể không đúng với platform/architecture của máy hoặc không chứa native kernel. Cài lại đúng package nền tảng. WASM fallback vẫn hoạt động nhưng không có tốc độ của native Rust kernel.
+Runtime không có native kernel cho nền tảng này (hoặc bản build trỏ bằng `codebrain.runtime.path` không kèm kernel). WASM fallback vẫn hoạt động nhưng không có tốc độ của native Rust kernel.
 
 ### Xem log
 

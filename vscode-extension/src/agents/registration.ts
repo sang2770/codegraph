@@ -14,7 +14,6 @@ import { homedir } from 'node:os';
 import * as vscode from 'vscode';
 import {
   AGENT_TARGET_IDS,
-  AgentTargetId,
   McpScope,
   McpServerEntry,
   TargetPaths,
@@ -24,6 +23,7 @@ import {
   readInstalledEntries,
   removeTarget,
   targetDisplayName,
+  targetEntry,
 } from './mcpTargets';
 import {
   SKILL_TARGET_IDS,
@@ -139,9 +139,8 @@ export class McpRegistrar {
   /**
    * The agents worth offering at this scope, with the files each will get.
    *
-   * An agent appears when at least one selected part supports it — Copilot has
-   * no MCP entry to write but does take the skill, and Codex has neither at
-   * project scope.
+   * An agent appears when at least one selected part supports it — Codex and
+   * Antigravity take a project-scoped skill but have no project MCP config.
    */
   private offeredTargets(
     parts: Parts,
@@ -158,9 +157,8 @@ export class McpRegistrar {
     const offered: { label: string; detail: string; id: SkillTargetId }[] = [];
     for (const id of SKILL_TARGET_IDS) {
       const details: string[] = [];
-      if (parts.mcp && mcp.get(id as AgentTargetId)?.supported) {
-        details.push(`MCP: ${mcp.get(id as AgentTargetId)!.detail}`);
-      }
+      const server = mcp.get(id);
+      if (parts.mcp && server?.supported) details.push(`MCP: ${server.detail}`);
       if (parts.skill && skills.get(id)?.supported) {
         details.push(`Skill: ${skills.get(id)!.detail}`);
       }
@@ -220,10 +218,10 @@ export class McpRegistrar {
     };
 
     for (const pick of picks) {
-      if (entry && AGENT_TARGET_IDS.includes(pick.id as AgentTargetId)) {
+      if (entry && AGENT_TARGET_IDS.includes(pick.id)) {
         try {
           record(
-            installTarget(serverKey, pick.id as AgentTargetId, entry, paths, scope),
+            installTarget(serverKey, pick.id, entry, paths, scope),
             'MCP',
             scope,
           );
@@ -234,7 +232,11 @@ export class McpRegistrar {
       }
       if (skill) {
         try {
-          record(installSkill(skill, pick.id, paths, scope), 'skill', scope);
+          const result = installSkill(skill, pick.id, paths, scope);
+          record(result, 'skill', scope);
+          if (result.migrated) {
+            this.options.log(`${result.displayName} skill: replaced ${result.migrated.join(', ')}`);
+          }
         } catch (error) {
           skipped.push(`${pick.label} skill — ${describeError(error)}`);
           this.options.log(`${pick.label} skill: failed — ${describeError(error)}`);
@@ -326,7 +328,10 @@ export class McpRegistrar {
         continue;
       }
 
-      for (const { file } of installed.filter((found) => isEntryStale(found.entry, entry))) {
+      const stale = installed.filter((found) =>
+        isEntryStale(found.entry, targetEntry(id, entry, paths, found.file.scope)),
+      );
+      for (const { file } of stale) {
         try {
           const result = installTarget(serverKey, id, entry, paths, file.scope);
           this.options.log(
@@ -352,16 +357,19 @@ export class McpRegistrar {
         continue;
       }
 
-      for (const found of installed.filter((entry) => isSkillStale(entry, skill, id))) {
+      // One install per scope: it rewrites the native copy and clears any
+      // legacy one at the same time.
+      const scopes = new Set(
+        installed.filter((entry) => isSkillStale(entry, skill, id)).map((entry) => entry.artifact.scope),
+      );
+      for (const scope of scopes) {
         try {
-          const result = installSkill(skill, id, paths, found.artifact.scope);
+          const result = installSkill(skill, id, paths, scope);
           this.options.log(
-            `${result.displayName} skill (${found.artifact.scope}): refreshed (${result.action})`,
+            `${result.displayName} skill (${scope}): refreshed (${result.action})${result.migrated ? ` — replaced ${result.migrated.join(', ')}` : ''}`,
           );
         } catch (error) {
-          this.options.log(
-            `${displayName} skill (${found.artifact.scope}): refresh failed — ${describeError(error)}`,
-          );
+          this.options.log(`${displayName} skill (${scope}): refresh failed — ${describeError(error)}`);
         }
       }
     }

@@ -2,35 +2,45 @@
  * Installing the CodeBrain skill into agents that live outside VS Code.
  *
  * VS Code's own Copilot gets the skill from `contributes.chatSkills` — a
- * packaged file, nothing on disk to manage. Every other agent has its own
- * mechanism, and they are genuinely different, so this writes the native one
- * wherever it exists and falls back to a marked block in the agent's
- * instructions file only where it does not:
+ * packaged file, nothing on disk to manage. Every other agent now reads the
+ * same open Agent Skills format — a `<name>/SKILL.md` folder, loaded only when
+ * its description matches the task — so each one gets a native skill, never a
+ * block pasted into an always-loaded instructions file:
  *
- *   | Agent       | Mechanism        | Global                              | Project                                   |
- *   |-------------|------------------|-------------------------------------|-------------------------------------------|
- *   | Claude Code | skill            | `~/.claude/skills/<n>/SKILL.md`     | `<ws>/.claude/skills/<n>/SKILL.md`        |
- *   | Codex CLI   | prompt (`/<n>`)  | `~/.codex/prompts/<n>.md`           | — (no project config)                     |
- *   | Gemini CLI  | command (`/<n>`) | `~/.gemini/commands/<n>.toml`       | `<ws>/.gemini/commands/<n>.toml`          |
- *   | Antigravity | instructions     | `~/.gemini/GEMINI.md` (marked)      | — (no project config)                     |
- *   | Copilot     | instructions     | — (repository-scoped)               | `<ws>/.github/copilot-instructions.md`    |
+ *   | Agent       | Global                                 | Project                              |
+ *   |-------------|----------------------------------------|--------------------------------------|
+ *   | Claude Code | `~/.claude/skills/<n>/SKILL.md`        | `<ws>/.claude/skills/<n>/SKILL.md`   |
+ *   | Codex CLI   | `~/.agents/skills/<n>/SKILL.md`        | `<ws>/.agents/skills/<n>/SKILL.md`   |
+ *   | Gemini CLI  | `~/.gemini/skills/<n>/SKILL.md`        | `<ws>/.gemini/skills/<n>/SKILL.md`   |
+ *   | Antigravity | `~/.gemini/config/skills/<n>/SKILL.md` | `<ws>/.agents/skills/<n>/SKILL.md`   |
+ *   | Copilot     | `~/.copilot/skills/<n>/SKILL.md`       | `<ws>/.github/skills/<n>/SKILL.md`   |
+ *   | Cursor      | `~/.cursor/skills/<n>/SKILL.md`        | `<ws>/.cursor/skills/<n>/SKILL.md`   |
+ *   | opencode    | `~/.config/opencode/skills/<n>/…`      | `<ws>/.opencode/skills/<n>/SKILL.md` |
  *
- * A marked block is the last resort on purpose: it is always loaded into the
- * agent's context, whereas a skill or slash command is loaded only when it is
- * relevant. Where an agent offers the cheaper mechanism, that is the one used.
+ * Antigravity's global path is `~/.gemini/config/skills/`, the one location its
+ * IDE, CLI and agent manager all read. Codex and Antigravity share the
+ * workspace's `.agents/skills/`: the same bytes serve both, and removing one
+ * leaves nothing the other still needs that the other's install would not
+ * rewrite.
+ *
+ * Earlier releases used each agent's older mechanism — a Codex prompt, a Gemini
+ * slash command, marked sections in `~/.gemini/GEMINI.md` and
+ * `.github/copilot-instructions.md`. Those are `legacy` artifacts now: an
+ * install or refresh replaces them with the native skill, and an uninstall
+ * sweeps them along with it.
  *
  * The skill's text is the one shipped with the extension — `skills/codebrain/
  * SKILL.md`, the same file Copilot gets — so all agents are told the same thing
  * and there is no second copy to keep in sync.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { AgentTargetId, McpScope, TargetPaths, WriteAction } from './mcpTargets';
-import { readMarkdownBlock, removeMarkdownBlock, upsertMarkdownBlock } from './markdownBlock';
+import { readMarkdownBlock, removeMarkdownBlock } from './markdownBlock';
 
-/** Copilot has no MCP entry to write, but it does read a skill-shaped file. */
-export type SkillTargetId = AgentTargetId | 'copilot';
+/** Every agent that takes a skill — the MCP targets plus nothing else. */
+export type SkillTargetId = AgentTargetId;
 
 export const SKILL_TARGET_IDS: readonly SkillTargetId[] = [
   'claude',
@@ -38,28 +48,34 @@ export const SKILL_TARGET_IDS: readonly SkillTargetId[] = [
   'gemini',
   'antigravity',
   'copilot',
+  'cursor',
+  'opencode',
 ];
 
 export const SKILL_BLOCK_START = '<!-- CODEBRAIN_SKILL_START -->';
 export const SKILL_BLOCK_END = '<!-- CODEBRAIN_SKILL_END -->';
 
 export interface SkillDefinition {
-  /** Slug — the directory name, the prompt file name, the slash command. */
+  /** Slug — the skill's directory name and its `name:` field. */
   name: string;
-  /** Human-readable heading used by the instructions-file fallback. */
+  /** Human-readable heading, from the skill's own `# Title`. */
   title: string;
   description: string;
   /** The whole `SKILL.md`, frontmatter included: Claude Code reads it as-is. */
   source: string;
-  /** The instructions alone, which the other formats embed. */
+  /** The instructions alone, under the frontmatter the other agents get. */
   body: string;
 }
 
 export interface SkillArtifact {
   path: string;
   scope: McpScope;
-  /** `file` is owned by us end to end; `block` shares a file with the user. */
-  kind: 'file' | 'block';
+  /**
+   * `file` is the native skill, owned by us end to end. `legacy-file` and
+   * `legacy-block` are what earlier releases wrote — a file of ours, or a
+   * marked section in a file the user shares with us.
+   */
+  kind: 'file' | 'legacy-file' | 'legacy-block';
 }
 
 export interface SkillWriteResult {
@@ -69,6 +85,8 @@ export interface SkillWriteResult {
   action: WriteAction;
   path?: string;
   reason?: string;
+  /** Older-format copies this install replaced. */
+  migrated?: string[];
 }
 
 export interface SkillRemoveResult {
@@ -92,6 +110,8 @@ const DISPLAY_NAMES: Record<SkillTargetId, string> = {
   gemini: 'Gemini CLI',
   antigravity: 'Antigravity',
   copilot: 'GitHub Copilot',
+  cursor: 'Cursor',
+  opencode: 'opencode',
 };
 
 export function skillTargetDisplayName(id: SkillTargetId): string {
@@ -137,65 +157,73 @@ export function loadSkill(extensionPath: string, name = 'codebrain'): SkillDefin
 
 // -------------------------------------------------------------- descriptors
 
-function supportsScope(id: SkillTargetId, scope: McpScope): boolean {
-  switch (id) {
-    case 'claude':
-    case 'gemini':
-      return true;
-    case 'codex':
-    case 'antigravity':
-      return scope === 'global';
-    case 'copilot':
-      // Copilot's instructions file belongs to the repository. In VS Code the
-      // skill already arrives with the extension, so this is what reaches
-      // Copilot everywhere else — github.com, the CLI, other editors.
-      return scope === 'project';
-  }
-}
+/** The skills directory for each target, at each scope, relative to its root. */
+const SKILL_ROOTS: Record<SkillTargetId, { global: string[]; project: string[] }> = {
+  claude: { global: ['.claude', 'skills'], project: ['.claude', 'skills'] },
+  codex: { global: ['.agents', 'skills'], project: ['.agents', 'skills'] },
+  gemini: { global: ['.gemini', 'skills'], project: ['.gemini', 'skills'] },
+  antigravity: { global: ['.gemini', 'config', 'skills'], project: ['.agents', 'skills'] },
+  copilot: { global: ['.copilot', 'skills'], project: ['.github', 'skills'] },
+  cursor: { global: ['.cursor', 'skills'], project: ['.cursor', 'skills'] },
+  opencode: { global: ['.config', 'opencode', 'skills'], project: ['.opencode', 'skills'] },
+};
 
 export function describeSkillTargets(
   skill: SkillDefinition,
   scope: McpScope,
 ): readonly SkillTargetDescriptor[] {
-  const describe = (id: SkillTargetId): string => {
-    switch (id) {
-      case 'claude':
-        return scope === 'global'
-          ? `~/.claude/skills/${skill.name}/SKILL.md — loaded when relevant`
-          : `<workspace>/.claude/skills/${skill.name}/SKILL.md — loaded when relevant`;
-      case 'codex':
-        return `~/.codex/prompts/${skill.name}.md — run it with /${skill.name}`;
-      case 'gemini':
-        return scope === 'global'
-          ? `~/.gemini/commands/${skill.name}.toml — run it with /${skill.name}`
-          : `<workspace>/.gemini/commands/${skill.name}.toml — run it with /${skill.name}`;
-      case 'antigravity':
-        return '~/.gemini/GEMINI.md — appended as a marked section';
-      case 'copilot':
-        return '<workspace>/.github/copilot-instructions.md — a marked section (VS Code already has the skill)';
-    }
-  };
-
   return SKILL_TARGET_IDS.map((id) => {
-    const supported = supportsScope(id, scope);
+    const root = scope === 'global' ? `~/${SKILL_ROOTS[id].global.join('/')}` : `<workspace>/${SKILL_ROOTS[id].project.join('/')}`;
     return {
       id,
       displayName: DISPLAY_NAMES[id],
-      detail: supported
-        ? describe(id)
-        : id === 'copilot'
-          ? "Copilot reads its instructions from the repository — pick the workspace scope."
-          : `${DISPLAY_NAMES[id]} has no project-scoped configuration — install it globally instead.`,
-      supported,
+      detail: `${root}/${skill.name}/SKILL.md — loaded when relevant`,
+      supported: true,
     };
   });
 }
 
 // ------------------------------------------------------------------- paths
 
+function nativeArtifact(
+  id: SkillTargetId,
+  skill: SkillDefinition,
+  paths: TargetPaths,
+  scope: McpScope,
+): SkillArtifact | undefined {
+  const base = scope === 'global' ? paths.homeDir : paths.workspaceRoot;
+  if (!base) return undefined;
+  return { path: join(base, ...SKILL_ROOTS[id][scope], skill.name, 'SKILL.md'), scope, kind: 'file' };
+}
+
+/** What earlier releases wrote for this target — replaced on install, swept on removal. */
+function legacyArtifacts(id: SkillTargetId, skill: SkillDefinition, paths: TargetPaths): SkillArtifact[] {
+  const workspace = paths.workspaceRoot;
+  switch (id) {
+    case 'codex':
+      return [{ path: join(paths.homeDir, '.codex', 'prompts', `${skill.name}.md`), scope: 'global', kind: 'legacy-file' }];
+    case 'gemini':
+      return [
+        { path: join(paths.homeDir, '.gemini', 'commands', `${skill.name}.toml`), scope: 'global', kind: 'legacy-file' },
+        ...(workspace
+          ? [{ path: join(workspace, '.gemini', 'commands', `${skill.name}.toml`), scope: 'project' as const, kind: 'legacy-file' as const }]
+          : []),
+      ];
+    case 'antigravity':
+      return [{ path: join(paths.homeDir, '.gemini', 'GEMINI.md'), scope: 'global', kind: 'legacy-block' }];
+    case 'copilot':
+      return workspace
+        ? [{ path: join(workspace, '.github', 'copilot-instructions.md'), scope: 'project', kind: 'legacy-block' }]
+        : [];
+    default:
+      return [];
+  }
+}
+
 /**
- * Every file the skill may live in for this target. Pass a `scope` to narrow
- * it; omit it to sweep both, which is what an uninstall has to do.
+ * Every file the skill may live in for this target, native and legacy. Pass a
+ * `scope` to narrow it; omit it to sweep both, which is what an uninstall has
+ * to do.
  */
 export function skillArtifacts(
   id: SkillTargetId,
@@ -203,106 +231,34 @@ export function skillArtifacts(
   paths: TargetPaths,
   scope?: McpScope,
 ): SkillArtifact[] {
-  const artifacts: SkillArtifact[] = [];
-  const workspace = paths.workspaceRoot;
-
-  switch (id) {
-    case 'claude':
-      artifacts.push({
-        path: join(paths.homeDir, '.claude', 'skills', skill.name, 'SKILL.md'),
-        scope: 'global',
-        kind: 'file',
-      });
-      if (workspace) {
-        artifacts.push({
-          path: join(workspace, '.claude', 'skills', skill.name, 'SKILL.md'),
-          scope: 'project',
-          kind: 'file',
-        });
-      }
-      break;
-    case 'codex':
-      artifacts.push({
-        path: join(paths.homeDir, '.codex', 'prompts', `${skill.name}.md`),
-        scope: 'global',
-        kind: 'file',
-      });
-      break;
-    case 'gemini':
-      artifacts.push({
-        path: join(paths.homeDir, '.gemini', 'commands', `${skill.name}.toml`),
-        scope: 'global',
-        kind: 'file',
-      });
-      if (workspace) {
-        artifacts.push({
-          path: join(workspace, '.gemini', 'commands', `${skill.name}.toml`),
-          scope: 'project',
-          kind: 'file',
-        });
-      }
-      break;
-    case 'antigravity':
-      artifacts.push({
-        path: join(paths.homeDir, '.gemini', 'GEMINI.md'),
-        scope: 'global',
-        kind: 'block',
-      });
-      break;
-    case 'copilot':
-      if (workspace) {
-        artifacts.push({
-          path: join(workspace, '.github', 'copilot-instructions.md'),
-          scope: 'project',
-          kind: 'block',
-        });
-      }
-      break;
-  }
-
+  const artifacts = [
+    nativeArtifact(id, skill, paths, 'global'),
+    nativeArtifact(id, skill, paths, 'project'),
+    ...legacyArtifacts(id, skill, paths),
+  ].filter((artifact): artifact is SkillArtifact => artifact !== undefined);
   return scope ? artifacts.filter((artifact) => artifact.scope === scope) : artifacts;
 }
 
 // ----------------------------------------------------------------- rendering
 
-/** The exact bytes this target's artifact should hold. */
-export function renderSkill(id: SkillTargetId, skill: SkillDefinition): string {
-  switch (id) {
-    case 'claude':
-      // Already in Claude Code's own skill format — hand it over untouched.
-      return `${skill.source}\n`;
-    case 'codex':
-      return `${skill.description}\n\n${skill.body}\n`;
-    case 'gemini':
-      return `description = ${tomlBasicString(skill.description)}\nprompt = ${tomlMultilineString(skill.body)}\n`;
-    case 'antigravity':
-    case 'copilot':
-      return `## ${skill.title}\n\n${skill.description}\n\n${stripLeadingHeading(skill.body)}`;
-  }
-}
-
-/** The body without its own `# Title`, which the block supplies as `##`. */
-function stripLeadingHeading(body: string): string {
-  return body.replace(/^#[ \t]+.+\r?\n+/, '').trim();
-}
-
-function tomlBasicString(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
 /**
- * A multi-line TOML string for the prompt body.
+ * The exact bytes this target's `SKILL.md` should hold.
  *
- * A literal (`'''`) string is preferred because the skill text is full of
- * backslashes and quotes that a basic string would have to escape — and an
- * escape missed here silently corrupts the prompt. It is only usable when the
- * text contains no `'''` of its own, so a basic string with full escaping is
- * kept as the fallback.
+ * Claude Code gets the file untouched — `argument-hint` and `user-invocable`
+ * are its own fields. The others get only the two fields the open standard
+ * requires: a loader strict about its schema (Codex, Gemini) must never skip
+ * the skill over a key it does not know.
  */
-function tomlMultilineString(value: string): string {
-  if (!value.includes("'''") && !value.endsWith("'")) return `'''\n${value}\n'''`;
-  const escaped = value.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
-  return `"""\n${escaped}\n"""`;
+export function renderSkill(id: SkillTargetId, skill: SkillDefinition): string {
+  if (id === 'claude') return `${skill.source}\n`;
+  return `---\nname: ${skill.name}\ndescription: ${yamlString(skill.description)}\n---\n\n${skill.body}\n`;
+}
+
+/** A YAML scalar that survives colons, quotes and a leading special character. */
+function yamlString(value: string): string {
+  return /^[\w(][^:#\n]*$/.test(value) && !/^(true|false|null|yes|no|~)$/i.test(value)
+    ? value
+    : JSON.stringify(value);
 }
 
 // ------------------------------------------------------------------ install
@@ -314,66 +270,75 @@ export function installSkill(
   scope: McpScope,
 ): SkillWriteResult {
   const displayName = DISPLAY_NAMES[id];
-  const skip = (reason: string): SkillWriteResult => ({
-    target: id,
-    displayName,
-    scope,
-    action: 'skipped',
-    reason,
-  });
-
-  if (!supportsScope(id, scope)) {
-    return skip(
-      id === 'copilot'
-        ? 'Copilot reads its instructions from the repository; install it for the workspace instead.'
-        : `${displayName} has no project-scoped configuration; install it globally instead.`,
-    );
-  }
-
-  const artifact = skillArtifacts(id, skill, paths, scope)[0];
+  const artifact = nativeArtifact(id, skill, paths, scope);
   if (!artifact) {
-    return skip(`${displayName} stores this inside the workspace, and no folder is open.`);
-  }
-
-  const content = renderSkill(id, skill);
-  const existed = existsSync(artifact.path);
-
-  if (artifact.kind === 'file') {
-    if (existed && readTextFile(artifact.path) === content) {
-      return { target: id, displayName, scope, action: 'unchanged', path: artifact.path };
-    }
-    writeTextFileAtomic(artifact.path, content);
     return {
       target: id,
       displayName,
       scope,
-      action: existed ? 'updated' : 'created',
-      path: artifact.path,
+      action: 'skipped',
+      reason: `${displayName} stores this inside the workspace, and no folder is open.`,
     };
   }
 
-  const result = upsertMarkdownBlock(
-    readTextFile(artifact.path),
-    SKILL_BLOCK_START,
-    SKILL_BLOCK_END,
-    content,
-  );
-  if (result.action === 'unchanged') {
-    return { target: id, displayName, scope, action: 'unchanged', path: artifact.path };
+  const content = renderSkill(id, skill);
+  const existed = existsSync(artifact.path);
+  let action: WriteAction;
+  if (existed && readTextFile(artifact.path) === content) {
+    action = 'unchanged';
+  } else {
+    writeTextFileAtomic(artifact.path, content);
+    action = existed ? 'updated' : 'created';
   }
-  writeTextFileAtomic(artifact.path, result.content);
+
+  // The native skill now covers this scope, so an older copy would only make
+  // the agent read the same guidance twice.
+  const migrated = legacyArtifacts(id, skill, paths)
+    .filter((legacy) => legacy.scope === scope)
+    .filter((legacy) => removeArtifact(legacy));
+  if (migrated.length > 0 && action === 'unchanged') action = 'updated';
+
   return {
     target: id,
     displayName,
     scope,
-    action: existed ? 'updated' : 'created',
+    action,
     path: artifact.path,
+    ...(migrated.length > 0 ? { migrated: migrated.map((legacy) => legacy.path) } : {}),
   };
 }
 
+/** Delete one artifact; true when there was something to delete. */
+function removeArtifact(artifact: SkillArtifact): boolean {
+  if (!existsSync(artifact.path)) return false;
+
+  if (artifact.kind !== 'legacy-block') {
+    // The file is ours end to end, so deleting it is the correct removal.
+    rmSync(artifact.path, { force: true });
+    if (artifact.kind === 'file') removeIfEmpty(dirname(artifact.path));
+    return true;
+  }
+
+  const result = removeMarkdownBlock(readTextFile(artifact.path), SKILL_BLOCK_START, SKILL_BLOCK_END);
+  if (result.action !== 'removed') return false;
+  // The rest of the file is the user's, so an emptied instructions file is
+  // left in place rather than deleted.
+  writeTextFileAtomic(artifact.path, result.content);
+  return true;
+}
+
+/** The skill's own folder, once its `SKILL.md` is gone — never anything above it. */
+function removeIfEmpty(directory: string): void {
+  try {
+    rmdirSync(directory);
+  } catch {
+    // Not empty (the user put something there) or already gone.
+  }
+}
+
 /**
- * Remove the skill. With no `scope` this sweeps both, so an uninstall leaves
- * nothing behind at the scope the user is not looking at.
+ * Remove the skill, native and legacy. With no `scope` this sweeps both, so
+ * an uninstall leaves nothing behind at the scope the user is not looking at.
  */
 export function removeSkill(
   skill: SkillDefinition,
@@ -394,30 +359,7 @@ export function removeSkill(
     };
   }
 
-  const touched: string[] = [];
-  for (const artifact of artifacts) {
-    if (!existsSync(artifact.path)) continue;
-
-    if (artifact.kind === 'file') {
-      // The file is ours end to end, so deleting it is the correct removal.
-      rmSync(artifact.path, { force: true });
-      touched.push(artifact.path);
-      continue;
-    }
-
-    const result = removeMarkdownBlock(
-      readTextFile(artifact.path),
-      SKILL_BLOCK_START,
-      SKILL_BLOCK_END,
-    );
-    if (result.action === 'removed') {
-      // The rest of the file is the user's, so an emptied instructions file is
-      // left in place rather than deleted.
-      writeTextFileAtomic(artifact.path, result.content);
-      touched.push(artifact.path);
-    }
-  }
-
+  const touched = artifacts.filter((artifact) => removeArtifact(artifact)).map((artifact) => artifact.path);
   return {
     target: id,
     displayName,
@@ -427,12 +369,14 @@ export function removeSkill(
 }
 
 /**
- * The artifacts that currently hold this skill, across both scopes.
+ * The artifacts that currently hold this skill, across both scopes and both
+ * formats.
  *
  * Used to refresh after an extension update: the skill text ships with the
- * extension, so a new version leaves every installed copy out of date. Only
- * artifacts that already exist are ever rewritten — this never installs the
- * skill behind the user's back.
+ * extension, so a new version leaves every installed copy out of date, and a
+ * legacy copy is out of date by definition. Only scopes where the user
+ * already installed the skill are ever written — this never installs it
+ * behind their back.
  */
 export function readInstalledSkills(
   skill: SkillDefinition,
@@ -445,7 +389,7 @@ export function readInstalledSkills(
     if (!existsSync(artifact.path)) continue;
     const raw = readTextFile(artifact.path);
 
-    if (artifact.kind === 'file') {
+    if (artifact.kind !== 'legacy-block') {
       found.push({ artifact, content: raw });
       continue;
     }
@@ -462,11 +406,8 @@ export function isSkillStale(
   skill: SkillDefinition,
   id: SkillTargetId,
 ): boolean {
-  const current = renderSkill(id, skill);
-  if (installed.artifact.kind === 'file') return installed.content !== current;
-  return (
-    installed.content !== `${SKILL_BLOCK_START}\n${current.trim()}\n${SKILL_BLOCK_END}`
-  );
+  if (installed.artifact.kind !== 'file') return true;
+  return installed.content !== renderSkill(id, skill);
 }
 
 // --------------------------------------------------------------------- files

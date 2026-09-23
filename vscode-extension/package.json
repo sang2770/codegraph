@@ -55,6 +55,7 @@
     "onCommand:codebrain.generateCommitMessage",
     "onCommand:codebrain.selectCommitFormat",
     "onCommand:codebrain.editCommitTemplate",
+    "onCommand:codebrain.updateRuntime",
     "onCommand:codebrain.registerMcp",
     "onCommand:codebrain.unregisterMcp",
     "onCommand:codebrain.configureAtlassian",
@@ -74,7 +75,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "CodeBrain executes its bundled local runtime and reads workspace source files."
+      "description": "CodeBrain installs the CodeGraph runtime from npm, runs it locally, and reads workspace source files."
     },
     "virtualWorkspaces": {
       "supported": false,
@@ -123,7 +124,7 @@
     "mcpServerDefinitionProviders": [
       {
         "id": "codebrain.runtime",
-        "label": "CodeBrain (Bundled Runtime)"
+        "label": "CodeBrain (CodeGraph Runtime)"
       }
     ],
     "chatSkills": [
@@ -336,8 +337,13 @@
         "icon": "$(edit)"
       },
       {
+        "command": "codebrain.updateRuntime",
+        "title": "CodeBrain: Update CodeGraph Runtime",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "codebrain.registerMcp",
-        "title": "CodeBrain: Install CodeBrain for Agents (Claude, Codex, Gemini…)",
+        "title": "CodeBrain: Install MCP + Skill for Agents (Claude, Codex, Gemini, Antigravity, Copilot…)",
         "icon": "$(plug)"
       },
       {
@@ -661,10 +667,34 @@
     "configuration": {
       "title": "CodeBrain",
       "properties": {
+        "codebrain.runtime.autoUpdate": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "Install new releases of the CodeGraph runtime (`@xuansang2770/codegraph` on npm) in the background. Agents you registered with **CodeBrain: Install MCP + Skill for Agents** are repointed at the new version automatically. Run **CodeBrain: Update CodeGraph Runtime** to check now."
+        },
+        "codebrain.runtime.version": {
+          "type": "string",
+          "default": "latest",
+          "scope": "machine",
+          "markdownDescription": "Which `@xuansang2770/codegraph` release to run: `latest`, another npm dist-tag, or an exact version such as `1.6.1` to pin it. A pinned version is installed even when auto-update is off."
+        },
+        "codebrain.runtime.registry": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "npm registry to install the runtime from, for example an internal mirror. Leave empty to use your npm configuration (`.npmrc`), or `https://registry.npmjs.org/` when npm is not installed."
+        },
+        "codebrain.runtime.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Use a CodeGraph runtime directory you manage yourself (one holding `node`, `lib/` and `bin/`, such as an unpacked `@xuansang2770/codegraph-<platform>` package or a local build). Disables the npm install and auto-update."
+        },
         "codebrain.autoRefresh.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Keep the index fresh with CodeBrain's native watcher while the bundled MCP runtime is active."
+          "description": "Keep the index fresh with CodeBrain's native watcher while the CodeGraph MCP runtime is active."
         },
         "codebrain.autoRefresh.debounceMs": {
           "type": "number",
@@ -942,10 +972,9 @@
     "bundle": "node ./scripts/bundle-extension.mjs",
     "build": "npm run check && npm run bundle",
     "build:runtime": "node ./scripts/build-runtime.mjs",
-    "build:all": "npm run build:runtime && npm run build",
+    "build:all": "npm run build",
     "test": "npm run check && node --test ./test/*.test.mjs",
     "package": "node ./scripts/package-extension.mjs",
-    "package:all": "node ./scripts/package-extension.mjs --all",
     "prepare-release": "node ./scripts/prepare-release.mjs",
     "package:store": "node ./scripts/publish-extension.mjs",
     "publish:store": "node ./scripts/publish-extension.mjs --publish"
@@ -955,6 +984,7 @@
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.0",
+    "jsonc-parser": "^3.3.1",
     "typescript": "^5.9.0"
   }
 }

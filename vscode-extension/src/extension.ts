@@ -21,54 +21,55 @@ import {
 import { chooseCodeBrainModel } from './modelSelection';
 import { IndexManager } from './indexManager';
 import { MetricsStore } from './metrics';
-import { registerMcpProvider, validateBundledRuntime } from './mcpProvider';
+import { registerMcpProvider } from './mcpProvider';
 import { registerModulesView } from './modulesView';
 import { ReportManager } from './reportManager';
 import { showReleaseNotes, showReleaseNotesOnUpdate } from './releaseNotes';
 import { ReviewFinding, ReviewStore } from './reviewStore';
+import { RuntimeManager } from './runtimeManager';
 import { editReviewInstructions, selectReviewProfile } from './reviewInstructions';
 
 export function activate(context: vscode.ExtensionContext): void {
   try {
-    const runtime = validateBundledRuntime(context);
+    // Created before everything that runs commands, so its logger can be
+    // handed over; the index manager's output channel fills it in below.
+    let logSink: (message: string) => void = () => {};
+    const runtime = new RuntimeManager(context, (message) => logSink(message));
+    context.subscriptions.push(runtime);
 
     const atlassian = new AtlassianIntegration(context, runtime);
     context.subscriptions.push(atlassian);
     registerMcpProvider(context, runtime, atlassian);
-    // An extension update moves the bundled server's path, which breaks the
-    // entry every already-registered agent holds. Repair those in the
-    // background rather than making the user re-run the register command.
-    atlassian.refreshInstalledTargets();
 
     const metrics = new MetricsStore(context);
     const reports = new ReportManager(context);
     const reviewStore = new ReviewStore(context);
     const exploreCache = new GraphCache<string>();
 
-    // Created before the index manager so its logger can be handed over.
-    let logSink: (message: string) => void = () => {};
     const freshness = new IndexFreshness(runtime, (message) => logSink(message));
     const indexManager = new IndexManager(runtime, context, freshness);
     logSink = (message) => indexManager.log(message);
 
-    // Copilot gets the code graph server from the definition provider above
-    // and the skill from `contributes.chatSkills`; Claude Code, Codex, Gemini
-    // CLI and Antigravity read their own files, so they get both (opt-in)
-    // through this.
+    // Copilot in VS Code gets the code graph server from the definition
+    // provider above and the skill from `contributes.chatSkills`; every other
+    // agent reads its own files, so it gets both (opt-in) through this.
     const codeBrainMcp = new CodeBrainMcpRegistration(
       runtime,
       context.extensionUri.fsPath,
       (message) => logSink(message),
     );
-    codeBrainMcp.refreshInstalledTargets();
 
-    // Silent by design — the runtime is usable again — but worth a trace so a
-    // host that keeps dropping unix file modes is visible when someone looks.
-    if (runtime.repairedExecutables.length > 0) {
-      indexManager.log(
-        `[runtime] restored the execute bit on ${runtime.repairedExecutables.join(', ')}`,
-      );
-    }
+    // Every agent entry names the runtime's versioned path, so an update — or
+    // an extension update, for the Atlassian script and the skill text — would
+    // leave them pointing at files that are about to be pruned. Repair the
+    // agents that already opted in, now and after every runtime change.
+    const refreshAgents = (): void => {
+      atlassian.refreshInstalledTargets();
+      codeBrainMcp.refreshInstalledTargets();
+    };
+    context.subscriptions.push(runtime.onDidChange(refreshAgents));
+    runtime.start();
+    refreshAgents();
 
     const impactController = new ImpactController(
       context,
@@ -124,6 +125,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.registerCommand(
         'codebrain.editCommitTemplate',
         (sourceControl?: unknown) => editCommitTemplate(sourceControl),
+      ),
+      vscode.commands.registerCommand('codebrain.updateRuntime', () =>
+        runtime.checkNow(),
       ),
       vscode.commands.registerCommand('codebrain.registerMcp', () =>
         codeBrainMcp.install(),

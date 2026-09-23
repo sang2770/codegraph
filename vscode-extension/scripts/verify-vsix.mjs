@@ -1,32 +1,35 @@
 /**
  * Read a packaged `.vsix` back and assert it is what we think it is.
  *
- * The failures this catches all look identical to a user: the extension
- * installs cleanly from the marketplace and then fails on every single
- * command. Either the archive carries the wrong platform's runtime (so there
- * is no launcher for the machine it landed on), or it carries the right one
- * with no execute bit (so the launcher cannot run). Both are cheap to detect
- * here and expensive to discover after a release.
+ * The package is universal and must stay small: the CodeGraph runtime is
+ * installed from npm at first activation, so a `runtime/` directory inside the
+ * archive means a development runtime leaked into a release (hundreds of MB,
+ * and for one platform only). The entry points the extension cannot start
+ * without are checked too.
  *
- * Its own module, with no argument parsing or other top-level work, so both
- * `publish-extension.mjs` (package + publish on one machine) and
- * `publish-packaged.mjs` (publish artifacts built by CI) can import it.
+ * Its own module, with no argument parsing or other top-level work, so the
+ * package and publish scripts can all import it.
  */
-import { SUPPORTED_TARGETS } from './runtime-target.mjs';
+
+const REQUIRED = [
+  'extension/package.json',
+  'extension/dist/extension.js',
+  'extension/dist/atlassian-server.js',
+  'extension/skills/codebrain/SKILL.md',
+];
 
 /**
  * @param {string} vsix Path to the package.
- * @param {string} target The platform target it was built for.
- * @throws when the archive contradicts the target it claims to be for.
+ * @throws when the archive carries a runtime or misses a required file.
  */
-export async function verifyPackage(vsix, target) {
+export async function verifyPackage(vsix) {
   let yauzl;
   try {
     yauzl = (await import('yauzl')).default ?? (await import('yauzl'));
   } catch {
     // yauzl reaches us through vsce rather than as a direct dependency, so a
     // missing copy is a reason to skip the check, not to fail a release.
-    console.warn('[publish] yauzl unavailable — skipped .vsix verification');
+    console.warn('[package] yauzl unavailable — skipped .vsix verification');
     return;
   }
 
@@ -35,7 +38,7 @@ export async function verifyPackage(vsix, target) {
       if (error) return fail(error);
       const found = [];
       zip.on('entry', (entry) => {
-        found.push(entry);
+        found.push(entry.fileName);
         zip.readEntry();
       });
       zip.on('end', () => fulfil(found));
@@ -44,38 +47,16 @@ export async function verifyPackage(vsix, target) {
     });
   });
 
-  const prefix = `extension/runtime/${target}/`;
-  const strays = SUPPORTED_TARGETS.filter((other) => other !== target).filter((other) =>
-    entries.some((entry) => entry.fileName.startsWith(`extension/runtime/${other}/`)),
-  );
-  if (strays.length > 0) {
+  const runtime = entries.filter((name) => name.startsWith('extension/runtime/'));
+  if (runtime.length > 0) {
     throw new Error(
-      `${vsix} also contains runtimes for ${strays.join(', ')} — the ignore file did not apply.`,
+      `${vsix} contains a bundled runtime (${runtime.length} files under extension/runtime/). ` +
+        'The runtime is installed from npm at activation — check .vscodeignore.',
     );
   }
 
-  const launcher = entries.find(
-    (entry) =>
-      entry.fileName === `${prefix}${target.startsWith('win32-') ? 'node.exe' : 'node'}`,
-  );
-  if (!launcher) {
-    throw new Error(`${vsix} does not contain the ${target} runtime launcher.`);
-  }
-
-  if (!target.startsWith('win32-') && process.platform !== 'win32') {
-    // The mode a Linux user's install starts from, read from the archive
-    // itself rather than from the staging directory we set it in.
-    const mode = (launcher.externalFileAttributes >>> 16) & 0o7777;
-    if ((mode & 0o111) === 0) {
-      throw new Error(
-        `${vsix} records ${prefix}node as non-executable (mode ${mode.toString(8).padStart(4, '0')}). ` +
-          'Package this target from macOS or Linux.',
-      );
-    }
-  } else if (!target.startsWith('win32-')) {
-    console.warn(
-      `[publish] ${vsix} was packaged on Windows; POSIX execute-bit verification skipped. ` +
-        'The extension will restore it on first run.',
-    );
+  const missing = REQUIRED.filter((name) => !entries.includes(name));
+  if (missing.length > 0) {
+    throw new Error(`${vsix} is missing ${missing.join(', ')}.`);
   }
 }

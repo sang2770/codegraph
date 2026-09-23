@@ -60,7 +60,7 @@ function evidenceBanner(analysis?: ImpactAnalysis): string {
     }
     return `<div class="evidence-banner good"><strong>Indexed evidence</strong><span>${metric(edgeCount)} dependency edges traced. ${metric(dependentCount)} dependent workflow${dependentCount === 1 ? '' : 's'} and ${metric(analysis.affectedTests.length)} affected test${analysis.affectedTests.length === 1 ? '' : 's'} surfaced.</span></div>`;
   }
-  return `<div class="evidence-banner warn"><strong>Partial evidence</strong><span>This runtime returned paths but not dependency edges. Refresh the bundled runtime before relying on graph relationships.</span></div>`;
+  return `<div class="evidence-banner warn"><strong>Partial evidence</strong><span>This runtime returned paths but not dependency edges. Run "CodeBrain: Update CodeGraph Runtime" before relying on graph relationships.</span></div>`;
 }
 
 function truncationBanner(analysis?: ImpactAnalysis): string {
