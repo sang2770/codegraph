@@ -4,6 +4,9 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 
 ## [Unreleased]
 
+
+## [2.2.0] - 2026-09-25
+
 ### Breaking Changes
 
 - The CodeGraph runtime is no longer packed inside the extension. On first start CodeBrain installs `@xuansang2770/codegraph` from npm (a one-time download of roughly 100 MB), so the first command after installing may wait for it. There is now one small extension package for every platform instead of one large package per platform.
