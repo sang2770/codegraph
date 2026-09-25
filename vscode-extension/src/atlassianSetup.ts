@@ -36,6 +36,7 @@ import {
   writeEnvFile,
 } from './atlassian/connection';
 import { McpServerEntry } from './agents/mcpTargets';
+import { promptHookExtra } from './agents/extras';
 import { McpRegistrar } from './agents/registration';
 import { CodeBrainRuntime, requireRuntime } from './runtime';
 
@@ -73,6 +74,7 @@ export class AtlassianIntegration implements vscode.Disposable {
       serverKey: ATLASSIAN_MCP_KEY,
       label: 'CodeBrain Atlassian',
       entry: () => this.serverEntry(),
+      extras: [promptHookExtra(() => this.serverEntry())],
       log: (message) => this.log(message),
     });
     this.disposables.push(
@@ -346,10 +348,10 @@ export class AtlassianIntegration implements vscode.Disposable {
     const choice = await vscode.window.showInformationMessage(
       `CodeBrain: ${configured.join(' and ')} ready. Copilot picks the server up automatically.`,
       'Test connection',
-      'Register with other agents…',
+      'Set up agents…',
     );
     if (choice === 'Test connection') await this.testConnection();
-    else if (choice === 'Register with other agents…') await this.install();
+    else if (choice === 'Set up agents…') await vscode.commands.executeCommand('codebrain.setupAgents');
   }
 
   /** Store URLs in settings, tokens in the keychain, and export the env file. */
@@ -392,21 +394,27 @@ export class AtlassianIntegration implements vscode.Disposable {
 
   // -------------------------------------------------------- agent targeting
 
-  /** Ask which agents to register with, then write their config files. */
-  async install(): Promise<void> {
-    // The entry names the runtime's path, so it has to exist first. A failed
-    // install has already said why in its own notification.
-    try {
-      await this.runtime.resolve();
-    } catch {
-      return;
-    }
-    return this.registrar.install();
+  /** The installer for this server's MCP entry and Claude Code ticket hook. */
+  get agents(): McpRegistrar {
+    return this.registrar;
   }
 
-  /** Remove the server entry from every agent config that holds one. */
-  remove(): Promise<void> {
-    return this.registrar.remove();
+  /**
+   * The one Atlassian command: set up the connection the first time, and
+   * afterwards offer to edit, test or clear it — instead of three separate
+   * palette entries.
+   */
+  async manage(): Promise<void> {
+    if (!(await this.isConfigured())) return this.configure();
+    const pick = await vscode.window.showQuickPick(
+      [
+        { label: '$(edit) Edit connection', detail: 'Change URLs, username or tokens.', run: () => this.configure() },
+        { label: '$(plug) Test connection', detail: 'Make one authenticated call per product.', run: () => this.testConnection() },
+        { label: '$(trash) Clear credentials', detail: 'Forget the tokens, the URLs and the exported env file.', run: () => this.clear() },
+      ],
+      { title: 'CodeBrain: Atlassian (Collab + Jira)', placeHolder: 'Jira / Confluence is configured' },
+    );
+    return pick?.run();
   }
 
   /** Repair entries left pointing at the previous extension version's path. */

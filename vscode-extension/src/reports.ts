@@ -2,7 +2,7 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 
-export type ReportKind = 'explain' | 'review' | 'impact' | 'fix' | 'guide';
+export type ReportKind = 'explain' | 'review' | 'impact' | 'fix' | 'guide' | 'implement';
 
 interface MermaidBlock {
   source: string;
@@ -17,6 +17,17 @@ function fallbackDiagram(kind: ReportKind): string {
       '  P[Prerequisites] --> S[User steps]',
       '  S --> R[Expected result]',
       '  R --> T[Troubleshooting]',
+      '```',
+    ].join('\n');
+  }
+  if (kind === 'implement') {
+    return [
+      '```mermaid',
+      'flowchart LR',
+      '  A[Acceptance criteria] --> P[Change plan]',
+      '  P --> C[Code changes]',
+      '  C --> T[Tests]',
+      '  T --> R[Self-review]',
       '```',
     ].join('\n');
   }
@@ -160,6 +171,8 @@ export function normalizeReport(
           ? `# Bug analysis and solution: ${subject || 'reported issue'}`
         : kind === 'guide'
           ? `# User guide: ${subject || 'feature'}`
+        : kind === 'implement'
+          ? `# Implementation plan: ${subject || 'requested change'}`
       : `# Workflow explanation: ${subject || 'selected code'}`;
 
   if (!report.startsWith('# ')) {
@@ -226,6 +239,8 @@ export async function writeAndPreviewReport(
   kind: ReportKind,
   report: string,
   folder: vscode.WorkspaceFolder,
+  /** Open the preview; defaults to the `codebrain.reports.openPreview` setting. */
+  open?: boolean,
 ): Promise<vscode.Uri> {
   const workspaceName = safeSegment(folder.name || basename(folder.uri.fsPath));
   const directory = vscode.Uri.file(
@@ -238,9 +253,9 @@ export async function writeAndPreviewReport(
   await vscode.workspace.fs.writeFile(uri, Buffer.from(report, 'utf8'));
   await pruneReportDirectory(directory);
 
-  const openPreview = vscode.workspace
-    .getConfiguration('codebrain')
-    .get<boolean>('reports.openPreview', true);
+  const openPreview =
+    open ??
+    vscode.workspace.getConfiguration('codebrain').get<boolean>('reports.openPreview', true);
   if (openPreview) {
     await vscode.commands.executeCommand('markdown.showPreview', uri);
   }

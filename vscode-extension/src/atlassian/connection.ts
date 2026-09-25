@@ -152,7 +152,7 @@ export function serializeEnvFile(
 ): string {
   const lines = [
     '# CodeBrain — Atlassian (Jira + Confluence/Collab) connection settings.',
-    '# Written by the "CodeBrain: Configure Atlassian (Collab + Jira)" command.',
+    '# Written by the "CodeBrain: Atlassian (Jira + Confluence)" command.',
     '# Read by the bundled CodeBrain Atlassian MCP server, so Copilot, Claude',
     '# Code, Codex and Antigravity all share one set of credentials.',
     '# Keep this file private (mode 0600) — it contains personal access tokens.',

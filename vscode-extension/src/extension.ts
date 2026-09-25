@@ -3,6 +3,7 @@ import { runAffectedTests } from './affectedTests';
 import { AtlassianIntegration } from './atlassianSetup';
 import { BlastRadiusLensProvider } from './blastRadiusLens';
 import { registerChatParticipant } from './chat';
+import { removeFromAgents, setUpAgents } from './agents/setup';
 import { CodeBrainMcpRegistration } from './codegraphMcpSetup';
 import {
   editCommitTemplate,
@@ -58,6 +59,14 @@ export function activate(context: vscode.ExtensionContext): void {
       context.extensionUri.fsPath,
       (message) => logSink(message),
     );
+    const agentSources = {
+      codeBrain: codeBrainMcp.agents,
+      atlassian: atlassian.agents,
+      // The entries name the runtime's path, so it has to exist first. A
+      // failed install has already said why in its own notification.
+      prepare: () => runtime.resolve().then(() => true, () => false),
+      atlassianConfigured: () => atlassian.isConfigured(),
+    };
 
     // Every agent entry names the runtime's versioned path, so an update — or
     // an extension update, for the Atlassian script and the skill text — would
@@ -137,20 +146,17 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.registerCommand('codebrain.updateRuntime', () =>
         runtime.checkNow(),
       ),
-      vscode.commands.registerCommand('codebrain.registerMcp', () =>
-        codeBrainMcp.install(),
+      // One setup command and one removal for both servers. The older
+      // per-server commands stay registered (hidden from the palette) so
+      // keybindings and docs that name them keep working.
+      ...['codebrain.setupAgents', 'codebrain.registerMcp', 'codebrain.registerAtlassianMcp'].map((id) =>
+        vscode.commands.registerCommand(id, () => setUpAgents(agentSources)),
       ),
-      vscode.commands.registerCommand('codebrain.unregisterMcp', () =>
-        codeBrainMcp.remove(),
+      ...['codebrain.removeAgents', 'codebrain.unregisterMcp', 'codebrain.unregisterAtlassianMcp'].map((id) =>
+        vscode.commands.registerCommand(id, () => removeFromAgents(agentSources)),
       ),
       vscode.commands.registerCommand('codebrain.configureAtlassian', () =>
-        atlassian.configure(),
-      ),
-      vscode.commands.registerCommand('codebrain.registerAtlassianMcp', () =>
-        atlassian.install(),
-      ),
-      vscode.commands.registerCommand('codebrain.unregisterAtlassianMcp', () =>
-        atlassian.remove(),
+        atlassian.manage(),
       ),
       vscode.commands.registerCommand('codebrain.testAtlassianConnection', () =>
         atlassian.testConnection(),
@@ -254,6 +260,7 @@ export function activate(context: vscode.ExtensionContext): void {
       freshness,
       exploreCache,
       logSink,
+      atlassian,
     );
 
     // Bring back the findings from the last session's review.

@@ -23,12 +23,16 @@ import {
   sslVerifyDisabled,
   writeAccessEnabled,
 } from './connection';
+import { join } from 'node:path';
+import { readSkill } from '../agents/skillFormat';
 import { AtlassianClient } from './client';
+import { runPromptHook } from './promptHook';
 import { DEFAULT_MAX_BODY_CHARACTERS } from './format';
 import {
   callTool,
   DEFAULT_MAX_IMAGE_BYTES,
   listTools,
+  TASK_CONTEXT_TOOL,
   ToolContext,
   toolNames,
 } from './tools';
@@ -63,6 +67,7 @@ export const SERVER_INSTRUCTIONS = `CodeBrain Atlassian — read-only access to 
 
 Use it whenever a task references a ticket, a spec, or a decision that is not in the code:
 
+- A development task (implement, fix, explain, review) tied to a ticket or spec -> ${TASK_CONTEXT_TOOL} FIRST. One call returns the issue with its comments, the extracted acceptance criteria, the linked or best-matching Confluence spec, and the code names to pass to codegraph_explore next. Take the key from the request, the branch name or a commit; use query when there is no key.
 - An issue key (ABC-1234) in a branch name, commit, TODO or the user's prompt -> jira_get_issue. It returns the description AND the comment thread in one call; the reproduction steps and the final decision are usually in the comments.
 - "Why was this built this way", "what is the spec for X", "what did we decide about Y" -> confluence_search, then confluence_get_page on the best hit for the full text.
 - "What is still open / who owns this / what shipped in release N" -> jira_search with JQL.
@@ -91,6 +96,125 @@ Write access is ENABLED for this session: jira_add_comment, jira_transition_issu
 /** The instructions to send, for the write access this session actually has. */
 export function serverInstructions(allowWrite: boolean): string {
   return allowWrite ? SERVER_INSTRUCTIONS + SERVER_INSTRUCTIONS_WRITE : SERVER_INSTRUCTIONS;
+}
+
+/**
+ * The developer workflows, served as MCP prompts.
+ *
+ * Hosts that support prompts (Claude Code, VS Code Copilot, Gemini CLI, …)
+ * list them as slash commands, so one definition gives every one of those
+ * agents `/implement`, `/fix`, `/explain` and `/review`. The text is the
+ * matching shipped skill, read from disk on each request — the same bytes an
+ * agent gets when it loads the skill instead, so the two can never drift.
+ */
+export const WORKFLOW_PROMPTS: readonly {
+  name: string;
+  skill: string;
+  title: string;
+  description: string;
+}[] = [
+  {
+    name: 'explain',
+    skill: 'codebrain-explain',
+    title: 'CodeBrain: explain a workflow',
+    description:
+      'Explain how a feature works end to end — business purpose, code path, diagrams — grounded in the code graph and its Jira ticket / Confluence spec.',
+  },
+  {
+    name: 'implement',
+    skill: 'codebrain-implement',
+    title: 'CodeBrain: implement a ticket',
+    description:
+      'Ticket → acceptance criteria → plan (approved by you) → edit → diagnostics and affected tests → self-review.',
+  },
+  {
+    name: 'fix',
+    skill: 'codebrain-fix',
+    title: 'CodeBrain: fix a bug',
+    description:
+      'Bug report → root cause through the code graph → failing regression test → smallest safe fix → test green.',
+  },
+  {
+    name: 'review',
+    skill: 'codebrain-review',
+    title: 'CodeBrain: review changes',
+    description:
+      'Graph-grounded review of a diff: breaking changes, callers outside the diff, correctness, untested code, and Jira acceptance-criteria coverage.',
+  },
+];
+
+const PROMPT_ARGUMENTS = [
+  {
+    name: 'request',
+    description: 'What to do — a question, feature request, bug description, or review scope.',
+    required: false,
+  },
+  {
+    name: 'issue',
+    description: 'Jira issue key, for example ABC-1234 (optional — the branch name is checked too).',
+    required: false,
+  },
+];
+
+/**
+ * Where the shipped skills live. The bundle sits in `<extension>/dist/`, the
+ * skills in `<extension>/skills/`; `CODEBRAIN_SKILLS_DIR` overrides it for tests
+ * and for running the server from source.
+ */
+export function skillsDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEBRAIN_SKILLS_DIR?.trim() || join(__dirname, '..', 'skills');
+}
+
+export function listPrompts(): {
+  name: string;
+  title: string;
+  description: string;
+  arguments: typeof PROMPT_ARGUMENTS;
+}[] {
+  return WORKFLOW_PROMPTS.map(({ name, title, description }) => ({
+    name,
+    title,
+    description,
+    arguments: PROMPT_ARGUMENTS,
+  }));
+}
+
+/** The prompt's messages, or `undefined` for a name that is not one of ours. */
+export function getPrompt(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): { description: string; messages: { role: 'user'; content: { type: 'text'; text: string } }[] } | undefined {
+  const prompt = WORKFLOW_PROMPTS.find((entry) => entry.name === name);
+  if (!prompt) return undefined;
+
+  let playbook: string;
+  try {
+    playbook = readSkill(skillsDirectory(env), prompt.skill).body;
+  } catch {
+    // A missing skill file is a packaging fault, not the user's; the one-line
+    // description still steers the agent through the workflow.
+    playbook = `# ${prompt.title}\n\n${prompt.description}\n\nStart with ${TASK_CONTEXT_TOOL} when a Jira key or spec is involved, then codegraph_explore for the code.`;
+  }
+
+  const request = typeof args?.request === 'string' ? args.request.trim() : '';
+  const issue = typeof args?.issue === 'string' ? args.issue.trim() : '';
+  const task = [
+    request ? `Task: ${request}` : 'Task: (none given — ask the user what to work on, or use the Jira key in the current branch name)',
+    issue ? `Jira issue: ${issue}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    description: prompt.description,
+    messages: [
+      {
+        role: 'user',
+        content: { type: 'text', text: `Follow this CodeBrain workflow.\n\n${playbook}\n\n---\n\n${task}` },
+      },
+    ],
+  };
 }
 
 /**
@@ -124,7 +248,7 @@ export async function handleMessage(
         : SUPPORTED_PROTOCOL_VERSIONS[0];
       return ok(id, {
         protocolVersion,
-        capabilities: { tools: { listChanged: true } },
+        capabilities: { tools: { listChanged: true }, prompts: { listChanged: false } },
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
         instructions: serverInstructions(resolve(options).allowWrite),
       });
@@ -141,6 +265,29 @@ export async function handleMessage(
       const { connections, allowWrite } = resolve(options);
       trackToolSet(connections, allowWrite, options.onToolsChanged);
       return ok(id, { tools: listTools(connections, { allowWrite }) });
+    }
+
+    case 'prompts/list':
+      return ok(id, { prompts: listPrompts() });
+
+    case 'prompts/get': {
+      const name = String(message.params?.name ?? '');
+      const prompt = getPrompt(
+        name,
+        message.params?.arguments as Record<string, unknown> | undefined,
+        options.env ?? process.env,
+      );
+      if (!prompt) {
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32602,
+            message: `Unknown prompt "${name}". Available: ${WORKFLOW_PROMPTS.map((entry) => entry.name).join(', ')}.`,
+          },
+        };
+      }
+      return ok(id, prompt);
     }
 
     case 'tools/call': {
@@ -322,5 +469,14 @@ function main(): void {
 }
 
 if (require.main === module) {
-  main();
+  if (process.argv.includes('--prompt-hook')) {
+    // Claude Code's UserPromptSubmit hook — see promptHook.ts. Never fails the
+    // prompt: any error ends in a silent, successful exit.
+    if (sslVerifyDisabled()) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    void runPromptHook()
+      .catch(() => undefined)
+      .finally(() => process.exit(0));
+  } else {
+    main();
+  }
 }

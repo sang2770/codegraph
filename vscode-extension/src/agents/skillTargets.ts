@@ -1,5 +1,5 @@
 /**
- * Installing the CodeBrain skill into agents that live outside VS Code.
+ * Installing the CodeBrain skills into agents that live outside VS Code.
  *
  * VS Code's own Copilot gets the skill from `contributes.chatSkills` — a
  * packaged file, nothing on disk to manage. Every other agent now reads the
@@ -29,15 +29,20 @@
  * install or refresh replaces them with the native skill, and an uninstall
  * sweeps them along with it.
  *
- * The skill's text is the one shipped with the extension — `skills/codebrain/
- * SKILL.md`, the same file Copilot gets — so all agents are told the same thing
- * and there is no second copy to keep in sync.
+ * The skills' text is the one shipped with the extension — `skills/<name>/
+ * SKILL.md` (the general `codebrain` skill plus the explain / implement / fix /
+ * review workflows), the same files Copilot gets — so all agents are told the
+ * same thing and there is no second copy to keep in sync.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { AgentTargetId, McpScope, TargetPaths, WriteAction } from './mcpTargets';
 import { readMarkdownBlock, removeMarkdownBlock } from './markdownBlock';
+import { CODEBRAIN_SKILL_NAMES, readSkill, SkillDefinition } from './skillFormat';
+
+export type { SkillDefinition } from './skillFormat';
+export { CODEBRAIN_SKILL_NAMES, parseSkill } from './skillFormat';
 
 /** Every agent that takes a skill — the MCP targets plus nothing else. */
 export type SkillTargetId = AgentTargetId;
@@ -54,18 +59,6 @@ export const SKILL_TARGET_IDS: readonly SkillTargetId[] = [
 
 export const SKILL_BLOCK_START = '<!-- CODEBRAIN_SKILL_START -->';
 export const SKILL_BLOCK_END = '<!-- CODEBRAIN_SKILL_END -->';
-
-export interface SkillDefinition {
-  /** Slug — the skill's directory name and its `name:` field. */
-  name: string;
-  /** Human-readable heading, from the skill's own `# Title`. */
-  title: string;
-  description: string;
-  /** The whole `SKILL.md`, frontmatter included: Claude Code reads it as-is. */
-  source: string;
-  /** The instructions alone, under the frontmatter the other agents get. */
-  body: string;
-}
 
 export interface SkillArtifact {
   path: string;
@@ -118,41 +111,19 @@ export function skillTargetDisplayName(id: SkillTargetId): string {
   return DISPLAY_NAMES[id];
 }
 
-// ------------------------------------------------------------------ parsing
+// ------------------------------------------------------------------ loading
 
-/**
- * Split a `SKILL.md` into the pieces each format needs.
- *
- * Deliberately shallow: only `name` and `description` are read, and only from
- * simple `key: value` lines. The frontmatter is authored in this repository, so
- * a full YAML parser would be a dependency bought for nothing.
- */
-export function parseSkill(source: string, fallbackName: string): SkillDefinition {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(source);
-  const frontmatter = match?.[1] ?? '';
-  const body = (match ? source.slice(match[0].length) : source).trim();
-
-  const field = (key: string): string | undefined => {
-    const found = new RegExp(`^${key}:[ \\t]*(.*)$`, 'm').exec(frontmatter);
-    return found?.[1]?.trim().replace(/^["'](.*)["']$/, '$1');
-  };
-
-  const name = field('name') || fallbackName;
-  return {
-    name,
-    // The body opens with the skill's own `# Heading`; use it as the title so
-    // the instructions-file fallback does not invent a different name.
-    title: /^#[ \t]+(.+)$/m.exec(body)?.[1]?.trim() || name,
-    description: field('description') ?? '',
-    source: source.trim(),
-    body,
-  };
+/** Read one skill shipped inside the extension. */
+export function loadSkill(extensionPath: string, name = 'codebrain'): SkillDefinition {
+  return readSkill(join(extensionPath, 'skills'), name);
 }
 
-/** Read the skill shipped inside the extension. */
-export function loadSkill(extensionPath: string, name = 'codebrain'): SkillDefinition {
-  const path = join(extensionPath, 'skills', name, 'SKILL.md');
-  return parseSkill(readFileSync(path, 'utf8'), name);
+/**
+ * Every skill shipped inside the extension: the general tool guidance plus the
+ * four developer-workflow playbooks (explain, implement, fix, review).
+ */
+export function loadSkills(extensionPath: string): SkillDefinition[] {
+  return CODEBRAIN_SKILL_NAMES.map((name) => loadSkill(extensionPath, name));
 }
 
 // -------------------------------------------------------------- descriptors
@@ -408,6 +379,41 @@ export function isSkillStale(
 ): boolean {
   if (installed.artifact.kind !== 'file') return true;
   return installed.content !== renderSkill(id, skill);
+}
+
+/**
+ * The (skill, scope) installs that bring one agent in line with this build.
+ *
+ * `skills[0]` is the base skill. Wherever the user already has it, every other
+ * shipped skill is installed too: they opted into CodeBrain's skills for that
+ * agent at that scope, and a workflow skill added in a later release is part of
+ * the same package, not a new decision. Stale copies of any skill are
+ * rewritten. An agent without the base skill is left alone entirely.
+ */
+export function planSkillRefresh(
+  skills: readonly SkillDefinition[],
+  id: SkillTargetId,
+  paths: TargetPaths,
+): { skill: SkillDefinition; scope: McpScope }[] {
+  const base = skills[0];
+  if (!base) return [];
+  const baseScopes = new Set(readInstalledSkills(base, id, paths).map((entry) => entry.artifact.scope));
+
+  const plan: { skill: SkillDefinition; scope: McpScope }[] = [];
+  for (const skill of skills) {
+    const installed = readInstalledSkills(skill, id, paths);
+    const scopes = new Set(
+      installed.filter((entry) => isSkillStale(entry, skill, id)).map((entry) => entry.artifact.scope),
+    );
+    if (skill !== base) {
+      const present = new Set(
+        installed.filter((entry) => entry.artifact.kind === 'file').map((entry) => entry.artifact.scope),
+      );
+      for (const scope of baseScopes) if (!present.has(scope)) scopes.add(scope);
+    }
+    for (const scope of scopes) plan.push({ skill, scope });
+  }
+  return plan;
 }
 
 // --------------------------------------------------------------------- files

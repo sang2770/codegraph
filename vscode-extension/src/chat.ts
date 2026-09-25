@@ -13,11 +13,18 @@ import {
   listGitCommits,
 } from './gitContext';
 import { GraphCache } from './graphCache';
+import { AtlassianClient } from './atlassian/client';
+import { atlassianEnvPath } from './atlassian/connection';
+import { extractCodeHints } from './atlassian/taskContext';
+import { buildTaskContext, TaskContext } from './atlassian/tools';
+import type { AtlassianIntegration } from './atlassianSetup';
 import { buildImpactMarkdown } from './impact';
 import { ImpactController } from './impactController';
 import { IndexFreshness } from './indexFreshness';
 import { IndexManager } from './indexManager';
 import { readIndexStatus } from './indexStatus';
+import { currentBranch, extractIssueKey } from './jira/branches';
+import { extractPromptIssueKey } from './jira/issueKey';
 import {
   detectConversationLanguage,
   detectResponseLanguage,
@@ -49,6 +56,10 @@ interface CodeBrainChatResult extends vscode.ChatResult {
     command: ReportKind;
     report?: string;
     tokens?: ChatRequestTokenSample;
+    /** Instruction for an editing agent, carried so a follow-up can hand it off. */
+    handoff?: string;
+    /** Jira key the answer was grounded in. */
+    ticket?: string;
   };
 }
 
@@ -88,6 +99,8 @@ Include either a Mermaid \`flowchart\` showing how data moves through the workfl
 ## Functions and responsibilities
 ## Data, state, and side effects
 ## Failure and edge paths
+## Spec vs code
+Include this section only when Jira ticket or Confluence specification context is supplied: state where the implementation matches the ticket's acceptance criteria or the spec and where it drifts, each with file:line evidence. Omit the section entirely otherwise.
 ## CodeBrain evidence
 Project README context, when supplied, is the project's terminology and intent guide. Use it to interpret names and explain why a workflow exists, but do not let README claims override concrete source, call-path, or line-number evidence. If the README is stale or ambiguous, call that out briefly.
 Use simple Mermaid node IDs and labels for Markdown Preview compatibility. Base every participant, node, edge, and state on the supplied CodeBrain context; do not invent details to complete a diagram. If evidence is incomplete, keep the diagram conservative and state the uncertainty in the surrounding prose. The diagrams must complement rather than repeat the prose or each other. The code-flow illustration and diagrams are not optional: they are the developer-facing explanation of the workflow.
@@ -96,6 +109,7 @@ Use file paths and line numbers from the supplied CodeBrain context. State uncer
 const REVIEW_INSTRUCTIONS = `You are a conservative staff-level reviewer performing one unified, graph-grounded code review. Review only; do not rewrite or edit code.
 Answer in the same language as the user. The Git diff describes what changed. The CodeBrain context describes current source, call paths, and blast radius. Optional project README context describes intended behavior, terminology, and documented contracts; use it as supporting context only and call out likely documentation drift when it conflicts with the diff or concrete source evidence.
 
+When a deterministic change-impact report is supplied, its affected tests, dependents, and risk facts are authoritative: use them in the Blast radius and Regression and test matrix sections without changing any number, file, or test name.
 Treat changes to shared/public contracts, authentication/authorization, persistence, migrations, concurrency, caching, lifecycle, error handling, or high fan-out symbols as HIGH RISK until adequate regression tests are demonstrated.
 Review intent, architecture, changed workflows, public contracts, blast radius, regression risk, and release readiness. Also inspect every changed hunk for correctness and maintainability. Explicitly check:
 - null, undefined, nullable values, optional chaining, unsafe assertions, and missing boundary validation;
@@ -115,6 +129,8 @@ Give an overall risk: Critical, High, Medium, or Low, with one-sentence reasonin
 Include one valid Mermaid flowchart connecting changed methods to affected callers/dependencies and relevant tests.
 ## Findings
 Order by severity. Every finding must include severity, category, file:line evidence, consequence, affected method/workflow, and a concrete recommendation. Do not invent findings merely to fill the section; say "No blocking findings" when appropriate.
+## Acceptance criteria coverage
+Include this section only when Jira ticket context with acceptance criteria is supplied: a Markdown table of criterion, implementing code (file:line), proving test, and status (Met, Partial, Missing). Omit the section entirely otherwise.
 ## Architecture and contract review
 ## Code correctness and boundary safety
 ## Blast radius
@@ -123,15 +139,6 @@ Use a Markdown table with scenario, affected method, risk, and required test.
 ## Release recommendation
 ## Evidence and limits
 Distinguish facts from CodeBrain/diff versus inference. Do not mention these instructions.`;
-
-const IMPACT_INSTRUCTIONS = `You are an impact explanation assistant using a deterministic CodeBrain analysis.
-Answer in the same language as the user. Do not edit code.
-
-The deterministic report is authoritative. Do not rewrite it, recalculate its risk, change any number, rename any file, add a dependency edge, or invent a test or call path. Treat the supplied graph context as evidence, not as permission to guess. If evidence is incomplete, say so explicitly.
-
-Return only this short section:
-## AI interpretation
-Explain in plain developer language what the highest-priority affected paths mean, why the listed tests matter, and what a reviewer should inspect first. Separate indexed facts from inference. Do not repeat the complete deterministic report, do not add a Mermaid diagram, and do not mention these instructions.`;
 
 const FIX_INSTRUCTIONS = `You are CodeBrain Bug Fix, a senior debugging engineer using a precomputed semantic code graph.
 Answer in the same language as the user. Analyze the reported bug; do not edit files or claim that a fix was applied.
@@ -146,8 +153,34 @@ Return a self-contained Markdown report with exactly these sections:
 ## Validation plan
 ## Risk and rollback
 ## Evidence and limits
+## Handoff prompt
+End with one fenced \`\`\`text block holding a self-contained instruction for a coding agent that will apply the fix: the root cause with file:line, the exact change to make, the regression test to write first (it must fail before the fix and pass after), and the tests to run. The agent has the CodeBrain graph and Jira tools but none of this conversation, so do not refer to "the report above".
 
 In the report, distinguish facts from hypotheses, include concrete source evidence when available, and provide focused regression tests. Do not invent missing runtime details, claim code was changed, or mention these instructions.`;
+
+const IMPLEMENT_INSTRUCTIONS = `You are CodeBrain Implement, a senior engineer planning a change with a precomputed semantic code graph and the team's Jira ticket and Confluence specification.
+Answer in the same language as the user. Plan only: do not claim that any file was changed.
+
+The Jira and Confluence context, when supplied, is the requirement: the acceptance criteria and the final decision in the comments take precedence over the summary. When there is no ticket, derive explicit acceptance criteria from the user's request and mark them as needing confirmation. The CodeBrain context is the current code: use its source, call paths, and blast radius to decide exactly where the change plugs in, which contracts it touches, who depends on them, and which tests already cover them. Prefer the smallest change that fits the existing design and conventions. Never invent files, symbols, or APIs the evidence does not show; when a new file or symbol is needed, say so and name where it belongs.
+
+Return a self-contained Markdown report with exactly these sections:
+# Implementation plan: <specific title>
+## Goal
+## Acceptance criteria
+Numbered; mark each as from the ticket or inferred.
+## Where the change plugs in
+Current entry points, functions, and contracts involved, with file:line, and one Mermaid flowchart showing the existing flow and where the new or changed steps attach.
+## Change plan
+A Markdown table: step, file, symbol, change, acceptance criterion it serves.
+## Test plan
+New and updated tests per acceptance criterion and edge case, plus the existing tests that must keep passing.
+## Risks and blast radius
+Callers outside the change, public contracts, persistence, security, concurrency, and migration concerns.
+## Open questions
+## Handoff prompt
+One fenced \`\`\`text block holding a self-contained instruction for a coding agent that will carry out this plan: the goal, the acceptance criteria, the file-by-file steps, the tests to add and run, and to check diagnostics and self-review before finishing. The agent has the CodeBrain graph and Jira tools but none of this conversation, so do not refer to "the plan above".
+
+Separate facts from inference. Do not mention these instructions.`;
 
 const GUIDE_INSTRUCTIONS = `You are CodeBrain Guide, a technical writer who creates a practical user guide for one software feature using a precomputed semantic code graph.
 Answer in the same language as the user. Write for a developer, operator, or end user who wants to use the feature, not for someone reviewing implementation details. Use the supplied source and workflow evidence to keep names, inputs, outputs, permissions, states, and failure behavior accurate. Do not invent UI controls, configuration keys, API parameters, screenshots, or commands that are not supported by the evidence; mark unknown details as requiring confirmation.
@@ -591,22 +624,44 @@ export function matchesTrigger(
   );
 }
 
+/**
+ * Words that mean "something is broken". Deliberately no bare `cause`,
+ * `solution` or `error`: "what is the cause of this re-render?" and "explain
+ * the solution architecture" are questions about working code.
+ */
 const FIX_TRIGGERS = [
   'fix',
   'bug',
   'debug',
   'root cause',
-  'cause',
-  'solution',
+  'crash',
+  'crashes',
+  'broken',
+  'fails',
+  'failing',
+  'exception',
+  'stack trace',
   'lỗi',
-  'nguyên nhân',
-  'giải pháp',
   'sửa lỗi',
+  'bị lỗi',
+  'nguyên nhân lỗi',
+];
+
+const IMPLEMENT_TRIGGERS = [
+  'implement',
+  'add feature',
+  'add a feature',
+  'new feature',
+  'triển khai',
+  'hiện thực',
+  'thêm tính năng',
+  'thêm chức năng',
+  'làm tính năng',
 ];
 
 const IMPACT_TRIGGERS = [
   'impact',
-  // Bare "affected", so "which tests are affected" reaches /impact the same way
+  // Bare "affected", so "which tests are affected" reaches the impact analysis the same way
   // "affected tests" does. Word order varies; the word itself does not.
   'affected',
   'change impact',
@@ -614,15 +669,18 @@ const IMPACT_TRIGGERS = [
   'tác động',
 ];
 
+/** Phrases about reviewing a change set. Bare `diff` and `risk` are ordinary words. */
 const REVIEW_TRIGGERS = [
   'review',
-  'diff',
-  'risk',
+  'code review',
+  'my changes',
+  'my diff',
+  'this diff',
   'regression',
   'blast radius',
-  'rủi ro',
   'đánh giá',
   'kiểm tra code',
+  'thay đổi của tôi',
 ];
 
 const GUIDE_TRIGGERS = [
@@ -634,40 +692,133 @@ const GUIDE_TRIGGERS = [
   'tài liệu sử dụng',
 ];
 
-export function inferCommand(request: {
-  command: string | undefined;
-  prompt: string;
-}): ReportKind {
-  const explicit = request.command;
-  if (
-    explicit === 'impact' ||
-    explicit === 'review' ||
-    explicit === 'explain' ||
-    explicit === 'fix' ||
-    explicit === 'guide'
-  ) {
-    return explicit;
+/** A question about how code works, which is an explanation whatever came before. */
+const QUESTION_OPENERS =
+  /^\s*(?:how|why|what|where|which|when|who|explain|describe|walk me through|show me|tại sao|vì sao|như thế nào|thế nào|là gì|ở đâu|giải thích|mô tả)(?![\p{L}\p{N}_])/iu;
+
+/**
+ * A reply that carries on from the previous answer rather than asking
+ * something new: "ok", "go ahead", "làm đi", "tiếp tục bước 2".
+ */
+const CONTINUATION =
+  /^\s*(?:ok(?:ay)?|yes|yep|sure|go(?: ahead)?|do it|proceed|continue|next|carry on|looks good|lgtm|được|đồng ý|ừ|ok\s*làm|làm đi|làm tiếp|tiếp(?: tục)?|triển khai đi|bắt đầu)(?![\p{L}\p{N}_])/iu;
+
+/** Whether a review request asks about affected tests or change impact. */
+export function wantsImpactAnalysis(prompt: string): boolean {
+  return matchesTrigger(prompt, IMPACT_TRIGGERS);
+}
+
+export function isContinuation(prompt: string): boolean {
+  return prompt.trim().length < 120 && CONTINUATION.test(prompt);
+}
+
+const COMMANDS: readonly ReportKind[] = ['impact', 'review', 'explain', 'fix', 'guide', 'implement'];
+
+export function inferCommand(
+  request: {
+    command: string | undefined;
+    prompt: string;
+  },
+  /** The command the previous answer in this thread ran, if any. */
+  previous?: ReportKind,
+): ReportKind {
+  const explicit = COMMANDS.find((command) => command === request.command);
+  if (explicit) {
+    return explicit === 'impact' ? 'review' : explicit;
   }
-  if (matchesTrigger(request.prompt, FIX_TRIGGERS)) {
+  const { prompt } = request;
+  if (matchesTrigger(prompt, FIX_TRIGGERS)) {
     return 'fix';
   }
-  if (matchesTrigger(request.prompt, IMPACT_TRIGGERS)) {
-    return 'impact';
+  if (matchesTrigger(prompt, IMPLEMENT_TRIGGERS)) {
+    return 'implement';
   }
-  if (matchesTrigger(request.prompt, GUIDE_TRIGGERS)) {
+  if (matchesTrigger(prompt, IMPACT_TRIGGERS)) {
+    // Impact is part of a review now: it adds the deterministic affected-test
+    // analysis to the review's evidence (see `wantsImpactAnalysis`).
+    return 'review';
+  }
+  if (matchesTrigger(prompt, GUIDE_TRIGGERS)) {
     return 'guide';
   }
-  return matchesTrigger(request.prompt, REVIEW_TRIGGERS) ? 'review' : 'explain';
+  if (matchesTrigger(prompt, REVIEW_TRIGGERS)) {
+    return 'review';
+  }
+  if (QUESTION_OPENERS.test(prompt)) {
+    return 'explain';
+  }
+  // A follow-up with no keyword of its own ("and for the admin role?", "làm
+  // tiếp bước 2") continues the thread's task instead of silently switching
+  // to an explanation.
+  return previous ?? 'explain';
+}
+
+/** What the previous CodeBrain answer in this thread was, from its result metadata. */
+export function previousResult(
+  history: readonly unknown[],
+): { command?: ReportKind; handoff?: string; ticket?: string } {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const turn = history[index];
+    if (!(turn instanceof vscode.ChatResponseTurn)) continue;
+    const metadata = (turn.result?.metadata ?? {}) as {
+      command?: unknown;
+      handoff?: unknown;
+      ticket?: unknown;
+    };
+    const command = COMMANDS.find((entry) => entry === metadata.command);
+    return {
+      // Threads started before /impact folded into /review continue as reviews.
+      command: command === 'impact' ? 'review' : command,
+      handoff: typeof metadata.handoff === 'string' ? metadata.handoff : undefined,
+      ticket: typeof metadata.ticket === 'string' ? metadata.ticket : undefined,
+    };
+  }
+  return {};
+}
+
+/** Longest query sent to explore; beyond this the tail only dilutes the ranking. */
+const MAX_QUERY_CHARACTERS = 2_000;
+
+/**
+ * Graph-query hints from the active editor: the file, and the code names in
+ * the selection.
+ *
+ * Only these — not the editor context's own labels ("Active file:",
+ * "Selected lines:"), which explore would otherwise treat as search terms.
+ */
+export function editorQueryHints(editorContext: string): string[] {
+  const path = /^Active file:\s*(.+)$/m.exec(editorContext)?.[1]?.trim();
+  const selection = editorContext.split(/\nSelected code:\n/)[1] ?? '';
+  return [path, ...extractCodeHints(selection, 8)].filter((hint): hint is string => Boolean(hint));
+}
+
+/**
+ * The explore query: only what points at code — the user's words, attachments,
+ * ticket code names, changed files and editor focus — de-duplicated.
+ *
+ * What the report should contain belongs in the model's instructions, not
+ * here. Explore ranks by the words it is given, so boilerplate such as
+ * "state changes, side effects, affected tests" pulled unrelated files into
+ * the evidence (measured: a fix query surfaced the impact panel instead of the
+ * function the question was about).
+ */
+export function buildFocusQuery(
+  parts: readonly (string | undefined)[],
+  fallback: string,
+): string {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const part of parts) {
+    const value = part?.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    kept.push(value);
+  }
+  return (kept.join(' ') || fallback).slice(0, MAX_QUERY_CHARACTERS);
 }
 
 function buildExplainQuery(prompt: string, editorContext: string): string {
-  const focus = [prompt, editorContext.split('\n').slice(0, 3).join(' ')]
-    .filter(Boolean)
-    .join(' ');
-  return `Explain the business workflow and developer-readable execution flow for: ${focus}. Identify the entry point or trigger, the ordered business steps, decisions and validations, data transformations, state changes, side effects, result, and failure paths. Return concrete symbols, files, line numbers, and short source snippets where available. Avoid a generic symbol inventory and avoid caller/callee terminology.`.slice(
-    0,
-    6_000,
-  );
+  return buildFocusQuery([prompt, ...editorQueryHints(editorContext)], 'main entry point');
 }
 
 function buildReviewQuery(
@@ -675,36 +826,22 @@ function buildReviewQuery(
   gitContext: GitReviewContext,
   editorContext: string,
 ): string {
-  const files = gitContext.changedFiles.slice(0, 80).join(' ');
-  const focus = [prompt, files, editorContext.split('\n').slice(0, 3).join(' ')]
-    .filter(Boolean)
-    .join(' ');
-  const goal =
-    'Perform one unified code review. Trace changed workflows, public contracts, affected methods, callers and dependencies; inspect every changed hunk for correctness, null/undefined boundaries, error paths, async/state behavior, concrete convention issues, blast radius, regression risk, missing edge-case tests, and release readiness for';
-  return `${goal}: ${focus}`.slice(
-    0,
-    6_000,
+  return buildFocusQuery(
+    [prompt, ...gitContext.changedFiles.slice(0, 40), ...editorQueryHints(editorContext)],
+    'changed files',
   );
 }
 
 function buildFixQuery(prompt: string, editorContext: string): string {
-  const focus = [prompt, editorContext.split('\n').slice(0, 8).join(' ')]
-    .filter(Boolean)
-    .join(' ');
-  return `Analyze this reported bug and trace the failure path through the semantic code graph: ${focus}. Identify the symptom, trigger, expected versus actual behavior, root cause, broken assumption, relevant symbols and line numbers, affected workflows and tests, smallest safe solution, alternatives, and regression validation plan. Separate evidence from hypotheses; do not invent missing runtime details.`.slice(
-    0,
-    6_000,
-  );
+  return buildFocusQuery([prompt, ...editorQueryHints(editorContext)], 'error handling');
+}
+
+function buildImplementQuery(prompt: string, editorContext: string): string {
+  return buildFocusQuery([prompt, ...editorQueryHints(editorContext)], 'main entry point');
 }
 
 function buildGuideQuery(prompt: string, editorContext: string): string {
-  const focus = [prompt, editorContext.split('\n').slice(0, 8).join(' ')]
-    .filter(Boolean)
-    .join(' ');
-  return `Create a user-facing guide for this feature: ${focus}. Trace the complete supported workflow from entry point to result. Identify prerequisites, permissions, configuration, inputs, user-visible states, success and failure outcomes, recovery paths, examples, validation checks, relevant tests, and implementation reference points. Prefer concrete evidence and explicitly mark unknown user-facing details.`.slice(
-    0,
-    6_000,
-  );
+  return buildFocusQuery([prompt, ...editorQueryHints(editorContext)], 'main entry point');
 }
 
 /** How much of one attachment reaches the model. */
@@ -916,31 +1053,6 @@ export function extractCodeReferences(
   return found;
 }
 
-/** Relative paths as the nested shape `ChatResponseStream.filetree` expects. */
-export function buildFileTree(
-  paths: readonly string[],
-): vscode.ChatResponseFileTree[] {
-  const roots: vscode.ChatResponseFileTree[] = [];
-  for (const path of paths) {
-    const segments = path.replaceAll('\\', '/').split('/').filter(Boolean);
-    let level = roots;
-    for (const [index, segment] of segments.entries()) {
-      const isFile = index === segments.length - 1;
-      let node = level.find((entry) => entry.name === segment);
-      if (!node) {
-        node = isFile ? { name: segment } : { name: segment, children: [] };
-        level.push(node);
-      }
-      if (isFile) {
-        break;
-      }
-      node.children ??= [];
-      level = node.children;
-    }
-  }
-  return roots;
-}
-
 /**
  * How many files one graph lookup should return for a repository this size.
  *
@@ -1021,7 +1133,8 @@ function streamCodeAnchors(
   report: string,
   languageCode: string,
 ): void {
-  const anchors = extractCodeReferences(report).filter((reference) =>
+  // A handful of the report's first citations; the full list only repeats it.
+  const anchors = extractCodeReferences(report, 8).filter((reference) =>
     existsSync(join(folder.uri.fsPath, reference.path)),
   );
   if (anchors.length === 0) {
@@ -1306,6 +1419,30 @@ function fixEvidence(
     .join('\n\n');
 }
 
+function implementEvidence(
+  graphContext: string,
+  editorContext: string,
+  readmeContext: string,
+  gitContext: GitReviewContext,
+  focus: string,
+): string {
+  return [
+    '## Requested change and editor focus',
+    editorContext || 'No active editor selection was supplied.',
+    focus ||
+      '## Jira ticket and specification\nNo ticket or specification was found. Derive acceptance criteria from the request and mark them as needing confirmation.',
+    '## Work in progress',
+    gitContext.status,
+    gitContext.stat || 'No uncommitted changes.',
+    readmeContext ||
+      '## Project README context\nNo README.md was found in the project or near the active file.',
+    '## CodeBrain source, integration points, and blast radius',
+    graphContext,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 function guideEvidence(
   graphContext: string,
   editorContext: string,
@@ -1325,6 +1462,210 @@ function guideEvidence(
     .join('\n\n');
 }
 
+/**
+ * The Jira key a request is about: named in the prompt, else in the branch.
+ *
+ * The prompt wins because the user typed it; the branch is the convention the
+ * board's one-click checkout creates (`feature/ABC-123-summary`).
+ */
+export function resolveIssueKey(
+  prompt: string,
+  branch: string | undefined,
+): string | undefined {
+  return extractPromptIssueKey(prompt) ?? extractIssueKey(branch);
+}
+
+/** Wraps task context as an evidence section the report instructions refer to. */
+export function ticketEvidence(context: Pick<TaskContext, 'text'> | undefined): string {
+  if (!context?.text.trim()) {
+    return '';
+  }
+  return [
+    '## Jira ticket and specification (CodeBrain Atlassian)',
+    'This is the requirement the code is measured against. Acceptance criteria and decisions in the comments take precedence over the summary. Already read.',
+    context.text,
+  ].join('\n\n');
+}
+
+interface TicketContextOptions {
+  atlassian: AtlassianIntegration | undefined;
+  root: string;
+  prompt: string;
+  command: ReportKind;
+  /** The ticket an earlier answer in this thread was about, for follow-ups. */
+  previousKey?: string;
+  log: (message: string) => void;
+  progress: (message: string) => void;
+  token: vscode.CancellationToken;
+}
+
+/** Longest the report waits on Jira and Confluence before going ahead without them. */
+const TICKET_DEADLINE_MS = 10_000;
+
+/**
+ * Settle with `undefined` after `ms`, or as soon as the request is cancelled.
+ *
+ * The underlying work is not aborted — it finishes harmlessly in the
+ * background — but the user stops waiting on it.
+ */
+export function withDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  token?: { isCancellationRequested: boolean; onCancellationRequested?: (listener: () => void) => { dispose(): void } },
+): Promise<T | undefined> {
+  if (token?.isCancellationRequested) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => finish(undefined), ms);
+    const subscription = token?.onCancellationRequested?.(() => finish(undefined));
+    let settled = false;
+    function finish(value: T | undefined): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      subscription?.dispose();
+      resolve(value);
+    }
+    work.then(finish, () => finish(undefined));
+  });
+}
+
+/**
+ * Ticket and spec context for this request, or `undefined`.
+ *
+ * Fetched up front rather than offered as a tool: a model rarely chooses a tool
+ * it was not already going to use, and the requirement is exactly what it
+ * would otherwise guess at. Only fetched when a Jira key is in play — or, for
+ * `/implement`, as a free-text spec lookup — so an ordinary code question pays
+ * nothing. Any failure degrades to no ticket context, never to a failed
+ * report.
+ */
+async function collectTicketContext(
+  options: TicketContextOptions,
+): Promise<TaskContext | undefined> {
+  const { atlassian, log } = options;
+  if (!atlassian) {
+    return undefined;
+  }
+  const started = Date.now();
+  const context = await withDeadline(fetchTicketContext(options, atlassian), TICKET_DEADLINE_MS, options.token);
+  if (!context && Date.now() - started >= TICKET_DEADLINE_MS) {
+    log(`[chat] ticket context: gave up after ${TICKET_DEADLINE_MS} ms; continuing without it`);
+  }
+  return context;
+}
+
+async function fetchTicketContext(
+  options: TicketContextOptions,
+  atlassian: AtlassianIntegration,
+): Promise<TaskContext | undefined> {
+  const { root, prompt, command, log } = options;
+  try {
+    // Configuration first: it is a settings read, where the branch lookup
+    // spawns git — which every request would otherwise pay for nothing.
+    const { connections } = await atlassian.status();
+    if (!connections.jira && !connections.confluence) {
+      return undefined;
+    }
+    const key =
+      resolveIssueKey(prompt, connections.jira ? await currentBranch(root) : undefined) ??
+      options.previousKey;
+    const query = !key && command === 'implement' ? prompt.trim().slice(0, 200) : undefined;
+    if (!key && !query) {
+      return undefined;
+    }
+    options.progress(key ? `Reading ${key} and its specification…` : 'Looking for a matching ticket or specification…');
+    // A shorter timeout than the MCP server's: the user is waiting on this
+    // before any report text appears.
+    const client = new AtlassianClient({ connections, timeoutMs: 8_000 });
+    const context = await buildTaskContext(
+      { key, query, specLimit: key ? 2 : 1 },
+      { client, connections, envFile: atlassianEnvPath(), maxBodyCharacters: 12_000 },
+    );
+    if (key && !context.issueLoaded) {
+      // Most often a key-shaped word that is not a ticket, or one the user
+      // cannot see. Evidence about a ticket that does not load is noise.
+      log(`[chat] ticket context: ${key} could not be read; continuing without it`);
+      return undefined;
+    }
+    log(`[chat] ticket context: ${key ?? `query "${query}"`} — ${context.criteria.length} criteria, ${context.hints.length} code hints`);
+    return context;
+  } catch (error) {
+    log(`[chat] ticket context unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+/**
+ * The self-contained instruction a report ends with, for an editing agent.
+ *
+ * Taken from the fenced block under `## Handoff prompt`; `undefined` when the
+ * model left the section out, so the caller can fall back to pointing at the
+ * saved report instead.
+ */
+export function extractHandoffPrompt(report: string): string | undefined {
+  const section = /^##\s+Handoff prompt\s*$/im.exec(report);
+  if (!section) {
+    return undefined;
+  }
+  const rest = report.slice(section.index + section[0].length);
+  const fence = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)^\1\s*$/m.exec(rest);
+  const text = (fence?.[2] ?? rest.split(/^##\s/m)[0] ?? '').trim();
+  return text || undefined;
+}
+
+/** Name of the Copilot custom agent shipped in `agents/codebrain-dev.agent.md`. */
+const DEV_AGENT_NAME = 'CodeBrain Dev';
+
+/**
+ * Open Copilot Chat in the CodeBrain Dev agent with a prompt ready to send.
+ *
+ * The chat participant API cannot edit files on a stable VS Code, so edits are
+ * handed to an agent mode that can. Older builds reject a custom agent name for
+ * `mode`, so this steps down to the built-in agent mode and then to a plain
+ * chat, each still carrying the prompt.
+ */
+async function openDevAgent(query: string): Promise<void> {
+  const attempts: Record<string, unknown>[] = [
+    { query, mode: DEV_AGENT_NAME, isPartialQuery: true },
+    { query, mode: 'agent', isPartialQuery: true },
+    { query, isPartialQuery: true },
+  ];
+  for (const options of attempts) {
+    try {
+      await vscode.commands.executeCommand('workbench.action.chat.open', options);
+      return;
+    } catch {
+      // Try the next, more widely supported form.
+    }
+  }
+  await vscode.env.clipboard.writeText(query);
+  void vscode.window.showInformationMessage(
+    'CodeBrain could not open the agent chat; the handoff prompt is on your clipboard.',
+  );
+}
+
+function streamHandoffButtons(
+  stream: vscode.ChatResponseStream,
+  command: ReportKind,
+  handoff: string,
+  ticketKey: string | undefined,
+): void {
+  const key = ticketKey ? ` (${ticketKey})` : '';
+  stream.button({
+    command: 'codebrain.chat.openDevAgent',
+    title:
+      command === 'fix'
+        ? `Apply fix with ${DEV_AGENT_NAME}${key}`
+        : `Implement with ${DEV_AGENT_NAME}${key}`,
+    arguments: [handoff],
+  });
+  stream.button({
+    command: 'codebrain.chat.copyHandoff',
+    title: 'Copy prompt for another agent',
+    arguments: [handoff],
+  });
+}
+
 export function registerChatParticipant(
   context: vscode.ExtensionContext,
   runtime: CodeBrainRuntime,
@@ -1335,6 +1676,7 @@ export function registerChatParticipant(
   freshness: IndexFreshness,
   exploreCache: GraphCache<string>,
   log: (message: string) => void,
+  atlassian?: AtlassianIntegration,
 ): void {
   const exploreDeps: ExploreDeps = { runtime, freshness, cache: exploreCache, log };
   const handler: vscode.ChatRequestHandler = async (
@@ -1343,8 +1685,31 @@ export function registerChatParticipant(
     stream,
     token,
   ): Promise<CodeBrainChatResult> => {
-    const command = inferCommand(request);
+    const previous = previousResult(chatContext.history ?? []);
+    const command = inferCommand(request, previous.command);
     const folder = getWorkspaceFolder();
+
+    // "ok, làm đi" after a plan or a fix analysis is a go-ahead, not a new
+    // question: offer the handoff again instead of rewriting the report.
+    if (
+      !request.command &&
+      previous.handoff &&
+      (previous.command === 'implement' || previous.command === 'fix') &&
+      isContinuation(request.prompt)
+    ) {
+      const extra = request.prompt.trim();
+      const handoff = `${previous.handoff}\n\nUser follow-up: ${extra}`;
+      const vi = detectResponseLanguage(request.prompt, vscode.env.language).code === 'vi';
+      stream.markdown(
+        vi
+          ? 'CodeBrain chỉ lập kế hoạch; việc sửa code do agent **CodeBrain Dev** thực hiện. Bấm bên dưới để chuyển kế hoạch (kèm yêu cầu vừa rồi) cho agent, hoặc chép sang agent khác.'
+          : 'CodeBrain plans; the **CodeBrain Dev** agent makes the edits. Hand the plan — with what you just said — to the agent below, or copy it for another agent.',
+      );
+      streamHandoffButtons(stream, previous.command, handoff, previous.ticket);
+      return {
+        metadata: { command: previous.command, handoff, ticket: previous.ticket },
+      };
+    }
 
     if (!folder) {
       stream.markdown(
@@ -1384,7 +1749,7 @@ export function registerChatParticipant(
       'chat.maxDiffCharacters',
       120_000,
     );
-    const showTokenUsage = config.get<boolean>('chat.showTokenUsage', true);
+    const showTokenUsage = config.get<boolean>('chat.showTokenUsage', false);
     const maxToolRounds = Math.max(
       0,
       Math.min(4, config.get<number>('chat.maxFollowUpLookups', 2)),
@@ -1412,33 +1777,54 @@ export function registerChatParticipant(
       request.prompt.trim() ||
       editorContext.split('\n')[0]?.replace(/^Active file:\s*/, '') ||
       'selected code';
-    /** Prompt plus attachments, so the graph query looks where the user pointed. */
-    const focusPrompt = [request.prompt, ...attached.hints]
-      .filter(Boolean)
-      .join(' ');
-
     try {
       const requestStartedAt = Date.now();
       // Say what is happening before the first lookup, not after it: sizing the
       // budget can cost a status call, and silence reads as a hung request.
       stream.progress(
-        command === 'impact'
-          ? 'Tracing change impact and detecting affected tests…'
-          : command === 'review'
+        command === 'review'
           ? 'Reviewing changed code, contracts, call paths, boundaries, and blast radius…'
           : command === 'fix'
           ? 'Tracing the bug, root cause, affected workflows, and safe solution…'
           : command === 'guide'
           ? 'Tracing the feature workflow and preparing a user guide…'
+          : command === 'implement'
+          ? 'Reading the requirement and locating where the change plugs in…'
           : 'Tracing the workflow through CodeBrain…',
       );
-      const maxFiles = await resolveMaxContextFiles(
-        config,
-        runtime,
-        folder,
-        freshness,
-        token,
-      );
+      // Independent lookups, so neither waits on the other: the ticket can
+      // take a few Jira round-trips, sizing may take an index status call.
+      const [ticket, maxFiles] = await Promise.all([
+        collectTicketContext({
+          atlassian,
+          root: folder.uri.fsPath,
+          prompt: request.prompt,
+          command,
+          previousKey: previous.ticket,
+          log,
+          progress: (message) => stream.progress(message),
+          token,
+        }),
+        resolveMaxContextFiles(config, runtime, folder, freshness, token),
+      ]);
+      /** The ticket and the user's attachments: deliberately chosen focus. */
+      // Chat history keeps only a short excerpt of earlier reports; the plan a
+      // follow-up refers to ("step 3", "the second test") is carried in full.
+      const priorPlan =
+        previous.handoff
+          ? `## Plan from the previous answer in this thread\n${previous.handoff}`
+          : '';
+      const focusEvidence = [ticketEvidence(ticket), priorPlan, attached.evidence]
+        .filter(Boolean)
+        .join('\n\n');
+      /** Prompt plus attachments and ticket code names, so the graph query looks where the user pointed. */
+      const focusPrompt = [
+        request.prompt,
+        ...attached.hints,
+        ...(ticket?.hints.slice(0, 12) ?? []),
+      ]
+        .filter(Boolean)
+        .join(' ');
       /** Lets the model pull in evidence the first lookup did not cover. */
       const expand = (query: string, files: number): Promise<string> =>
         explore(exploreDeps, folder, query, files, request, token);
@@ -1455,82 +1841,7 @@ export function registerChatParticipant(
       let generatedReport: GeneratedReport;
       // Graph output backing the measured context-cost comparison in the footer.
       let evidenceContext = '';
-      /** Files a review touched, shown as a navigable tree under the report. */
-      let changedFiles: readonly string[] = [];
-      if (command === 'impact') {
-        const gitContext = await collectGitReviewContext(
-          folder.uri.fsPath,
-          maxDiffCharacters,
-        );
-        const query = buildReviewQuery(
-          focusPrompt || 'Analyze change impact and affected tests.',
-          gitContext,
-          editorContext,
-        );
-        const graphContext = await explore(
-          exploreDeps,
-          folder,
-          query,
-          maxFiles,
-          request,
-          token,
-        );
-        evidenceContext = graphContext;
-        const analysis = await impactController.analysisService.analyze(
-          folder,
-          token,
-          graphContext,
-        );
-        impactController.setLatest(analysis);
-        const deterministicReport = buildImpactMarkdown(
-          analysis,
-          responseLanguage.code,
-        );
-        // The deterministic half is already computed, so show it now rather
-        // than making the user wait on the optional model interpretation.
-        stream.markdown(`${deterministicReport.trim()}\n\n`);
-        try {
-          const aiExplanation = await generateReport(
-            {
-              ...reportBase,
-              instructions: IMPACT_INSTRUCTIONS,
-              userPrompt:
-                request.prompt || 'Explain the deterministic change impact result.',
-              evidence: [
-                deterministicReport,
-                attached.evidence,
-                `## CodeBrain context\n\n${graphContext}`,
-              ]
-                .filter(Boolean)
-                .join('\n\n'),
-              codeBrainContext: graphContext,
-              // The deterministic report is authoritative here, so extra
-              // lookups cannot change the answer — only slow it down.
-              expand: undefined,
-            },
-            token,
-          );
-          // Keep deterministic facts authoritative. The model contributes an
-          // interpretation section instead of rewriting the impact score,
-          // paths, tests, or evidence reported by the engine.
-          generatedReport = {
-            ...aiExplanation,
-            text: `${deterministicReport.trim()}\n\n${aiExplanation.text.trim()}`,
-          };
-        } catch (error) {
-          if (token.isCancellationRequested) throw error;
-          // Impact facts remain useful when no chat model is available or the
-          // optional explanation request fails.
-          generatedReport = {
-            text: deterministicReport,
-            codeBrainContextTokens: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            extraEvidence: '',
-            toolRounds: 0,
-          };
-        }
-      } else if (command === 'review') {
+      if (command === 'review') {
         const choice = await selectReviewCommit(folder.uri.fsPath, request.prompt);
         if (choice.cancelled) {
           stream.markdown('CodeBrain review cancelled.');
@@ -1547,13 +1858,9 @@ export function registerChatParticipant(
               folder.uri.fsPath,
               maxDiffCharacters,
             );
-        const query = buildReviewQuery(
-          selectedCommit
-            ? `${focusPrompt} Review selected commit ${selectedCommit}.`
-            : focusPrompt,
-          gitContext,
-          editorContext,
-        );
+        // The commit's files are already in the changed-file list; its hash
+        // would only be one more meaningless search term.
+        const query = buildReviewQuery(focusPrompt, gitContext, editorContext);
         const graphContext = await explore(
           exploreDeps,
           folder,
@@ -1563,20 +1870,35 @@ export function registerChatParticipant(
           token,
         );
         evidenceContext = graphContext;
-        changedFiles = gitContext.changedFiles;
         // After explore, which has already brought the index up to date.
-        const codeGraphReport = gitContext.isRepository
-          ? await fetchCodeGraphReview(
-              runtime,
-              folder.uri.fsPath,
-              gitContext.target
-                ? { commit: { hash: gitContext.target.hash, parent: gitContext.target.parent } }
-                : {},
-              gitContext.changedFiles,
-              token,
-              log,
-            )
-          : undefined;
+        const [codeGraphReport, impactReport] = await Promise.all([
+          gitContext.isRepository
+            ? fetchCodeGraphReview(
+                runtime,
+                folder.uri.fsPath,
+                gitContext.target
+                  ? { commit: { hash: gitContext.target.hash, parent: gitContext.target.parent } }
+                  : {},
+                gitContext.changedFiles,
+                token,
+                log,
+              )
+            : Promise.resolve(undefined),
+          // "Which tests are affected?" gets the deterministic answer too, as
+          // evidence the model must not alter.
+          !selectedCommit && wantsImpactAnalysis(request.prompt)
+            ? impactController.analysisService
+                .analyze(folder, token, graphContext)
+                .then((analysis) => {
+                  impactController.setLatest(analysis);
+                  return buildImpactMarkdown(analysis, responseLanguage.code);
+                })
+                .catch((error: unknown) => {
+                  log(`[chat] impact analysis failed: ${error instanceof Error ? error.message : String(error)}`);
+                  return '';
+                })
+            : Promise.resolve(''),
+        ]);
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
           editorContext,
@@ -1593,7 +1915,14 @@ export function registerChatParticipant(
               editorContext,
               maxDiffCharacters,
               readmeContext,
-              attached.evidence,
+              [
+                focusEvidence,
+                impactReport
+                  ? `## Deterministic change impact (authoritative)\n\n${impactReport}`
+                  : '',
+              ]
+                .filter(Boolean)
+                .join('\n\n'),
               codeGraphReport,
             ),
             codeBrainContext: graphContext,
@@ -1626,7 +1955,44 @@ export function registerChatParticipant(
               graphContext,
               editorContext,
               readmeContext,
-              attached.evidence,
+              focusEvidence,
+            ),
+            codeBrainContext: graphContext,
+            expand,
+            maxToolRounds,
+          },
+          token,
+        );
+      } else if (command === 'implement') {
+        // The query does not depend on the diff, so neither waits on the other.
+        const [gitContext, graphContext] = await Promise.all([
+          collectGitReviewContext(folder.uri.fsPath, maxDiffCharacters),
+          explore(
+            exploreDeps,
+            folder,
+            buildImplementQuery(focusPrompt, editorContext),
+            maxFiles,
+            request,
+            token,
+          ),
+        ]);
+        evidenceContext = graphContext;
+        const readmeContext = readProjectReadmeContext(
+          folder.uri.fsPath,
+          editorContext,
+        );
+        generatedReport = await generateReport(
+          {
+            ...reportBase,
+            instructions: IMPLEMENT_INSTRUCTIONS,
+            userPrompt:
+              request.prompt || 'Plan the implementation of the requested change.',
+            evidence: implementEvidence(
+              graphContext,
+              editorContext,
+              readmeContext,
+              gitContext,
+              focusEvidence,
             ),
             codeBrainContext: graphContext,
             expand,
@@ -1635,18 +2001,18 @@ export function registerChatParticipant(
           token,
         );
       } else if (command === 'fix') {
-        const gitContext = await collectGitReviewContext(
-          folder.uri.fsPath,
-          maxDiffCharacters,
-        );
-        const graphContext = await explore(
-          exploreDeps,
-          folder,
-          buildFixQuery(focusPrompt, editorContext),
-          maxFiles,
-          request,
-          token,
-        );
+        // The query does not depend on the diff, so neither waits on the other.
+        const [gitContext, graphContext] = await Promise.all([
+          collectGitReviewContext(folder.uri.fsPath, maxDiffCharacters),
+          explore(
+            exploreDeps,
+            folder,
+            buildFixQuery(focusPrompt, editorContext),
+            maxFiles,
+            request,
+            token,
+          ),
+        ]);
         evidenceContext = graphContext;
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
@@ -1664,7 +2030,7 @@ export function registerChatParticipant(
               readmeContext,
               gitContext,
               maxDiffCharacters,
-              attached.evidence,
+              focusEvidence,
             ),
             codeBrainContext: graphContext,
             expand,
@@ -1697,7 +2063,7 @@ export function registerChatParticipant(
               graphContext,
               editorContext,
               readmeContext,
-              attached.evidence,
+              focusEvidence,
             ),
             codeBrainContext: graphContext,
             expand,
@@ -1745,27 +2111,25 @@ export function registerChatParticipant(
       // The token footer is a chat-time diagnostic, not part of the document.
       // Keeping it out of the stored copy means an exported guide or review
       // reads as a document rather than a document plus a cost readout.
-      const reportUri = await reports.setLatest({
-        kind: command,
-        title:
-          normalizedReport.match(/^#\s+(.+)$/m)?.[1] ??
-          `CodeBrain ${command} report`,
-        markdown: normalizedReport,
-        folder,
-      });
+      // The chat already shows the report, so a preview tab would only repeat
+      // it and take the editor's focus; it opens on request instead.
+      const reportUri = await reports.setLatest(
+        {
+          kind: command,
+          title:
+            normalizedReport.match(/^#\s+(.+)$/m)?.[1] ??
+            `CodeBrain ${command} report`,
+          markdown: normalizedReport,
+          folder,
+        },
+        true,
+        config.get<boolean>('chat.openReportPreview', false),
+      );
 
       if (!generatedReport.text.trim()) {
         // Nothing was streamed because the model returned nothing. Show the
         // normalized fallback rather than leaving the answer silently empty.
         stream.markdown(normalizedReport);
-      }
-      if (command === 'review' && changedFiles.length > 0) {
-        stream.markdown(
-          responseLanguage.code === 'vi'
-            ? '\n\n**Tệp đã thay đổi:**\n\n'
-            : '\n\n**Changed files:**\n\n',
-        );
-        stream.filetree(buildFileTree(changedFiles), folder.uri);
       }
       streamCodeAnchors(stream, folder, normalizedReport, responseLanguage.code);
       if (showTokenUsage) {
@@ -1775,24 +2139,28 @@ export function registerChatParticipant(
           })}\n`,
         );
       }
-      if (reportUri) {
-        stream.reference(reportUri);
+      const handoff =
+        command === 'implement' || command === 'fix'
+          ? extractHandoffPrompt(normalizedReport) ??
+            `Carry out the ${command === 'fix' ? 'bug fix' : 'implementation plan'} saved in ${reportUri?.fsPath ?? 'the latest CodeBrain report'}. Follow the codebrain-${command} workflow.`
+          : undefined;
+      if (handoff) {
+        streamHandoffButtons(stream, command, handoff, ticket?.key);
       }
-      if (command === 'impact') {
+      if (reportUri) {
         stream.button({
-          command: 'codebrain.openWorkflowGraph',
-          title: 'Open Workflow Graph',
+          command: 'markdown.showPreview',
+          title: 'Open report',
+          arguments: [reportUri],
         });
       }
-      stream.button({
-        command: 'codebrain.exportLatestMarkdown',
-        title: 'Export Markdown',
-      });
       return {
         metadata: {
           command,
           report: reportUri?.toString(),
           tokens: tokenSample,
+          handoff,
+          ticket: ticket?.key,
         },
       };
     } catch (error) {
@@ -1813,31 +2181,12 @@ export function registerChatParticipant(
   participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'media', 'icon.svg');
   participant.followupProvider = {
     provideFollowups(result: CodeBrainChatResult) {
-      if (result.metadata.command === 'impact') {
-        return [
-          {
-            prompt: 'Review the highest-risk affected workflow.',
-            label: 'Review highest-risk workflow',
-            command: 'review',
-          },
-          {
-            prompt: 'Explain how the affected tests cover this workflow.',
-            label: 'Explain test coverage',
-            command: 'explain',
-          },
-        ];
-      }
       if (result.metadata.command === 'review') {
         return [
           {
             prompt: 'Explain the workflow behind the highest-risk finding.',
             label: 'Explain the highest-risk workflow',
             command: 'explain',
-          },
-          {
-            prompt: 'Re-check the highest-risk finding across its contract, callers, boundary conditions, and missing tests.',
-            label: 'Deepen highest-risk finding',
-            command: 'review',
           },
           {
             // "commit" is what re-opens the commit picker, so it has to survive
@@ -1862,15 +2211,28 @@ export function registerChatParticipant(
           },
         ];
       }
+      if (result.metadata.command === 'implement') {
+        return [
+          {
+            prompt: 'Review my current changes against this plan and the ticket acceptance criteria.',
+            label: 'Review the implementation',
+            command: 'review',
+          },
+          {
+            prompt: 'Explain the existing workflow this change plugs into in more detail.',
+            label: 'Explain the existing workflow',
+            command: 'explain',
+          },
+        ];
+      }
       if (result.metadata.command === 'guide') {
         return [
           {
-            // This re-runs /guide, so the label has to promise a new guide
-            // rather than a review of the previous one.
+            // "user guide" is what routes this back to the guide format; the
+            // label has to promise a new guide rather than a review of it.
             prompt:
-              'Rewrite this guide with the prerequisites, permissions, and troubleshooting steps it is missing.',
+              'Rewrite this user guide with the prerequisites, permissions, and troubleshooting steps it is missing.',
             label: 'Fill the gaps in this guide',
-            command: 'guide',
           },
           {
             prompt: 'Explain the implementation workflow behind this feature.',
@@ -1895,5 +2257,14 @@ export function registerChatParticipant(
     vscode.commands.registerCommand('codebrain.chat.initialize', () =>
       indexManager.initialize(),
     ),
+    vscode.commands.registerCommand('codebrain.chat.openDevAgent', (query: unknown) =>
+      openDevAgent(typeof query === 'string' ? query : ''),
+    ),
+    vscode.commands.registerCommand('codebrain.chat.copyHandoff', async (query: unknown) => {
+      await vscode.env.clipboard.writeText(typeof query === 'string' ? query : '');
+      void vscode.window.showInformationMessage(
+        'CodeBrain: handoff prompt copied. Paste it into Claude Code, Cursor, Codex or any agent with the CodeBrain skills installed.',
+      );
+    }),
   );
 }

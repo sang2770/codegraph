@@ -16,7 +16,9 @@ const {
   installSkill,
   isSkillStale,
   loadSkill,
+  loadSkills,
   parseSkill,
+  planSkillRefresh,
   readInstalledSkills,
   removeSkill,
   renderSkill,
@@ -117,6 +119,50 @@ test('the skill shipped with the extension parses', () => {
   assert.equal(shipped.name, 'codebrain');
   assert.ok(shipped.description.length > 0);
   assert.ok(shipped.body.includes('codegraph_explore'));
+});
+
+test('every shipped skill parses, names its own folder, and is distinct', () => {
+  const skills = loadSkills(fileURLToPath(new URL('..', import.meta.url)));
+  assert.deepEqual(skills.map((skill) => skill.name), [
+    'codebrain',
+    'codebrain-explain',
+    'codebrain-implement',
+    'codebrain-fix',
+    'codebrain-review',
+  ]);
+  for (const skill of skills) {
+    assert.ok(skill.description.length > 80, `${skill.name} needs a description an agent can match on`);
+    assert.ok(skill.body.startsWith('# '), `${skill.name} opens with its title`);
+  }
+  for (const skill of skills.slice(1)) {
+    assert.ok(skill.body.includes('codebrain_task_context'), `${skill.name} starts from the ticket`);
+    assert.ok(/codegraph_(explore|review)/.test(skill.body), `${skill.name} uses the graph`);
+  }
+  assert.equal(new Set(skills.map((skill) => skill.description)).size, skills.length);
+});
+
+test('refresh adds new workflow skills only where the base skill is installed', () => {
+  const paths = sandbox();
+  const extra = parseSkill('---\nname: codebrain-fix\ndescription: Fix bugs.\n---\n\n# Fix\n', 'codebrain-fix');
+
+  // Nothing installed: nothing to do, for any agent.
+  assert.deepEqual(planSkillRefresh([SKILL, extra], 'claude', paths), []);
+
+  installSkill(SKILL, 'claude', paths, 'global');
+  const plan = planSkillRefresh([SKILL, extra], 'claude', paths);
+  assert.deepEqual(plan.map((entry) => [entry.skill.name, entry.scope]), [['codebrain-fix', 'global']]);
+  // Another agent the user never opted into is untouched.
+  assert.deepEqual(planSkillRefresh([SKILL, extra], 'cursor', paths), []);
+
+  installSkill(extra, 'claude', paths, 'global');
+  assert.deepEqual(planSkillRefresh([SKILL, extra], 'claude', paths), []);
+
+  // A stale copy of a workflow skill is rewritten.
+  const next = parseSkill('---\nname: codebrain-fix\ndescription: Fix bugs v2.\n---\n\n# Fix\n', 'codebrain-fix');
+  assert.deepEqual(
+    planSkillRefresh([SKILL, next], 'claude', paths).map((entry) => [entry.skill.name, entry.scope]),
+    [['codebrain-fix', 'global']],
+  );
 });
 
 // -------------------------------------------------------------- descriptors

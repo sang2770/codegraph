@@ -16,6 +16,11 @@ const REQUIRED = [
   'extension/dist/extension.js',
   'extension/dist/atlassian-server.js',
   'extension/skills/codebrain/SKILL.md',
+  'extension/skills/codebrain-explain/SKILL.md',
+  'extension/skills/codebrain-implement/SKILL.md',
+  'extension/skills/codebrain-fix/SKILL.md',
+  'extension/skills/codebrain-review/SKILL.md',
+  'extension/agents/codebrain-dev.agent.md',
 ];
 
 /**

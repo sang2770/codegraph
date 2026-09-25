@@ -756,7 +756,7 @@ export const DEFAULT_JIRA_ISSUE_FIELDS = [
 function describeStatus(status: number): string {
   switch (status) {
     case 401:
-      return ' — the personal access token was rejected. Re-run "CodeBrain: Configure Atlassian (Collab + Jira)".';
+      return ' — the personal access token was rejected. Re-run "CodeBrain: Atlassian (Jira + Confluence)".';
     case 403:
       return ' — authenticated, but this token lacks permission for that project or space.';
     case 404:

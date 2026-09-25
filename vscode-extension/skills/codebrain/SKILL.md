@@ -39,4 +39,8 @@ For reviews:
 5. Treat changes to shared contracts, persistence, authentication, concurrency, lifecycle, or broad fan-out code as high risk until tests prove otherwise.
 6. Review only. Do not edit code unless the user separately asks for a fix.
 
-If the `codegraph_explore` tool is not available at all, the MCP server is not registered for this agent — tell the user to run **CodeBrain: Install MCP + Skill for Agents** in VS Code, then answer with normal tools.
+If the `codegraph_explore` tool is not available at all, the MCP server is not registered for this agent — tell the user to run **CodeBrain: Set Up Agents** in VS Code, then answer with normal tools.
+
+## Developer workflows
+
+For a complete task rather than a single question, load the matching workflow skill: **codebrain-explain** (understand a feature or ticket), **codebrain-implement** (ticket → plan → edit → verify), **codebrain-fix** (bug → root cause → red/green test → fix), **codebrain-review** (diff + acceptance-criteria coverage). When a task names a Jira key, start with `codebrain_task_context` from the CodeBrain Atlassian server — one call returns the ticket, its acceptance criteria, the related Confluence spec and the code names to explore.

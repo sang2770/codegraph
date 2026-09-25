@@ -136,14 +136,25 @@ Báo cáo gồm:
 
 `/review` chỉ đánh giá code, không tự động sửa file.
 
-## 6. Phân tích ảnh hưởng với `/impact`
+## 5b. Triển khai và sửa lỗi với `/implement`, `/fix`
+
+`@codebrain /implement ABC-123` (hoặc mô tả tính năng) lập kế hoạch từ ticket: acceptance criteria, chỗ thay đổi cắm vào code (file:line), từng bước theo file, test cần viết và rủi ro. Cuối báo cáo có hai nút:
+
+- **Implement with CodeBrain Dev** — mở Copilot ở agent **CodeBrain Dev** với prompt đã soạn sẵn; agent sẽ sửa code, chạy test, kiểm tra diagnostics rồi tự review. Bạn xem và bấm gửi.
+- **Copy prompt for another agent** — chép prompt để dán sang Claude Code, Cursor, Codex…
+
+`/fix` có nút **Apply fix with CodeBrain Dev** tương tự: agent viết test tái hiện lỗi (đỏ), sửa, rồi chứng minh test xanh.
+
+Khi câu hỏi có Jira key — hoặc branch hiện tại mang key, ví dụ `feature/ABC-123-reset` — mọi lệnh đều đọc ticket, comment, acceptance criteria và trang Confluence liên quan trước. `/explain` chỉ ra chỗ code lệch spec; `/review` thêm bảng coverage acceptance criteria.
+
+## 6. Phân tích ảnh hưởng
 
 Có hai cách chạy.
 
 ### Từ VS Code Chat
 
 ```text
-@codebrain /impact Phân tích ảnh hưởng của các thay đổi hiện tại
+@codebrain /review Phân tích ảnh hưởng của các thay đổi hiện tại
 ```
 
 ### Từ Command Palette
@@ -366,7 +377,7 @@ Message dùng model chọn ở **CodeBrain: Choose AI Model**.
 
 ## 10. Export báo cáo
 
-Sau khi chạy `/explain`, `/review` hoặc `/impact`, dùng:
+Sau khi chạy `/explain` hoặc `/review`, dùng:
 
 ```text
 CodeBrain: Export Latest Report as Markdown
@@ -376,7 +387,7 @@ Markdown giữ nguyên heading, tables, code blocks và Mermaid chart. File nh�
 
 ## 10a. CodeBrain cho mọi agent — MCP server + Skill
 
-Agent cần hai thứ để dùng CodeBrain hiệu quả: **MCP server** cung cấp tool đồ thị, và **skill** cho agent biết khi nào và dùng tool đó ra sao. Trong VS Code, Copilot nhận cả hai trực tiếp từ extension. Các agent khác đọc file riêng của chúng, nên hãy chạy **CodeBrain: Install MCP + Skill for Agents (Claude, Codex, Gemini, Antigravity, Copilot…)**, chọn phạm vi, chọn cài gì, tích agent đang dùng, rồi restart agent đó.
+Agent cần hai thứ để dùng CodeBrain hiệu quả: **MCP server** cung cấp tool đồ thị, và **skill** cho agent biết khi nào và dùng tool đó ra sao. Trong VS Code, Copilot nhận cả hai trực tiếp từ extension. Các agent khác đọc file riêng của chúng, nên hãy chạy **CodeBrain: Set Up Agents**, chọn phạm vi, tích agent đang dùng, rồi restart agent đó.
 
 **MCP server**
 
@@ -414,6 +425,18 @@ Mỗi entry MCP chạy runtime CodeGraph mà CodeBrain đã cài (bằng Node đ
 
 Mỗi version runtime nằm trong một thư mục riêng, và nội dung skill có thể đổi theo extension. Ngay sau mỗi lần cập nhật và mỗi lần khởi động, CodeBrain tự ghi lại những gì nó đã tạo — đúng phạm vi bạn đã cài — nên agent vẫn chạy mà bạn không phải làm gì thêm (restart agent để nhận bản mới). **CodeBrain: Uninstall CodeBrain from Agents** quét cả hai phạm vi và cả hai phần nên không sót gì.
 
+## 10a-2. Agent dev đầy đủ cho mọi công cụ AI
+
+Bốn workflow **explain / implement / fix / review** dùng được trong Copilot, Claude Code, Codex, Gemini CLI, Antigravity, Cursor và opencode:
+
+- **Skills** — lệnh **CodeBrain: Set Up Agents** cài thêm `codebrain-explain`, `codebrain-implement`, `codebrain-fix`, `codebrain-review`. Trong Claude Code chúng cũng là slash command (`/codebrain-implement ABC-123`). Agent đã có skill `codebrain` sẽ tự nhận skill mới ở lần cập nhật sau.
+- **Subagents** — cùng lệnh đó cài **codebrain-dev** (sửa code) và **codebrain-reviewer** (chỉ đọc) làm subagent native cho Claude Code (`.claude/agents/`) và opencode (`agent/`).
+- **Slash command qua MCP** — server CodeBrain Atlassian cung cấp các workflow dưới dạng MCP prompt, host nào hỗ trợ sẽ hiện thành slash command.
+- **Ticket hook cho Claude Code** — khi đã cấu hình Atlassian, Set Up Agents thêm hook cho Claude Code: prompt nào có Jira key (hoặc làm việc trên ticket của branch hiện tại, ví dụ "implement tiếp") sẽ tự được gắn ticket, acceptance criteria và spec trước khi agent bắt đầu. Mỗi ticket chỉ gắn một lần mỗi phiên; tắt tạm bằng `CODEBRAIN_NO_PROMPT_HOOK=1`.
+- **`codebrain_task_context`** — một lần gọi trả về ticket, acceptance criteria, trang Confluence liên quan và tên code nên explore tiếp.
+
+Ghi Jira/Confluence (comment, chuyển trạng thái) vẫn chỉ xảy ra khi bạn yêu cầu và đã bật **CodeBrain › Atlassian: Allow Write**. Không workflow nào tự commit hay push.
+
 ## 10b. Tìm kiếm Collab (Confluence) và Jira cho mọi agent
 
 CodeBrain đóng gói thêm một MCP server cho Jira và Confluence (Collab), để agent tra cứu ngay trong lúc làm việc: ticket đứng sau tên branch, spec đứng sau một quyết định thiết kế, thảo luận giải thích vì sao code lại như vậy.
@@ -424,20 +447,18 @@ Bảy tool đọc: `confluence_search`, `confluence_get_page`, `confluence_get_p
 
 ### Cấu hình một lần, dùng cho tất cả agent
 
-1. Chạy **CodeBrain: Configure Atlassian (Collab + Jira)**, nhập base URL và personal access token.
+1. Chạy **CodeBrain: Atlassian (Jira + Confluence)**, nhập base URL và personal access token.
    - Server / Data Center: tạo token ở *Profile → Personal Access Tokens*.
    - Cloud: dùng API token và nhập email tài khoản khi được hỏi. URL Confluence Cloud phải có context path `/wiki`.
    - Có thể cấu hình chỉ Jira, chỉ Confluence, hoặc cả hai — tool của sản phẩm chưa cấu hình sẽ không hiện ra với agent.
 2. GitHub Copilot nhận server ngay, không cần sửa file config nào.
-3. Với **Claude Code**, **Codex CLI**, **Gemini CLI** hoặc **Antigravity**: chạy **CodeBrain: Register Atlassian MCP with Agents**, chọn phạm vi global hay workspace, chọn agent đang dùng, rồi restart agent đó.
+3. Với **Claude Code**, **Codex CLI**, **Gemini CLI**, **Antigravity**, **Cursor** hoặc **opencode**: chạy **CodeBrain: Set Up Agents** (chạy lại nếu trước đó chưa cấu hình Atlassian), chọn agent đang dùng, rồi restart agent đó.
 
 ### Token được lưu ở đâu
 
 Token nằm trong keychain của hệ điều hành (VS Code SecretStorage) và được ghi thêm một bản duy nhất vào `~/.codebrain/atlassian.env` (quyền `0600`, chỉ owner đọc được) — đây là cách duy nhất để các agent ngoài VS Code đọc được. File config của agent mà CodeBrain ghi ra **chỉ chứa câu lệnh chạy server**, nên `.mcp.json` có commit vào repo cũng không lộ token.
 
-- **CodeBrain: Test Atlassian Connection** — gọi thử một request đã xác thực cho từng sản phẩm.
-- **CodeBrain: Unregister Atlassian MCP from Agents** — xoá entry khỏi config của các agent.
-- **CodeBrain: Clear Atlassian Credentials** — xoá token, URL và file credentials dùng chung.
+Chạy lại **CodeBrain: Atlassian (Jira + Confluence)** để sửa, kiểm tra (Test connection) hoặc xoá thông tin kết nối. **CodeBrain: Remove from Agents** xoá entry khỏi config của các agent.
 
 Log của phần này nằm ở Output channel **CodeBrain Atlassian**.
 
@@ -599,19 +620,19 @@ Kiểm tra:
 
 ### Chat không hoạt động
 
-`/explain`, `/review` và `/impact` trong Chat cần một chat model đang được VS Code cung cấp. Các command index, Workflow Graph, affected-test detection, dashboard và export không phụ thuộc vào chat model.
+`/explain`, `/implement`, `/fix` và `/review` trong Chat cần một chat model đang được VS Code cung cấp. Các command index, Workflow Graph, affected-test detection, dashboard và export không phụ thuộc vào chat model.
 
 ### Copilot không thấy tool Jira/Confluence
 
-Server Atlassian chỉ xuất hiện khi một sản phẩm đã cấu hình **đủ** base URL và token. Chạy **CodeBrain: Configure Atlassian (Collab + Jira)**, sau đó **CodeBrain: Test Atlassian Connection**.
+Server Atlassian chỉ xuất hiện khi một sản phẩm đã cấu hình **đủ** base URL và token. Chạy **CodeBrain: Atlassian (Jira + Confluence)**, sau đó chọn **Test connection**.
 
 ### Claude Code / Codex / Gemini / Antigravity / Copilot CLI / Cursor / opencode không thấy tool CodeBrain
 
-Chạy **CodeBrain: Install MCP + Skill for Agents** rồi restart agent — agent chỉ đọc danh sách MCP server lúc khởi động. Đăng ký theo phạm vi workspace chỉ có tác dụng trong đúng folder đó; muốn dùng ở mọi repo thì đăng ký global.
+Chạy **CodeBrain: Set Up Agents** rồi restart agent — agent chỉ đọc danh sách MCP server lúc khởi động. Đăng ký theo phạm vi workspace chỉ có tác dụng trong đúng folder đó; muốn dùng ở mọi repo thì đăng ký global.
 
 ### Claude Code / Codex / Gemini / Antigravity không thấy tool Jira/Confluence
 
-Chạy **CodeBrain: Register Atlassian MCP with Agents** rồi restart agent. Ghi chú về phạm vi ở trên cũng áp dụng ở đây.
+Cấu hình Atlassian, chạy lại **CodeBrain: Set Up Agents** rồi restart agent. Ghi chú về phạm vi ở trên cũng áp dụng ở đây.
 
 ### Token bị từ chối (401)
 

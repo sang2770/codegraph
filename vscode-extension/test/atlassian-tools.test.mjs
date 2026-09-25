@@ -101,20 +101,22 @@ const images = (result) => result.content.filter((block) => block.type === 'imag
 
 test('only configured products are advertised', () => {
   assert.deepEqual(toolNames({ jira: CONNECTIONS.jira }), [
+    'codebrain_task_context',
     'jira_search',
     'jira_get_issue',
     'jira_get_comments',
     'jira_get_issue_images',
   ]);
   assert.deepEqual(toolNames({ confluence: CONNECTIONS.confluence }), [
+    'codebrain_task_context',
     'confluence_search',
     'confluence_get_page',
     'confluence_get_page_images',
   ]);
-  assert.equal(toolNames(CONNECTIONS).length, 7);
+  assert.equal(toolNames(CONNECTIONS).length, 8);
   // Nothing configured still lists everything, so the reply can explain how to
   // configure it instead of the server looking broken.
-  assert.equal(toolNames({}).length, 7);
+  assert.equal(toolNames({}).length, 8);
 });
 
 test('write tools are invisible until write access is enabled', () => {
@@ -132,7 +134,7 @@ test('write tools are invisible until write access is enabled', () => {
   }
 
   const writable = toolNames(CONNECTIONS, { allowWrite: true });
-  assert.equal(writable.length, 14);
+  assert.equal(writable.length, 15);
   for (const name of readOnly) assert.ok(writable.includes(name), `${name} should still be listed`);
   // Jira-only setups still never see Confluence write tools.
   const jiraOnly = toolNames({ jira: CONNECTIONS.jira }, { allowWrite: true });
@@ -783,3 +785,105 @@ test('unknown ADF nodes degrade to their inner text', () => {
 test('truncate is a no-op below the limit', () => {
   assert.equal(truncate('short', 100), 'short');
 });
+
+// ------------------------------------------------------------- task context
+
+const TICKET = {
+  key: 'ABC-42',
+  fields: {
+    summary: 'Password reset by email',
+    status: { name: 'In Progress' },
+    issuetype: { name: 'Story' },
+    description: [
+      'Users forget passwords. Spec: https://collab.example.com/pages/viewpage.action?pageId=777',
+      '',
+      'h3. Acceptance criteria',
+      '# A reset link is emailed within one minute',
+      '# The link expires after 30 minutes',
+      '',
+      'Touch `PasswordResetService.requestReset` and the mailer in src/auth/mailer.ts.',
+    ].join('\n'),
+  },
+};
+
+test('task context returns the ticket, its criteria, the linked spec and code names in one call', async () => {
+  const { context, fetchImpl } = contextFor({
+    '/rest/api/2/issue/ABC-42': TICKET,
+    '/rest/api/2/issue/ABC-42/comment': { total: 0, comments: [] },
+    '/rest/api/content/777': {
+      id: '777',
+      title: 'Auth spec',
+      body: { storage: { value: '<p>Tokens are single-use. Use <code>TokenStore.issue</code>.</p>' } },
+    },
+    '/rest/api/content/search': { results: [{ id: '777', title: 'Auth spec' }, { id: '888', title: 'Mail infra' }] },
+    '/rest/api/content/888': { id: '888', title: 'Mail infra', body: { storage: { value: '<p>SMTP relay.</p>' } } },
+  });
+
+  const body = text(await callTool('codebrain_task_context', { key: 'abc-42' }, context));
+  assert.match(body, /# ABC-42 — Password reset by email/);
+  assert.match(body, /## Acceptance criteria \(extracted\)\n\n1\. A reset link is emailed within one minute\n2\. The link expires after 30 minutes/);
+  // The spec the ticket links is opened first, then the best search match.
+  assert.match(body, /### Auth spec[\s\S]*Tokens are single-use/);
+  assert.match(body, /### Mail infra/);
+  assert.match(body, /`PasswordResetService.requestReset`/);
+  assert.match(body, /src\/auth\/mailer\.ts/);
+  assert.match(body, /TokenStore\.issue/);
+  assert.match(body, /Call codegraph_explore/);
+  const paths = fetchImpl.calls.map((call) => call.path);
+  assert.equal(paths.filter((path) => path === '/rest/api/content/777').length, 1, 'a linked page is fetched once');
+});
+
+test('task context says when the ticket has no written criteria', async () => {
+  const { context } = contextFor(
+    { '/rest/api/2/issue/ABC-1': { key: 'ABC-1', fields: { summary: 'Tidy logs', description: 'Make logs quieter.' } } },
+    { jira: CONNECTIONS.jira },
+  );
+  const body = text(await callTool('codebrain_task_context', { key: 'ABC-1' }, context));
+  assert.match(body, /None written as a list/);
+  assert.doesNotMatch(body, /Specification \(Confluence\)/);
+});
+
+test('task context without a key searches Jira and Confluence by free text', async () => {
+  const { context, fetchImpl } = contextFor({
+    '/rest/api/2/search': { total: 1, issues: [{ key: 'ABC-9', fields: { summary: 'Export to PDF', status: { name: 'Open' } } }] },
+    '/rest/api/content/search': { results: [{ id: '5', title: 'PDF export spec' }] },
+    '/rest/api/content/5': { id: '5', title: 'PDF export spec', body: { storage: { value: '<p>Use PdfRenderer.render.</p>' } } },
+  });
+  const result = await callTool('codebrain_task_context', { query: 'pdf export' }, context);
+  const body = text(result);
+  assert.equal(result.isError, undefined);
+  assert.match(body, /## Related Jira issues\n\n- ABC-9 — Export to PDF/);
+  assert.match(body, /### PDF export spec/);
+  assert.match(body, /PdfRenderer\.render/);
+  assert.ok(fetchImpl.calls.some((call) => call.path === '/rest/api/2/search' && /pdf export/.test(call.query.jql)));
+});
+
+test('task context degrades to guidance when a page or the issue cannot be read', async () => {
+  const { context } = contextFor({
+    '/rest/api/2/issue/ABC-42': TICKET,
+    '/rest/api/2/issue/ABC-42/comment': { total: 0, comments: [] },
+  });
+  // The linked page and the search both 404: the ticket must still come back.
+  const body = text(await callTool('codebrain_task_context', { key: 'ABC-42' }, context));
+  assert.match(body, /A reset link is emailed/);
+
+  const missing = contextFor({});
+  const result = await callTool('codebrain_task_context', { key: 'ABC-404' }, missing.context);
+  assert.equal(result.isError, undefined);
+  assert.match(text(result), /Could not load the issue/);
+});
+
+test('task context needs a key or a query, and says where to find one', async () => {
+  const { context } = contextFor({});
+  const result = await callTool('codebrain_task_context', {}, context);
+  assert.equal(result.isError, undefined);
+  assert.match(text(result), /branch name/);
+});
+
+test('task context with nothing configured explains how to configure it', async () => {
+  const { context } = contextFor({}, {});
+  const result = await callTool('codebrain_task_context', { key: 'ABC-1' }, context);
+  assert.equal(result.isError, undefined);
+  assert.match(text(result), /Jira or Confluence \(Collab\) is not configured/);
+});
+

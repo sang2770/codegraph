@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadTypeScript } from './helpers/load.mjs';
 
 const { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_WRITE, handleMessage, splitFrames } =
   loadTypeScript('atlassian/server.ts');
+
+const SKILLS_DIR = fileURLToPath(new URL('../skills/', import.meta.url));
 
 function envFileWith(lines) {
   const file = join(mkdtempSync(join(tmpdir(), 'codebrain-server-')), 'atlassian.env');
@@ -29,7 +32,10 @@ test('initialize echoes a supported protocol version and advertises tools', asyn
 
   assert.equal(response.id, 1);
   assert.equal(response.result.protocolVersion, '2024-11-05');
-  assert.deepEqual(response.result.capabilities, { tools: { listChanged: true } });
+  assert.deepEqual(response.result.capabilities, {
+    tools: { listChanged: true },
+    prompts: { listChanged: false },
+  });
   assert.equal(response.result.serverInfo.name, 'codebrain-atlassian');
   assert.equal(response.result.instructions, SERVER_INSTRUCTIONS);
 });
@@ -129,7 +135,13 @@ test('tools/list reflects the products the env file configures', async () => {
   );
   assert.deepEqual(
     response.result.tools.map((tool) => tool.name),
-    ['jira_search', 'jira_get_issue', 'jira_get_comments', 'jira_get_issue_images'],
+    [
+      'codebrain_task_context',
+      'jira_search',
+      'jira_get_issue',
+      'jira_get_comments',
+      'jira_get_issue_images',
+    ],
   );
 });
 
@@ -252,3 +264,60 @@ test('frames are split on newlines and a partial line is held back', () => {
   assert.deepEqual(splitFrames('\n  \n{"a":1}\n'), { frames: ['{"a":1}'], rest: '' });
   assert.deepEqual(splitFrames(''), { frames: [], rest: '' });
 });
+
+// ------------------------------------------------------------------ prompts
+
+test('the instructions send development tasks to task context first', () => {
+  assert.match(SERVER_INSTRUCTIONS, /codebrain_task_context FIRST/);
+});
+
+test('prompts/list offers the four developer workflows with optional arguments', async () => {
+  const response = await handleMessage({ jsonrpc: '2.0', id: 5, method: 'prompts/list' });
+  const prompts = response.result.prompts;
+  assert.deepEqual(prompts.map((prompt) => prompt.name), ['explain', 'implement', 'fix', 'review']);
+  for (const prompt of prompts) {
+    assert.ok(prompt.description.length > 20);
+    assert.deepEqual(prompt.arguments.map((argument) => argument.name), ['request', 'issue']);
+    assert.ok(prompt.arguments.every((argument) => argument.required === false));
+  }
+});
+
+test('prompts/get serves the shipped skill text plus the task', async () => {
+  const response = await handleMessage(
+    {
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'prompts/get',
+      params: { name: 'implement', arguments: { request: 'add rate limiting', issue: 'ABC-7' } },
+    },
+    { env: { CODEBRAIN_SKILLS_DIR: SKILLS_DIR } },
+  );
+  const [message] = response.result.messages;
+  assert.equal(message.role, 'user');
+  assert.match(message.content.text, /# CodeBrain Implement/);
+  assert.match(message.content.text, /codebrain_task_context/);
+  assert.doesNotMatch(message.content.text, /^---\nname:/m, 'frontmatter is stripped');
+  assert.match(message.content.text, /Task: add rate limiting\nJira issue: ABC-7$/);
+});
+
+test('prompts/get still answers when the skill file is missing', async () => {
+  const response = await handleMessage(
+    { jsonrpc: '2.0', id: 7, method: 'prompts/get', params: { name: 'fix' } },
+    { env: { CODEBRAIN_SKILLS_DIR: '/nonexistent' } },
+  );
+  const text = response.result.messages[0].content.text;
+  assert.match(text, /CodeBrain: fix a bug/);
+  assert.match(text, /ask the user what to work on/);
+});
+
+test('an unknown prompt is an invalid-params error naming the real ones', async () => {
+  const response = await handleMessage({
+    jsonrpc: '2.0',
+    id: 8,
+    method: 'prompts/get',
+    params: { name: 'deploy' },
+  });
+  assert.equal(response.error.code, -32602);
+  assert.match(response.error.message, /explain, implement, fix, review/);
+});
+

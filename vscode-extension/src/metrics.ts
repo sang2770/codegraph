@@ -24,7 +24,7 @@ export interface TokenSavingSample {
 }
 
 export interface ChatRequestTokenSample {
-  command: 'explain' | 'review' | 'impact' | 'fix' | 'guide';
+  command: 'explain' | 'review' | 'impact' | 'fix' | 'guide' | 'implement';
   model: string;
   generatedAt: string;
   codeBrainContextTokens: number;

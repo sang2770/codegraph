@@ -36,12 +36,15 @@ export class ReportManager {
   public async setLatest(
     report: Omit<StoredReport, 'temporaryUri'>,
     preview = true,
+    /** Open the preview editor; defaults to `codebrain.reports.openPreview`. */
+    open?: boolean,
   ): Promise<vscode.Uri | undefined> {
     const temporaryUri = preview
       ? await writeAndPreviewReport(
           report.kind,
           report.markdown,
           report.folder,
+          open,
         )
       : undefined;
     this.latest = { ...report, temporaryUri };

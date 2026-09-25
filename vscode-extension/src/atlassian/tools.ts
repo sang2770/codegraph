@@ -45,6 +45,14 @@ import {
   textToStorage,
   truncate,
 } from './format';
+import {
+  extractAcceptanceCriteria,
+  extractCodeHints,
+  extractConfluencePageIds,
+} from './taskContext';
+
+/** The one-call context tool every CodeBrain workflow starts with. */
+export const TASK_CONTEXT_TOOL = 'codebrain_task_context';
 
 /** An MCP content block. Images are returned inline, base64-encoded. */
 export type ToolContent =
@@ -90,9 +98,38 @@ const DEFAULT_IMAGE_LIMIT = 5;
  * for the `write` entries — per {@link ToolContext.allowWrite}.
  */
 const ALL_TOOLS: readonly (ToolDefinition & {
-  product: 'jira' | 'confluence';
+  /** `any`: useful with Jira, Confluence, or both. */
+  product: 'jira' | 'confluence' | 'any';
   write?: true;
 })[] = [
+  {
+    product: 'any',
+    name: TASK_CONTEXT_TOOL,
+    description:
+      'Start here for any development task tied to a ticket or spec — implement, fix, explain or review. One call returns everything the task needs from Jira and Confluence: the issue in full with its comment thread, the acceptance criteria extracted from it, the Confluence spec pages it links to (or the best matches for its summary), and the code names worth passing to codegraph_explore next. Pass key for a Jira issue (take it from the request, the branch name or a commit), or query for a free-text lookup when there is no key. Treat the result as already read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: {
+          type: 'string',
+          description: 'Jira issue key, for example "ABC-1234".',
+        },
+        query: {
+          type: 'string',
+          description:
+            'Free text describing the feature or bug, used when there is no issue key (and to find specs when the issue links none).',
+        },
+        includeSpecs: {
+          type: 'boolean',
+          description: 'Also fetch related Confluence pages (default true).',
+        },
+        specLimit: {
+          type: 'number',
+          description: 'Confluence pages returned in full, 0-3 (default 2).',
+        },
+      },
+    },
+  },
   {
     product: 'confluence',
     name: 'confluence_search',
@@ -453,7 +490,7 @@ export function listTools(
     // A hidden write tool cannot be picked by mistake — the strongest guard
     // available, and the reason writes are gated here rather than at the call.
     if (tool.write && !options.allowWrite) return false;
-    if (!configured) return true;
+    if (!configured || tool.product === 'any') return true;
     return tool.product === 'jira' ? Boolean(connections.jira) : Boolean(connections.confluence);
   }).map(({ product: _product, write: _write, ...tool }) => tool);
 }
@@ -491,9 +528,14 @@ export async function callTool(
   if (definition.product === 'confluence' && !context.client.hasConfluence) {
     return guidance(notConfiguredMessage('Confluence (Collab)', context.envFile));
   }
+  if (definition.product === 'any' && !context.client.hasJira && !context.client.hasConfluence) {
+    return guidance(notConfiguredMessage('Jira or Confluence (Collab)', context.envFile));
+  }
 
   try {
     switch (name) {
+      case TASK_CONTEXT_TOOL:
+        return text((await buildTaskContext(args, context)).text);
       case 'confluence_search':
         return await confluenceSearch(args, context);
       case 'confluence_get_page':
@@ -690,6 +732,22 @@ async function jiraGetIssue(
   const commentLimit = readLimit(args.commentLimit, context.defaultLimit);
 
   const issue = await context.client.jiraIssue(key);
+  const { lines } = await describeIssue(issue, key, context, includeComments ? commentLimit : 0);
+  return text(lines.join('\n'));
+}
+
+/**
+ * One issue rendered in full — fields, subtasks, links, description and, when
+ * `commentLimit` is positive, the comment thread. Also hands back the plain
+ * description and comment text, which the task-context tool mines for
+ * acceptance criteria and code names.
+ */
+async function describeIssue(
+  issue: JiraIssue,
+  key: string,
+  context: ToolContext,
+  commentLimit: number,
+): Promise<{ lines: string[]; description: string; commentText: string }> {
   const base = context.client.jiraBaseUrl ?? '';
   const fields = issue.fields ?? {};
 
@@ -740,10 +798,13 @@ async function jiraGetIssue(
       : '(empty)',
   );
 
-  if (includeComments) {
+  let commentText = '';
+  if (commentLimit > 0) {
     try {
       const comments = await context.client.jiraComments(key, commentLimit);
-      lines.push('', ...formatComments(comments.comments ?? [], comments.total, context));
+      const formatted = formatComments(comments.comments ?? [], comments.total, context);
+      commentText = formatted.join('\n');
+      lines.push('', ...formatted);
     } catch (error) {
       // The issue body is the valuable part; a comment-permission gap must not
       // throw it away.
@@ -752,7 +813,185 @@ async function jiraGetIssue(
     }
   }
 
-  return text(lines.join('\n'));
+  return { lines, description, commentText };
+}
+
+export interface TaskContext {
+  /** Markdown handed to the agent or the chat model. */
+  text: string;
+  /** The issue key the context was built for, when there was one. */
+  key?: string;
+  /** False when a key was given but the issue could not be read (wrong key, no access). */
+  issueLoaded: boolean;
+  /** Acceptance criteria found in the issue, in order. */
+  criteria: string[];
+  /** Code names worth passing to `codegraph_explore`, most specific first. */
+  hints: string[];
+}
+
+/**
+ * Everything a development task needs from Jira and Confluence, in one reply.
+ *
+ * Sections are gathered independently, so a Confluence outage or a missing
+ * comment permission degrades the reply instead of failing it: the ticket
+ * alone is still most of the value. Exported so the VS Code chat participant
+ * builds exactly what external agents receive over MCP.
+ */
+export async function buildTaskContext(
+  args: Record<string, unknown>,
+  context: ToolContext,
+): Promise<TaskContext> {
+  const key = args.key === undefined || args.key === '' ? undefined : readIssueKey(args.key);
+  const query = optionalString(args.query, 'query');
+  if (!key && !query) {
+    throw new InvalidArgument(
+      `${TASK_CONTEXT_TOOL} needs key (a Jira issue key such as "ABC-1234" — look in the request, the branch name or recent commits) or query (free text describing the feature or bug).`,
+    );
+  }
+  const includeSpecs = args.includeSpecs === undefined ? true : Boolean(args.includeSpecs);
+  const specLimit = Math.min(3, Math.max(0, Math.floor(Number(args.specLimit ?? 2)) || 0));
+  const maxBody = context.maxBodyCharacters ?? DEFAULT_MAX_BODY_CHARACTERS;
+  const { client } = context;
+
+  const sections: string[] = [];
+  let summary = '';
+  let mined = '';
+  let issueLoaded = false;
+
+  if (key && client.hasJira) {
+    try {
+      const issue = await client.jiraIssue(key);
+      summary = fieldString(issue.fields?.summary);
+      const described = await describeIssue(issue, key, context, readLimit(undefined, context.defaultLimit));
+      sections.push(described.lines.join('\n'));
+      mined = `${summary}\n${described.description}\n${described.commentText}`;
+      issueLoaded = true;
+    } catch (error) {
+      if (!isAtlassianRequestError(error)) throw error;
+      sections.push(`# ${key}\n\n(Could not load the issue: ${error.message})`);
+    }
+  } else if (key) {
+    sections.push(`# ${key}\n\n(Jira is not configured for CodeBrain, so the issue could not be read. ${notConfiguredHint(context.envFile)})`);
+  }
+
+  if (!key && query && client.hasJira) {
+    try {
+      const jql = buildJiraJql({ query });
+      const response = await client.jiraSearch({ jql, limit: 5 });
+      const issues = response.issues ?? [];
+      if (issues.length > 0) {
+        const base = client.jiraBaseUrl ?? '';
+        sections.push(
+          [
+            '## Related Jira issues',
+            '',
+            ...issues.map(
+              (issue) =>
+                `- ${issue.key} — ${fieldString(issue.fields?.summary) || '(no summary)'} · ${summaryLine(issue)} · ${base}/browse/${issue.key}`,
+            ),
+            '',
+            `Call ${TASK_CONTEXT_TOOL} again with the matching key for its full description and acceptance criteria.`,
+          ].join('\n'),
+        );
+      }
+    } catch (error) {
+      if (!isAtlassianRequestError(error)) throw error;
+    }
+  }
+
+  const criteria = extractAcceptanceCriteria(mined);
+  if (key) {
+    sections.push(
+      criteria.length > 0
+        ? ['## Acceptance criteria (extracted)', '', ...criteria.map((item, index) => `${index + 1}. ${item}`)].join('\n')
+        : '## Acceptance criteria (extracted)\n\nNone written as a list in the issue. Derive them from the description and comments above, and confirm them with the user before implementing.',
+    );
+  }
+
+  let specText = '';
+  if (includeSpecs && specLimit > 0 && client.hasConfluence) {
+    const base = client.confluenceBaseUrl ?? '';
+    const pages: ConfluenceContent[] = [];
+    for (const pageId of extractConfluencePageIds(mined, specLimit)) {
+      try {
+        pages.push(await client.confluencePage(pageId));
+      } catch (error) {
+        if (!isAtlassianRequestError(error)) throw error;
+      }
+    }
+    const lookup = query ?? summary;
+    const others: ConfluenceContent[] = [];
+    if (pages.length < specLimit && lookup) {
+      try {
+        const response = await client.confluenceSearch({
+          cql: buildConfluenceCql({ query: lookup }),
+          limit: specLimit + 3,
+        });
+        for (const hit of response.results ?? []) {
+          if (!hit.id || pages.some((page) => page.id === hit.id)) continue;
+          if (pages.length < specLimit) {
+            try {
+              pages.push(await client.confluencePage(hit.id));
+              continue;
+            } catch (error) {
+              if (!isAtlassianRequestError(error)) throw error;
+            }
+          }
+          others.push(hit);
+        }
+      } catch (error) {
+        if (!isAtlassianRequestError(error)) throw error;
+      }
+    }
+    // The ticket is the primary source; specs share what is left of the budget.
+    const perPage = Math.max(2_000, Math.floor(maxBody / Math.max(1, pages.length + 1)));
+    const specLines: string[] = [];
+    for (const page of pages) {
+      const body = storageToText(page.body?.storage?.value ?? '');
+      specText += `\n${body}`;
+      specLines.push(
+        '',
+        ...describeConfluenceHeader(page, base).map((line, index) => (index === 0 ? `#${line}` : line)),
+        '',
+        body ? truncate(body, perPage) : '(no text body)',
+      );
+    }
+    if (others.length > 0) {
+      specLines.push('', '### Other possibly related pages', '');
+      for (const page of others.slice(0, 3)) {
+        specLines.push(`- ${page.title ?? '(untitled)'} — pageId ${page.id}`);
+      }
+    }
+    if (specLines.length > 0) sections.push(['## Specification (Confluence)', ...specLines].join('\n'));
+  }
+
+  const hints = extractCodeHints(`${mined}\n${query ?? ''}\n${specText}`);
+  const next: string[] = ['## Next steps', ''];
+  if (hints.length > 0) {
+    next.push(
+      `Code names mentioned above: ${hints.map((hint) => `\`${hint}\``).join(', ')}.`,
+      '',
+      `Call codegraph_explore with a bag of these names plus the entry point you expect (query: "${hints.slice(0, 8).join(' ')}") to get their source and the call paths between them.`,
+    );
+  } else {
+    next.push(
+      'The ticket names no code directly. Call codegraph_explore with the domain terms from the summary and the entry point you expect (controller, handler, command, screen) to locate where this lives.',
+    );
+  }
+  next.push('', 'Everything above is already read — do not open the ticket or pages in a browser.');
+  sections.push(next.join('\n'));
+
+  if (sections.length === 1) {
+    sections.unshift(
+      `No Jira issue or Confluence page matched${query ? ` "${query}"` : ''}. Continue from the code: the requirement has to come from the user's request.`,
+    );
+  }
+
+  return { text: sections.join('\n\n'), key, issueLoaded, criteria, hints };
+}
+
+function notConfiguredHint(envFile: string): string {
+  return `The user can run "CodeBrain: Atlassian (Jira + Confluence)" in VS Code, or set the credentials in ${envFile}.`;
 }
 
 async function jiraGetComments(
@@ -1548,7 +1787,7 @@ export function notConfiguredMessage(product: string, envFile: string): string {
   return [
     `${product} is not configured for CodeBrain, so this tool has nothing to query.`,
     '',
-    'To enable it, the user runs "CodeBrain: Configure Atlassian (Collab + Jira)" from the VS Code command palette,',
+    'To enable it, the user runs "CodeBrain: Atlassian (Jira + Confluence)" from the VS Code command palette,',
     `or sets the credentials in ${envFile}.`,
     '',
     'Continue with the tools that are available — do not retry this one in this session.',

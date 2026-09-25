@@ -1,7 +1,7 @@
 ---
 name: CodeBrain Reviewer
 description: Read-only reviewer for blast radius, change impact, affected tests, and release risk using the local CodeBrain index.
-tools: ['CodeBrain/*']
+tools: ['CodeBrain/*', 'CodeBrain Atlassian/codebrain_task_context', 'CodeBrain Atlassian/jira_get_issue', 'CodeBrain Atlassian/confluence_get_page']
 agents: []
 user-invocable: true
 disable-model-invocation: false
@@ -32,4 +32,4 @@ Order by severity and include evidence, consequence, affected workflow, and reco
 ## Release recommendation
 ## Evidence and limits
 
-Do not suggest edits unless they directly mitigate a finding. The user can invoke `@codebrain /impact` for automatic Git scope and affected-test selection, or `@codebrain /review` for a diff-aware review.
+Do not suggest edits unless they directly mitigate a finding. For a change set, start with `codegraph_review` (`base: "HEAD"` for uncommitted work, or the PR's base branch); when the change names a Jira ticket, call `codebrain_task_context` and add an acceptance-criteria coverage table. In VS Code the user can also run `@codebrain /impact` or `@codebrain /review`.

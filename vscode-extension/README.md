@@ -44,15 +44,30 @@ Interact directly with your codebase using the `@codebrain` participant. It auto
 - **`/review`**: Reviews active changes or selection against codebase conventions and architecture.
   - *Example*: `@codebrain /review Review my current changes`
   - It analyzes Git diffs and call paths to return risk levels (Critical/High/Medium/Low), structural bugs, boundary cases, and release recommendations.
-- **`/impact`**: Analyzes the blast radius of changes.
-  - *Example*: `@codebrain /impact What is the impact of modifying refreshSession?`
+  - Ask about impact — *"which tests are affected by my changes?"* — and the review also includes the deterministic affected-test analysis.
 
-- **`/fix`**: Analyzes a reported bug, traces the failure path and root cause, and proposes a safe solution with a focused validation plan. It is analysis-only and does not edit files.
+- **`/implement`**: Plans a feature or Jira ticket — acceptance criteria, where the change plugs in, file-by-file steps, tests, and risks — then hands the plan to the **CodeBrain Dev** agent to edit, test, and self-review. **Copy prompt for another agent** gives the same plan to Claude Code, Cursor, Codex, or any other agent.
+  - *Example*: `@codebrain /implement ABC-123` or `@codebrain /implement Add rate limiting to the login endpoint`
+
+- **`/fix`**: Analyzes a reported bug, traces the failure path and root cause, and proposes a safe solution with a focused validation plan. The report itself does not edit files; **Apply fix with CodeBrain Dev** hands it to the agent to write the failing test, fix, and verify.
   - *Example*: `@codebrain /fix Login returns 401 after the token refresh succeeds`
 
-- **`/guide`**: Generates a user-facing Markdown guide for a feature, including prerequisites, permissions, numbered usage steps, examples, expected states, troubleshooting, and a validation checklist. The generated report can be previewed and exported as an `.md` file.
-  - *Example*: `@codebrain /guide How do users configure automatic index refresh?`
-  - Automatically identifies affected workflows and dependent code paths.
+- **Jira and Confluence context, automatically.** When the question names a Jira key — or your branch carries one, like `feature/ABC-123-reset` — every command reads the ticket, its comments and acceptance criteria, and the linked Confluence spec first. `/explain` then points out where the code drifts from the spec, and `/review` adds an acceptance-criteria coverage table.
+
+- **User guides**: ask `/explain` for a *"user guide"* (or *"hướng dẫn sử dụng"*) and you get a step-by-step guide — prerequisites, steps, examples, troubleshooting — instead of a code walkthrough.
+  - *Example*: `@codebrain Write a user guide for automatic index refresh`
+
+### 🤖 One developer agent in every AI tool
+The same four workflows — **explain**, **implement**, **fix**, **review** — work in Copilot, Claude Code, Codex, Gemini CLI, Antigravity, Cursor, and opencode:
+
+- **Skills**: **CodeBrain: Set Up Agents** installs `codebrain-explain`, `codebrain-implement`, `codebrain-fix`, and `codebrain-review` next to the general `codebrain` skill. Agents load them when the task matches; in Claude Code they are also slash commands (`/codebrain-implement ABC-123`). Agents that already have the CodeBrain skill get the new ones on the next update.
+- **Slash commands over MCP**: the CodeBrain Atlassian server offers the same workflows as MCP prompts, which Claude Code, Copilot, Gemini CLI and other hosts list as slash commands.
+- **`codebrain_task_context`**: one call returns a ticket, its comments, extracted acceptance criteria, the related Confluence spec, and the code names to explore next — the starting point of every workflow.
+- **CodeBrain Dev** agent in Copilot: edits, runs tests, and checks problems, with a one-click handoff to **CodeBrain Reviewer** when it is done.
+- **Subagents**: the same command installs **codebrain-dev** and the read-only **codebrain-reviewer** as native subagents for Claude Code (`.claude/agents/`) and opencode.
+- **Ticket hook for Claude Code**: with Atlassian configured, setup adds a `UserPromptSubmit` hook to Claude Code. A prompt that names a Jira key — or works on your branch's ticket ("implement the rest") — arrives with the ticket, its acceptance criteria and spec attached, once per session. Pause it with `CODEBRAIN_NO_PROMPT_HOOK=1`.
+
+Jira and Confluence writes (comments, transitions) still happen only when you ask and **CodeBrain › Atlassian: Allow Write** is on. No workflow commits or pushes on its own.
 
 ### ⚡ Blast Radius CodeLens
 Every file shows its blast radius above line 1 — no command needed:
@@ -72,7 +87,7 @@ It detects your project's runner — Vitest, Jest, Playwright, Mocha, pytest, `g
 ### 🔍 Change Impact & Affected Tests
 Analyze changes from tracked, staged, or untracked Git files (falling back to the active file if the repository is clean) using:
 - Command: **CodeBrain: Analyze Change Impact**
-- Chat: `@codebrain /impact`, `@codebrain /fix`, or `@codebrain /guide`
+- Chat: `@codebrain /review Which tests are affected by my changes?`
 
 The engine will:
 1. Traverse call graphs to find affected dependencies up to a configurable depth.
@@ -156,7 +171,7 @@ Use the custom agent **CodeBrain Reviewer** in VS Code Chat. It is granted CodeB
 Save generated reviews or explanations using the command **CodeBrain: Export Latest Report as Markdown**. Keep a lightweight record of complex analysis to review, share, or feed back to other AI models.
 
 ### 🔌 CodeBrain for Every Agent — MCP Server + Skill
-Two things make CodeBrain useful to an agent: the **MCP server**, which gives it the graph tools, and the **skill**, which tells it when and how to use them. Inside VS Code, Copilot gets both from the extension itself. Every other agent reads its own files, so run **CodeBrain: Install MCP + Skill for Agents (Claude, Codex, Gemini, Antigravity, Copilot…)**, choose a scope, choose what to install, tick the agents you use, and restart them.
+Two things make CodeBrain useful to an agent: the **MCP server**, which gives it the graph tools, and the **skill**, which tells it when and how to use them. Inside VS Code, Copilot gets both from the extension itself. Every other agent reads its own files, so run **CodeBrain: Set Up Agents**, choose a scope, tick the agents you use, and restart them.
 
 **MCP server**
 
@@ -223,16 +238,14 @@ Seven read tools: `confluence_search`, `confluence_get_page`, `confluence_get_pa
 
 **Setup — once, for all agents:**
 
-1. Run **CodeBrain: Configure Atlassian (Collab + Jira)** and enter the base URLs and your personal access tokens.
+1. Run **CodeBrain: Atlassian (Jira + Confluence)** and enter the base URLs and your personal access tokens.
    - Server / Data Center: create a token under *Profile → Personal Access Tokens*.
    - Cloud: use an API token and enter your account email when prompted. Confluence Cloud URLs must include the `/wiki` context path.
    - You can configure only Jira, only Confluence, or both — tools for an unconfigured product are never shown to the agent.
 2. GitHub Copilot picks the server up immediately, with no config file to edit.
-3. For **Claude Code**, **Codex CLI**, **Gemini CLI**, or **Antigravity**, run **CodeBrain: Register Atlassian MCP with Agents**, choose global or workspace scope, pick the ones you use, then restart that agent.
+3. For **Claude Code**, **Codex CLI**, **Gemini CLI**, **Antigravity**, **Cursor** or **opencode**, run **CodeBrain: Set Up Agents** (again, if you ran it before configuring Atlassian), pick the ones you use, then restart that agent.
 
-**Where your credentials live:** tokens go into the OS keychain via VS Code SecretStorage, and are mirrored once to `~/.codebrain/atlassian.env` (owner-only, mode `0600`) — the only way agents outside VS Code can read them. Every agent config file CodeBrain writes contains just the command to run, so a committed `.mcp.json` never leaks a token. **CodeBrain: Clear Atlassian Credentials** removes both copies; **CodeBrain: Unregister Atlassian MCP from Agents** removes the config entries.
-
-Use **CodeBrain: Test Atlassian Connection** to verify access; results also go to the **CodeBrain Atlassian** output channel.
+**Where your credentials live:** tokens go into the OS keychain via VS Code SecretStorage, and are mirrored once to `~/.codebrain/atlassian.env` (owner-only, mode `0600`) — the only way agents outside VS Code can read them. Every agent config file CodeBrain writes contains just the command to run, so a committed `.mcp.json` never leaks a token. Run **CodeBrain: Atlassian (Jira + Confluence)** again to edit, test, or clear the connection; **CodeBrain: Remove from Agents** removes the config entries. Test results also go to the **CodeBrain Atlassian** output channel.
 
 ---
 
@@ -294,19 +307,14 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - `CodeBrain: Reset Token Savings` — Clear metrics history.
 - `CodeBrain: Restore Dismissed Review Findings` — Bring back dismissed findings.
 - `CodeBrain: Export Latest Report as Markdown` — Export findings.
-- `CodeBrain: Configure Atlassian (Collab + Jira)` — Enter the base URLs and personal access tokens for Jira and Confluence.
+- `CodeBrain: Atlassian (Jira + Confluence)` — Enter the base URLs and personal access tokens the first time; afterwards edit, test, or clear the connection.
 - `CodeBrain: Generate Commit Message` — Write a commit message for the staged changes into the Source Control input box.
 - `CodeBrain: Choose Commit Message Format` — Pick the commit message style, or switch to a custom template.
 - `CodeBrain: Customize Commit Message Template` — Create and open the repository's commit message template.
 - `CodeBrain: Update CodeGraph Runtime` — Check npm for a newer runtime now and switch to it.
-- `CodeBrain: Install MCP + Skill for Agents (Claude, Codex, Gemini, Antigravity, Copilot…)` — Add the code graph MCP server and/or the CodeBrain skill to Claude Code, Codex CLI, Gemini CLI, Antigravity, GitHub Copilot, Cursor, and opencode, globally or for this workspace.
-- `CodeBrain: Uninstall CodeBrain from Agents` — Remove both again, at every scope.
-- `CodeBrain: Register Atlassian MCP with Agents` — Add the Atlassian MCP server to the same agents.
-- `CodeBrain: Unregister Atlassian MCP from Agents` — Remove those config entries.
-- `CodeBrain: Test Atlassian Connection` — Make one authenticated call per configured product and report the result.
-- `CodeBrain: Clear Atlassian Credentials` — Forget the tokens, URLs, and the shared credentials file.
+- `CodeBrain: Set Up Agents` — One step for Claude Code, Codex CLI, Gemini CLI, Antigravity, GitHub Copilot CLI, Cursor, and opencode: the code graph MCP server, the skills, the subagents, and — when Atlassian is configured — the Jira/Confluence server and Claude Code's ticket hook, globally or for this workspace.
+- `CodeBrain: Remove from Agents` — Remove all of it again, at every scope.
 - `CodeBrain: Open Jira Board` — Open the full board, with charts, in an editor tab.
-- `CodeBrain: Refresh Jira Board` — Reload the board from Jira now.
 - `CodeBrain: Check Out Branch for a Jira Issue` — Pick a ticket and switch to, track, or create its branch.
 - `CodeBrain: Open the Jira Issue for This Branch` — Open the ticket the current branch name refers to.
 
@@ -317,7 +325,7 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - **Trusted Workspace**: CodeBrain runs a local runtime and reads local workspace files; it requires workspace trust to be enabled.
 - **Network on first start**: The CodeGraph runtime is downloaded from npm (or your `codebrain.runtime.registry` mirror) the first time, and on updates. Use `codebrain.runtime.path` on machines with no registry access.
 - **Filesystem Workspace**: Virtual workspaces are not supported.
-- **Chat Models**: Chat commands (`/explain`, `/review`, `/impact`, `/fix`, `/guide` from chat) require an active model available through VS Code Chat. **CodeBrain: Review Changes** requires a model available through the VS Code Language Model API and uses `codebrain.ai.model` when configured. Deterministic local commands (e.g. Impact scoring, Workflow Graph, Index status, export) work offline without a chat model.
+- **Chat Models**: Chat commands (`/explain`, `/implement`, `/fix`, `/review`) require an active model available through VS Code Chat. **CodeBrain: Review Changes** requires a model available through the VS Code Language Model API and uses `codebrain.ai.model` when configured. Deterministic local commands (e.g. Impact scoring, Workflow Graph, Index status, export) work offline without a chat model.
 
 ---
 
@@ -335,9 +343,9 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - **Stuck on an Old Runtime**: Run **CodeBrain: Update CodeGraph Runtime**. If `codebrain.runtime.version` pins a version, or `codebrain.runtime.path` is set, CodeBrain does not update on its own.
 - **"Permission Denied" Running the Runtime (Linux/macOS)**: You should never have to `chmod` anything by hand — CodeBrain checks the runtime at startup and restores the execute bit if something dropped it, noting the repair in the **CodeBrain** output channel. The automatic repair only fails when the runtime folder is read-only or owned by another user, and the error message then names the exact `chmod +x` command to run.
 - **WASM Fallback Warning**: If you see a warning that CodeBrain is using WASM fallback, the runtime has no native kernel for your platform (or a `codebrain.runtime.path` build was made without one). The extension still works, without the performance acceleration of the native Rust kernel.
-- **Atlassian Tools Missing in Copilot**: The Atlassian server only appears once a product is fully configured — both a base URL and a token. Run **CodeBrain: Configure Atlassian (Collab + Jira)**, then **CodeBrain: Test Atlassian Connection**.
-- **CodeBrain Tools Missing in Claude Code / Codex / Gemini / Antigravity / Copilot CLI / Cursor / opencode**: Run **CodeBrain: Install MCP + Skill for Agents** and restart the agent — MCP servers are only read at startup. A workspace-scoped registration only applies to that folder — register globally if you want it everywhere.
-- **Atlassian Tools Missing in Claude Code / Codex / Gemini / Antigravity**: Run **CodeBrain: Register Atlassian MCP with Agents** and restart the agent. The same project-scope note applies to Claude Code.
+- **Atlassian Tools Missing in Copilot**: The Atlassian server only appears once a product is fully configured — both a base URL and a token. Run **CodeBrain: Atlassian (Jira + Confluence)**, then choose **Test connection**.
+- **CodeBrain Tools Missing in Claude Code / Codex / Gemini / Antigravity / Copilot CLI / Cursor / opencode**: Run **CodeBrain: Set Up Agents** and restart the agent — MCP servers are only read at startup. A workspace-scoped registration only applies to that folder — register globally if you want it everywhere.
+- **Atlassian Tools Missing in Claude Code / Codex / Gemini / Antigravity**: Configure Atlassian, run **CodeBrain: Set Up Agents** again, and restart the agent. The same project-scope note applies to Claude Code.
 - **Atlassian Token Rejected (401)**: Server/Data Center tokens authenticate as a bearer token with no username; Cloud API tokens need your account email in `codebrain.atlassian.username`. Re-run the configure command to replace a rotated token.
 - **Confluence Returns 404 for Everything**: A Cloud Confluence URL must include the `/wiki` context path (`https://site.atlassian.net/wiki`).
 - **Atlassian Host Behind a Private CA**: Set `codebrain.atlassian.sslVerify` to `false`, or export `CODEBRAIN_ATLASSIAN_SSL_VERIFY=false` for agents launched outside VS Code.

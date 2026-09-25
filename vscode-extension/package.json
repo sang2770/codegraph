@@ -2,7 +2,7 @@
   "name": "codebrain-lge",
   "displayName": "CodeBrain LGE",
   "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "publisher": "sang2nguyen-LGE",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -130,11 +130,26 @@
     "chatSkills": [
       {
         "path": "./skills/codebrain/SKILL.md"
+      },
+      {
+        "path": "./skills/codebrain-explain/SKILL.md"
+      },
+      {
+        "path": "./skills/codebrain-implement/SKILL.md"
+      },
+      {
+        "path": "./skills/codebrain-fix/SKILL.md"
+      },
+      {
+        "path": "./skills/codebrain-review/SKILL.md"
       }
     ],
     "chatAgents": [
       {
         "path": "./agents/codebrain-reviewer.agent.md"
+      },
+      {
+        "path": "./agents/codebrain-dev.agent.md"
       }
     ],
     "chatParticipants": [
@@ -142,34 +157,29 @@
         "id": "codebrain.chat",
         "name": "codebrain",
         "fullName": "CodeBrain",
-        "description": "Explain workflows or review code with CodeBrain context.",
+        "description": "Explain, implement, fix, and review code with your code graph and Jira/Confluence context.",
         "isSticky": true,
         "sampleRequest": "How does a login request reach the database?",
         "commands": [
           {
             "name": "explain",
-            "description": "Explain the business workflow and show the concrete code flow with a developer-friendly Markdown and Mermaid report.",
+            "description": "Explain how a workflow works — business steps, code flow with file:line, diagrams. Ask for a \"user guide\" to get a step-by-step guide instead.",
             "sampleRequest": "How does a login request reach the database?"
           },
           {
-            "name": "review",
-            "description": "Run one graph-grounded review covering architecture, contracts, blast radius, code correctness, boundary safety, test gaps, and release readiness.",
-            "sampleRequest": "Review my current changes for regression risk and missing tests."
+            "name": "implement",
+            "description": "Plan a feature or Jira ticket: acceptance criteria, where the change plugs in, file-by-file steps, tests, and risks — then hand it to the CodeBrain Dev agent to edit and verify.",
+            "sampleRequest": "Implement ABC-123: allow users to reset their password by email."
           },
           {
-            "name": "impact",
-            "description": "Analyze change impact, detect affected tests, classify risk, and report estimated token savings.",
-            "sampleRequest": "Which tests are affected by my changes?"
+            "name": "review",
+            "description": "Review your changes: risk verdict, findings with file:line, blast radius, affected tests, and acceptance-criteria coverage when a ticket is involved.",
+            "sampleRequest": "Review my current changes for regression risk and missing tests."
           },
           {
             "name": "fix",
             "description": "Analyze a bug, trace its root cause through the code graph, and propose a concrete solution and validation plan.",
             "sampleRequest": "Checkout throws a null reference on an empty cart — find the root cause."
-          },
-          {
-            "name": "guide",
-            "description": "Generate a user-facing Markdown guide for using a feature, including prerequisites, steps, examples, and troubleshooting.",
-            "sampleRequest": "Write a user guide for the password reset feature."
           }
         ],
         "disambiguation": [
@@ -179,7 +189,9 @@
             "examples": [
               "What is this function used for?",
               "How does this request workflow work?",
-              "Explain the purpose of the selected code."
+              "Explain the purpose of the selected code.",
+              "Write a user guide for the export feature.",
+              "Viết tài liệu hướng dẫn cho chức năng này."
             ]
           },
           {
@@ -189,25 +201,18 @@
               "Review my changes.",
               "What can break if I change this?",
               "Check null and undefined handling.",
-              "Assess the release risk and missing tests for this diff."
-            ]
-          },
-          {
-            "category": "Feature documentation",
-            "description": "Writes a user-facing guide for one feature: prerequisites, steps, examples, and troubleshooting.",
-            "examples": [
-              "Write a user guide for the export feature.",
-              "How do I use the password reset flow?",
-              "Viết tài liệu hướng dẫn cho chức năng này."
-            ]
-          },
-          {
-            "category": "Change-impact and test selection",
-            "description": "Traces changed files through dependent workflows and identifies the indexed tests that should run.",
-            "examples": [
-              "Analyze Change Impact.",
+              "Assess the release risk and missing tests for this diff.",
               "Which tests are affected by my changes?",
               "Phân tích ảnh hưởng của thay đổi này."
+            ]
+          },
+          {
+            "category": "Feature implementation planning",
+            "description": "Plans a feature or Jira ticket against the code graph — acceptance criteria, where the change plugs in, file-by-file steps, tests, and risks — and hands it to an editing agent.",
+            "examples": [
+              "Implement ABC-123.",
+              "Add rate limiting to the login endpoint.",
+              "Triển khai chức năng xuất báo cáo PDF."
             ]
           }
         ]
@@ -342,6 +347,14 @@
         "icon": "$(cloud-download)"
       },
       {
+        "command": "codebrain.setupAgents",
+        "title": "CodeBrain: Set Up Agents (Claude Code, Codex, Cursor, Gemini, opencode…)"
+      },
+      {
+        "command": "codebrain.removeAgents",
+        "title": "CodeBrain: Remove from Agents"
+      },
+      {
         "command": "codebrain.registerMcp",
         "title": "CodeBrain: Install MCP + Skill for Agents (Claude, Codex, Gemini, Antigravity, Copilot…)",
         "icon": "$(plug)"
@@ -352,7 +365,7 @@
       },
       {
         "command": "codebrain.configureAtlassian",
-        "title": "CodeBrain: Configure Atlassian (Collab + Jira)",
+        "title": "CodeBrain: Atlassian (Jira + Confluence)",
         "icon": "$(key)"
       },
       {
@@ -654,6 +667,58 @@
         {
           "command": "codebrain.replyToFinding",
           "when": "false"
+        },
+        {
+          "command": "codebrain.registerMcp",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.unregisterMcp",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.registerAtlassianMcp",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.unregisterAtlassianMcp",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.testAtlassianConnection",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.clearAtlassianCredentials",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.nextReviewFinding",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.previousReviewFinding",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.selectCommitFormat",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.editCommitTemplate",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.refreshJiraBoard",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.jiraSelectProjects",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.unpinModule",
+          "when": "false"
         }
       ],
       "comments/commentThread/context": [
@@ -731,7 +796,7 @@
         },
         "codebrain.chat.showTokenUsage": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Show model-specific estimated token counts and latency for each CodeBrain chat request."
         },
         "codebrain.impact.maxDepth": {
@@ -825,6 +890,11 @@
           "default": true,
           "description": "Refresh the CodeBrain index before impact analysis and review when the workspace has changed since the last refresh. Analyses stop if a needed refresh fails instead of using stale graph data.",
           "scope": "resource"
+        },
+        "codebrain.chat.openReportPreview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also open each @codebrain chat answer in VS Code's Markdown preview. Off by default: the answer is already in the chat, and the Open report preview button opens it on demand."
         },
         "codebrain.reports.openPreview": {
           "type": "boolean",

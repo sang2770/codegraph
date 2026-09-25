@@ -1,5 +1,5 @@
 /**
- * Exposing the code graph MCP server — and the CodeBrain skill — to
+ * Exposing the code graph MCP server — and the CodeBrain skills — to
  * agents other than Copilot.
  *
  * Copilot receives both from the extension itself: the server as a definition
@@ -15,9 +15,11 @@
  * the user-scoped agents the moment the user opened a second repository.
  */
 
+import { subagentExtra } from './agents/extras';
 import { McpServerEntry } from './agents/mcpTargets';
 import { McpRegistrar } from './agents/registration';
-import { SkillDefinition, loadSkill } from './agents/skillTargets';
+import { SkillDefinition, loadSkills } from './agents/skillTargets';
+import { loadSubagents, SubagentDefinition } from './agents/subagentTargets';
 import { codeBrainEnvironment, CodeBrainRuntime, requireRuntime } from './runtime';
 
 /** The key the code graph server is registered under in every agent config. */
@@ -25,7 +27,8 @@ export const CODEBRAIN_MCP_KEY = 'codebrain';
 
 export class CodeBrainMcpRegistration {
   private readonly registrar: McpRegistrar;
-  private skill: SkillDefinition | undefined;
+  private skills: SkillDefinition[] | undefined;
+  private subagents: SubagentDefinition[] | undefined;
 
   constructor(
     private readonly runtime: CodeBrainRuntime,
@@ -36,7 +39,8 @@ export class CodeBrainMcpRegistration {
       serverKey: CODEBRAIN_MCP_KEY,
       label: 'CodeBrain',
       entry: () => this.serverEntry(),
-      skill: () => this.skillDefinition(),
+      skills: () => this.skillDefinitions(),
+      extras: [subagentExtra(() => this.subagentDefinitions())],
       log: (message) => log(`[agents] ${message}`),
     });
   }
@@ -56,30 +60,25 @@ export class CodeBrainMcpRegistration {
   }
 
   /**
-   * The skill shipped with the extension — the same file Copilot is given, so
-   * every agent is told the same thing. Parsed once and cached: it cannot
-   * change without the extension itself being replaced.
+   * The skills shipped with the extension — the same files Copilot is given,
+   * so every agent is told the same thing: the general tool guidance plus the
+   * explain / implement / fix / review workflows. Parsed once and cached: they
+   * cannot change without the extension itself being replaced.
    */
-  private skillDefinition(): SkillDefinition {
-    if (!this.skill) this.skill = loadSkill(this.extensionPath);
-    return this.skill;
+  private skillDefinitions(): SkillDefinition[] {
+    if (!this.skills) this.skills = loadSkills(this.extensionPath);
+    return this.skills;
   }
 
-  /** Ask what to install and where, then write the agents' files. */
-  async install(): Promise<void> {
-    // The entry names the runtime's path, so it has to exist first. A failed
-    // install has already said why in its own notification.
-    try {
-      await this.runtime.resolve();
-    } catch {
-      return;
-    }
-    return this.registrar.install();
+  /** The Dev and Reviewer roles, from the same files Copilot's custom agents use. */
+  private subagentDefinitions(): SubagentDefinition[] {
+    if (!this.subagents) this.subagents = loadSubagents(this.extensionPath);
+    return this.subagents;
   }
 
-  /** Remove the entry and the skill from every agent that holds them. */
-  remove(): Promise<void> {
-    return this.registrar.remove();
+  /** The installer for this server's MCP entry, skills and subagents. */
+  get agents(): McpRegistrar {
+    return this.registrar;
   }
 
   /**
