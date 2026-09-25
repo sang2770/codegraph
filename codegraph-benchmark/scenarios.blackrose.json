@@ -1,0 +1,153 @@
+{
+  "_comment": "Scenarios for blackrose. Fill in every TODO before running (preflight rejects them). 'expect' = keyword groups scored against the final answer; a group passes if ANY alternative appears.",
+  "repos": {
+    "blackrose": {
+      "url": "/home/worker/LUPA/LUPA_Runtime/blackrose-extension",
+      "sha": "f6ba948bd1eb9d2848a4f6e8eafb5a0183bc9fb6",
+      "size": "small",
+      "lang": "TypeScript (VS Code extension)",
+      "codeFiles": 150
+    }
+  },
+  "scenarios": [
+    {
+      "id": "blackrose-a1-flow",
+      "repo": "blackrose",
+      "type": "analysis",
+      "kind": "flow",
+      "prompt": "When a user opens a BlackRose log file, how does the extension load and parse it and get the chart data displayed in the webview? Name the functions and classes involved in order.",
+      "expect": [
+        [
+          "openCustomDocument"
+        ],
+        [
+          "BlackRoseLog"
+        ],
+        [
+          "resolveCustomEditor",
+          "resolveEditor"
+        ],
+        [
+          "BlackRoseChecker",
+          "parse_data"
+        ],
+        [
+          "postMessage",
+          "webview"
+        ]
+      ]
+    },
+    {
+      "id": "blackrose-a2-impact",
+      "repo": "blackrose",
+      "type": "analysis",
+      "kind": "impact",
+      "prompt": "If ViewHelper.getLatestBloView returned the wrong view, which providers, views and user-visible features would be affected? List the callers.",
+      "expect": [
+        [
+          "getLatestBloView"
+        ],
+        [
+          "bookmark"
+        ],
+        [
+          "memo"
+        ],
+        [
+          "environment"
+        ],
+        [
+          "chart",
+          "log-context-menu",
+          "context menu"
+        ]
+      ]
+    },
+    {
+      "id": "blackrose-a3-architecture",
+      "repo": "blackrose",
+      "type": "analysis",
+      "kind": "architecture",
+      "prompt": "Explain how the extension host and the chart webview communicate: how requests and responses are matched, and which methods send and receive messages.",
+      "expect": [
+        [
+          "postMessageWithResponse"
+        ],
+        [
+          "requestId"
+        ],
+        [
+          "_callbacks",
+          "callbacks"
+        ],
+        [
+          "onDidReceiveMessage"
+        ]
+      ]
+    },
+    {
+      "id": "blackrose-r1-commit-f6ba948",
+      "repo": "blackrose",
+      "type": "review",
+      "kind": "real-commit",
+      "commit": "f6ba948bd1eb9d2848a4f6e8eafb5a0183bc9fb6",
+      "_subject": "TPLD-983: [VOE] Fix extension features not working on log file opened in new window",
+      "_changedLines": 97,
+      "expect": [
+        [
+          "isUriOpenInTabs",
+          "new window",
+          "openNewBloView"
+        ],
+        [
+          "view-helper",
+          "ViewHelper"
+        ],
+        [
+          "excuteContextMenu",
+          "context menu"
+        ],
+        [
+          "black-rose-chart"
+        ]
+      ]
+    },
+    {
+      "id": "blackrose-r2-commit-19dfcae",
+      "repo": "blackrose",
+      "type": "review",
+      "kind": "real-commit",
+      "commit": "19dfcae251af72bdad23b22f6e81119a46c0a3b7",
+      "_subject": "TPLD-1222: [BlackRose] Exported file with Unformatted does not display correctly",
+      "_changedLines": 94,
+      "expect": [
+        [
+          "blo-format.constant"
+        ],
+        [
+          "black-rose-checker.util"
+        ]
+      ]
+    },
+    {
+      "id": "blackrose-r3-commit-bd1ac58",
+      "repo": "blackrose",
+      "type": "review",
+      "kind": "real-commit",
+      "commit": "bd1ac588fbab32d0f13ad5bc6997f4770bad8810",
+      "_subject": "TPLD-1296: [VOE] Support Filter in Graph view like Data Table",
+      "_changedLines": 158,
+      "expect": [
+        [
+          "chart-graph"
+        ],
+        [
+          "chart-helper"
+        ],
+        [
+          "dom-content-loaded"
+        ]
+      ]
+    }
+  ]
+}

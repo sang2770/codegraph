@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 
 /** The default per-project data directory name. */
 const DEFAULT_CODEGRAPH_DIR = '.codegraph';
@@ -507,6 +508,59 @@ export function extractCodeTokens(prompt: string): string[] {
  */
 export function isStructuralPrompt(prompt: string): boolean {
   return hasStructuralKeyword(prompt) || extractCodeTokens(prompt).length > 0;
+}
+
+/**
+ * Is `prompt` asking to review a change set? The front-load hook's review
+ * branch fires on this — and only when the working tree actually has changes
+ * (see {@link hasUncommittedChanges}), so an incidental "review how X works"
+ * in a clean checkout falls through to the normal tiers.
+ *
+ * Why the hook and not the tool surface: measured on real-commit reviews, the
+ * agent opens with `git diff` and then greps around the hunks — it never
+ * reaches for a codegraph tool at all, so no tool-side change can help. The
+ * hook runs before the agent's first turn regardless of what it would choose.
+ */
+const REVIEW_PROMPT_RE = new RegExp(
+  [
+    String.raw`\breview(?:s|ed|ing)?\b`,
+    String.raw`\bcode[- ]?review\b`,
+    String.raw`\b(?:pull|merge)[- ]request\b`,
+    String.raw`\b(?:PR|MR)\b`,
+    String.raw`\b(?:git\s+)?diff\b`,
+    String.raw`\buncommitted\b`,
+    String.raw`\bstaged\b`,
+    String.raw`\b(?:my|these|the|local|pending)\s+changes\b`,
+    String.raw`\bchange[- ]?set\b`,
+    // Vietnamese — the maintainers' team language.
+    String.raw`đánh giá (?:code|mã|thay đổi)`,
+    String.raw`xem lại (?:code|mã|thay đổi)`,
+  ].join('|'),
+  'iu',
+);
+
+export function isReviewPrompt(prompt: string): boolean {
+  return !!prompt && REVIEW_PROMPT_RE.test(prompt);
+}
+
+/**
+ * Does `root`'s working tree differ from HEAD in tracked files? Untracked
+ * files are ignored (`codegraph_review` measures against `base: HEAD`, which
+ * only sees tracked changes). Any git failure — not a repo, no commits yet,
+ * git missing, timeout — answers false so the hook stays a no-op.
+ */
+export function hasUncommittedChanges(root: string): boolean {
+  try {
+    const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    });
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

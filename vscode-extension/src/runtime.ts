@@ -267,12 +267,22 @@ export async function runCodeBrain(
   return runProcess(resolved.command, [...resolved.baseArgs, ...args], options);
 }
 
+/**
+ * The MCP tools every CodeBrain server lists. CodeGraph lists only
+ * `codegraph_explore` by default; `codegraph_review` is added so an agent
+ * asked to review a change can get the breaking-change and caller report in
+ * one call instead of grepping for callers of every changed function.
+ */
+export const REVIEW_TOOL_SURFACE = 'explore,review';
+
 export function codeBrainEnvironment(): Record<string, string> {
   const config = vscode.workspace.getConfiguration('codebrain');
   const autoRefresh = config.get<boolean>('autoRefresh.enabled', true);
   const debounceMs = config.get<number>('autoRefresh.debounceMs', 1000);
+  const reviewTool = config.get<boolean>('mcp.reviewTool', true);
 
   return {
+    ...(reviewTool ? { CODEGRAPH_MCP_TOOLS: REVIEW_TOOL_SURFACE } : {}),
     CODEGRAPH_WATCH_DEBOUNCE_MS: String(debounceMs),
     // The extension installs and updates the runtime itself. The server's own
     // "run `codegraph upgrade`" notice would send the agent after a CLI that

@@ -12,7 +12,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { planFrontload, findIndexedSubprojectRoots, isStructuralPrompt, hasStructuralKeyword, extractCodeTokens } from '../src/directory';
+import { planFrontload, findIndexedSubprojectRoots, isStructuralPrompt, hasStructuralKeyword, extractCodeTokens, isReviewPrompt, hasUncommittedChanges } from '../src/directory';
+import { execFileSync } from 'child_process';
 
 /** Make `dir` look indexed (isInitialized needs `.codegraph/codegraph.db`). */
 function mkIndexed(dir: string): string {
@@ -319,5 +320,45 @@ describe('isStructuralPrompt — cheap candidate gate (keyword OR code-token)', 
     expect(isStructuralPrompt('修复这个拼写错误')).toBe(false);
     expect(isStructuralPrompt('water the flower')).toBe(false);
     expect(isStructuralPrompt('')).toBe(false);
+  });
+});
+
+describe('isReviewPrompt — the hook review branch gate', () => {
+  it('fires on requests to review a change set', () => {
+    expect(isReviewPrompt('This repository has uncommitted changes (run `git diff` to see them). Review them as a senior engineer')).toBe(true);
+    expect(isReviewPrompt('review my changes')).toBe(true);
+    expect(isReviewPrompt('can you do a code review of this PR?')).toBe(true);
+    expect(isReviewPrompt('look over the staged changes before I commit')).toBe(true);
+    expect(isReviewPrompt('đánh giá code vừa sửa giúp mình')).toBe(true);
+  });
+
+  it('stays quiet on ordinary coding prompts', () => {
+    expect(isReviewPrompt('how does the request reach the handler')).toBe(false);
+    expect(isReviewPrompt('what is the difference between these two functions')).toBe(false);
+    expect(isReviewPrompt('fix typo in readme')).toBe(false);
+    expect(isReviewPrompt('')).toBe(false);
+  });
+});
+
+describe('hasUncommittedChanges — only a dirty tracked tree triggers the review branch', () => {
+  let tmp: string;
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: tmp, stdio: 'ignore' });
+  beforeEach(() => { tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-gate-'))); });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('false outside a git repo', () => {
+    expect(hasUncommittedChanges(tmp)).toBe(false);
+  });
+
+  it('false on a clean tree and for untracked files; true once a tracked file changes', () => {
+    git('init', '-q');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    fs.writeFileSync(path.join(tmp, 'a.ts'), 'export const a = 1;\n');
+    expect(hasUncommittedChanges(tmp)).toBe(false); // untracked only
+    git('add', 'a.ts');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'a');
+    expect(hasUncommittedChanges(tmp)).toBe(false);
+    fs.writeFileSync(path.join(tmp, 'a.ts'), 'export const a = 2;\n');
+    expect(hasUncommittedChanges(tmp)).toBe(true);
   });
 });

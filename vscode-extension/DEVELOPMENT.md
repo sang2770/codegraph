@@ -43,17 +43,19 @@ The extension does **not** ship a runtime. At activation `src/runtimeManager.ts`
 picks one, first match wins:
 
 1. `codebrain.runtime.path` — a runtime directory you point at.
-2. `runtime/<target>/` inside the extension folder — a development runtime.
-3. The npm-managed install in global storage (`src/runtimeInstaller.ts`):
+2. The npm-managed install in global storage (`src/runtimeInstaller.ts`):
    `@xuansang2770/codegraph@<version>` installed with npm into
    `<globalStorage>/runtime/<version>/`, or — without npm — the
    `@xuansang2770/codegraph-<target>` tarball fetched from the registry,
    integrity-checked and unpacked with `tar`. `current.json` names the active
    version; updates land in a new version directory and only the pointer moves.
 
+The **CodeBrain** output channel logs which one is in use
+(`[runtime] using @xuansang2770/codegraph@1.6.1 (…)`).
+
 To develop against a local build of CodeGraph instead of the published one,
-stage a development runtime (needs Rust for the native kernel, otherwise it
-falls back to WASM unless `CODEGRAPH_REQUIRE_NATIVE_KERNEL=1`):
+stage a runtime (needs Rust for the native kernel, otherwise it falls back to
+WASM unless `CODEGRAPH_REQUIRE_NATIVE_KERNEL=1`):
 
 ```bash
 npm run build:runtime
@@ -61,9 +63,15 @@ npm run build:runtime
 
 That runs the repository's `scripts/build-bundle.sh` and extracts the bundle into
 `runtime/<target>/` (`node`, `lib/dist/`, `lib/kernel/`, `lib/node_modules/`,
-`bin/`). It is picked up on the next activation and never auto-updated; delete
-the folder to go back to the npm-managed runtime. `.vscodeignore` keeps it out
-of packages.
+`bin/`). It is **not** picked up on its own — set it explicitly in the
+Extension Development Host's user settings:
+
+```json
+"codebrain.runtime.path": "/abs/path/to/codegraph/vscode-extension/runtime/linux-x64"
+```
+
+Clear the setting to go back to the npm-managed runtime. `.vscodeignore` keeps
+`runtime/` out of packages either way.
 
 ---
 

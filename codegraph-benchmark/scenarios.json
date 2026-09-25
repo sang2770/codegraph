@@ -1,0 +1,227 @@
+{
+  "_comment": "Scenario catalogue. 'expect' = keyword groups scored against the final answer: a group passes if ANY of its alternatives appears (case-insensitive). 'detect' (review only) = the groups that prove the seeded bug was actually found. Seeds are exact find/replace edits; prepare.mjs fails loudly if a 'find' string is not present exactly once.",
+  "repos": {
+    "express": {
+      "url": "https://github.com/expressjs/express",
+      "sha": "9a34acf03cb818ff3f8bc40e44176e277a25cbb9",
+      "size": "small",
+      "lang": "JavaScript"
+    },
+    "flask": {
+      "url": "https://github.com/pallets/flask",
+      "sha": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35",
+      "size": "small",
+      "lang": "Python"
+    },
+    "excalidraw": {
+      "url": "https://github.com/excalidraw/excalidraw",
+      "sha": "4850bf336fe0a8501af49d84deebc7fb56357cc2",
+      "size": "medium",
+      "lang": "TypeScript/React"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "ex-a1-request-flow",
+      "repo": "express",
+      "type": "analysis",
+      "kind": "flow",
+      "prompt": "How does an incoming HTTP request travel from the Express app function to the router and, when nothing handles it, to the final 404/error handler? Name the functions involved in order.",
+      "expect": [["app.handle", "handle("], ["router.handle", "this.router"], ["finalhandler"], ["createApplication"]]
+    },
+    {
+      "id": "ex-a2-res-json",
+      "repo": "express",
+      "type": "analysis",
+      "kind": "flow",
+      "prompt": "Trace what happens when a route calls res.json(obj): how is the body serialized, how are Content-Type, Content-Length and ETag decided, and where is the response finally written?",
+      "expect": [["stringify"], ["res.send", "send("], ["etag fn", "etagFn", "generateETag"], ["setCharset"], ["json escape", "escape"]]
+    },
+    {
+      "id": "ex-a3-trust-proxy-impact",
+      "repo": "express",
+      "type": "analysis",
+      "kind": "impact",
+      "prompt": "If the behavior of compileTrust changes, which request properties and code paths are affected? List every consumer of the compiled 'trust proxy' function.",
+      "expect": [["trust proxy fn"], ["req.ip", "'ip'", " ip "], ["ips"], ["protocol"], ["hostname", "host"]]
+    },
+    {
+      "id": "ex-a4-render",
+      "repo": "express",
+      "type": "analysis",
+      "kind": "architecture",
+      "prompt": "Explain how res.render resolves a template file and invokes the template engine. Which classes/functions participate and how is the engine chosen?",
+      "expect": [["app.render"], ["View"], ["lookup"], ["tryRender"], ["engine"]]
+    },
+    {
+      "id": "ex-r1-trust-offbyone",
+      "repo": "express",
+      "type": "review",
+      "kind": "seeded-security",
+      "seed": [{ "file": "lib/utils.js", "find": "return function(a, i){ return i < val };", "replace": "return function(a, i){ return i <= val };" }],
+      "expect": [["compileTrust"], ["off-by-one", "<=", "one extra", "additional hop", "extra hop"], ["X-Forwarded-For", "spoof"], ["req.ip", "ip"]],
+      "detect": [["compileTrust", "trust proxy"], ["<=", "off-by-one", "one extra", "extra hop", "additional hop"]]
+    },
+    {
+      "id": "ex-r2-json-escape",
+      "repo": "express",
+      "type": "review",
+      "kind": "seeded-security",
+      "seed": [{ "file": "lib/response.js", "find": "json = json.replace(/[<>&]/g, function (c) {", "replace": "json = json.replace(/[<&]/g, function (c) {" }],
+      "expect": [["stringify"], [">", "\\u003e", "greater-than"], ["jsonp"], ["json escape", "XSS"]],
+      "detect": [["stringify", "json escape", "escape"], [">", "\\u003e", "greater"]]
+    },
+    {
+      "id": "ex-r3-etag-default",
+      "repo": "express",
+      "type": "review",
+      "kind": "seeded-behavior",
+      "seed": [{ "file": "lib/utils.js", "find": "    case true:\n    case 'weak':\n      fn = exports.wetag;\n      break;", "replace": "    case true:\n      fn = exports.wetag;\n      break;\n    case 'weak':\n      fn = exports.etag;\n      break;" }],
+      "expect": [["compileETag"], ["defaultConfiguration", "default"], ["strong"], ["res.send", "send"]],
+      "detect": [["weak"], ["strong", "exports.etag"]]
+    },
+    {
+      "id": "ex-r4-real-commit",
+      "repo": "express",
+      "type": "review",
+      "kind": "real-commit",
+      "commit": "9a34acf03cb818ff3f8bc40e44176e277a25cbb9",
+      "expect": [["ETag"], ["Transfer-Encoding"], ["Content-Length"], ["res.send", "send"]]
+    },
+    {
+      "id": "fl-a1-dispatch-flow",
+      "repo": "flask",
+      "type": "analysis",
+      "kind": "flow",
+      "prompt": "How does Flask take a WSGI request to a view function and back to a response object? List the methods in call order, including before/after-request hooks.",
+      "expect": [["wsgi_app"], ["full_dispatch_request"], ["preprocess_request"], ["dispatch_request"], ["finalize_request"], ["process_response"], ["make_response"]]
+    },
+    {
+      "id": "fl-a2-session-flow",
+      "repo": "flask",
+      "type": "analysis",
+      "kind": "flow",
+      "prompt": "How is the session loaded at the start of a request and persisted at the end? Explain which classes and methods are involved and how the cookie is signed.",
+      "expect": [["open_session"], ["save_session"], ["SecureCookieSessionInterface"], ["get_signing_serializer", "URLSafeTimedSerializer"], ["process_response"]]
+    },
+    {
+      "id": "fl-a3-make-response-impact",
+      "repo": "flask",
+      "type": "analysis",
+      "kind": "impact",
+      "prompt": "What would be affected if Flask.make_response changed how it handles tuple return values? List callers and the user-facing behaviors that depend on it.",
+      "expect": [["finalize_request"], ["tuple"], ["status"], ["headers"], ["helpers", "flask.make_response"]]
+    },
+    {
+      "id": "fl-a4-error-handling",
+      "repo": "flask",
+      "type": "analysis",
+      "kind": "architecture",
+      "prompt": "Explain how an exception raised in a view is turned into an error response, including how registered error handlers (app and blueprint) are looked up.",
+      "expect": [["handle_user_exception"], ["handle_http_exception"], ["_find_error_handler"], ["handle_exception"], ["blueprint"]]
+    },
+    {
+      "id": "fl-r1-httponly",
+      "repo": "flask",
+      "type": "review",
+      "kind": "seeded-security",
+      "seed": [{ "file": "src/flask/sessions.py", "find": "            expires=expires,\n            httponly=httponly,\n", "replace": "            expires=expires,\n" }],
+      "expect": [["httponly"], ["save_session", "set_cookie"], ["JavaScript", "XSS", "document.cookie"], ["SESSION_COOKIE_HTTPONLY"]],
+      "detect": [["httponly"], ["set_cookie", "save_session"]]
+    },
+    {
+      "id": "fl-r2-after-request-order",
+      "repo": "flask",
+      "type": "review",
+      "kind": "seeded-behavior",
+      "seed": [{ "file": "src/flask/app.py", "find": "for func in reversed(self.after_request_funcs[name]):", "replace": "for func in self.after_request_funcs[name]:" }],
+      "expect": [["after_request"], ["reverse", "order"], ["process_response"], ["blueprint"]],
+      "detect": [["after_request"], ["reverse", "order"]]
+    },
+    {
+      "id": "fl-r3-should-set-cookie",
+      "repo": "flask",
+      "type": "review",
+      "kind": "seeded-behavior",
+      "seed": [{ "file": "src/flask/sessions.py", "find": "return session.modified or (", "replace": "return session.modified and (" }],
+      "expect": [["should_set_cookie"], ["modified"], ["permanent"], ["save_session"], ["SESSION_REFRESH_EACH_REQUEST"]],
+      "detect": [["should_set_cookie"], [" and ", "and instead of or", "`and`", "or` to `and"]]
+    },
+    {
+      "id": "fl-r4-real-commit",
+      "repo": "flask",
+      "type": "review",
+      "kind": "real-commit",
+      "commit": "7203feabf723edae0286ae5dc64fec8ac4c91735",
+      "expect": [["urlsplit"], ["IPv6"], ["port"], ["ValueError", "invalid port", "hostname"]]
+    },
+    {
+      "id": "xd-a1-update-render",
+      "repo": "excalidraw",
+      "type": "analysis",
+      "kind": "flow",
+      "prompt": "How does updating an element (e.g. mutateElement) end up re-rendering the static canvas on screen? Trace the path across the Scene, the App component and the canvas renderer.",
+      "expect": [["mutateElement"], ["triggerUpdate"], ["sceneNonce", "onUpdate"], ["StaticCanvas"], ["renderStaticScene"]]
+    },
+    {
+      "id": "xd-a2-undo",
+      "repo": "excalidraw",
+      "type": "analysis",
+      "kind": "flow",
+      "prompt": "How does undo work? Trace from the undo action to the elements being restored in the scene, naming the classes and methods involved.",
+      "expect": [["actionUndo", "actionHistory"], ["History"], ["undo("], ["HistoryDelta", "StoreDelta"], ["applyTo"]]
+    },
+    {
+      "id": "xd-a3-viewport-impact",
+      "repo": "excalidraw",
+      "type": "analysis",
+      "kind": "impact",
+      "prompt": "What would be affected if isElementInViewport returned wrong results? List all callers and the user-visible features that depend on it.",
+      "expect": [["Renderer"], ["getVisibleCanvasElements", "visible"], ["selection"], ["App.tsx", "App"]]
+    },
+    {
+      "id": "xd-a4-collab-reconcile",
+      "repo": "excalidraw",
+      "type": "analysis",
+      "kind": "architecture",
+      "prompt": "When remote elements arrive during collaboration, how does Excalidraw decide which version of each element wins? Explain the reconciliation logic and what fields it compares.",
+      "expect": [["reconcileElements"], ["version"], ["versionNonce"], ["local", "remote"]]
+    },
+    {
+      "id": "xd-r1-shape-cache",
+      "repo": "excalidraw",
+      "type": "review",
+      "kind": "seeded-behavior",
+      "seed": [{ "file": "packages/element/src/mutateElement.ts", "find": "    typeof updates.height !== \"undefined\" ||\n    typeof updates.width !== \"undefined\" ||\n", "replace": "    typeof updates.height !== \"undefined\" ||\n" }],
+      "expect": [["ShapeCache"], ["width"], ["stale", "cache"], ["resize"]],
+      "detect": [["ShapeCache", "cache"], ["width"]]
+    },
+    {
+      "id": "xd-r2-version-bump",
+      "repo": "excalidraw",
+      "type": "review",
+      "kind": "seeded-behavior",
+      "seed": [{ "file": "packages/element/src/mutateElement.ts", "find": "    version: updates.version ?? element.version + 1,\n", "replace": "    version: updates.version ?? element.version,\n" }],
+      "expect": [["newElementWith"], ["version"], ["reconcil", "collab", "sync"], ["history", "undo", "store"]],
+      "detect": [["newElementWith"], ["version"]]
+    },
+    {
+      "id": "xd-r3-scene-nonce",
+      "repo": "excalidraw",
+      "type": "review",
+      "kind": "seeded-behavior",
+      "seed": [{ "file": "packages/element/src/Scene.ts", "find": "  triggerUpdate() {\n    this.sceneNonce = randomInteger();\n\n", "replace": "  triggerUpdate() {\n" }],
+      "expect": [["sceneNonce"], ["triggerUpdate"], ["render", "re-render"], ["StaticCanvas", "memo"]],
+      "detect": [["sceneNonce"], ["render"]]
+    },
+    {
+      "id": "xd-r4-real-commit",
+      "repo": "excalidraw",
+      "type": "review",
+      "kind": "real-commit",
+      "commit": "31df3e6",
+      "expect": [["reanchorBindingsToOutline"], ["binding", "bound"], ["elbow"], ["ConvertElementTypePopup", "convert"]]
+    }
+  ],
+  "reviewPrompt": "This repository has uncommitted changes (run `git diff` to see them). Review them as a senior engineer: identify bugs, security issues or behavior regressions the change introduces, explain the impact on callers and downstream behavior (blast radius), and rate severity. Do NOT modify any files. Finish with a concise list of findings."
+}

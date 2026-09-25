@@ -40,7 +40,7 @@ try {
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens } from '../directory';
+import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens, isReviewPrompt, hasUncommittedChanges } from '../directory';
 import { extractProseCandidates } from '../search/identifier-segments';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
@@ -1258,6 +1258,41 @@ program
       // Keywords fire on their own; a token or prose word is only a CANDIDATE
       // verified against the graph below, so a tech brand ("JavaScript") that
       // merely looks like code doesn't inject spurious context.
+      // REVIEW — a request to review the uncommitted change set. Measured on
+      // real-commit reviews: the agent opens with `git diff`, greps around the
+      // hunks, and never calls a codegraph tool (explore's name doesn't evoke
+      // review, and the review tool isn't on the default surface). So the hook
+      // runs `codegraph_review` itself and injects what the diff can't show:
+      // callers outside the diff, changed signatures, blast radius, untested
+      // changes. Falls through to the normal tiers when there is nothing to
+      // review (clean tree) or the report is empty.
+      if (isReviewPrompt(prompt)) {
+        const reviewPlan = planFrontload(String(input.cwd || process.cwd()), prompt);
+        if (reviewPlan.exploreRoot && hasUncommittedChanges(reviewPlan.exploreRoot)) {
+          const { default: CodeGraph } = await loadCodeGraph();
+          const cg = await CodeGraph.open(reviewPlan.exploreRoot);
+          try {
+            const { ToolHandler } = await import('../mcp/tools');
+            const handler = new ToolHandler(cg);
+            const result = await handler.execute('codegraph_review', { base: 'HEAD', format: 'markdown' });
+            const text = result.content[0]?.text ?? '';
+            if (!result.isError && /^#\s*Review context/m.test(text)) {
+              const MAX = 16000;
+              const body = text.length > MAX ? `${text.slice(0, MAX)}\n…(truncated; call codegraph_review with base "HEAD" for the rest)` : text;
+              const where = reviewPlan.viaSubScan ? ` with projectPath: "${reviewPlan.exploreRoot}"` : '';
+              process.stdout.write(
+                `<codegraph_context note="CodeGraph review of the uncommitted changes (vs HEAD) — callers outside the diff, changed signatures, blast radius, untested changes. Verify its findings instead of grepping for callers; call codegraph_explore${where} with a symbol's name for its source.">\n${body}\n</codegraph_context>\n`,
+              );
+              gate('review');
+              return;
+            }
+            gate('noop-review-empty');
+          } finally {
+            cg.destroy();
+          }
+        }
+      }
+
       const keyworded = hasStructuralKeyword(prompt);
       const codeTokens = keyworded ? [] : extractCodeTokens(prompt);
       const proseWords = keyworded ? [] : extractProseCandidates(prompt);
@@ -2458,10 +2493,6 @@ program
         warn: (m: string) => warn(m),
         error: (m: string) => error(m),
         platform: process.platform,
-        offerBetaSignup: async () => {
-          const { maybeOfferBetaSignup } = await import('../installer/beta-signup');
-          await maybeOfferBetaSignup({ source: 'cli-upgrade' });
-        },
       }
     );
     process.exit(code);

@@ -445,8 +445,13 @@ test('two servers live side by side in every target, and remove one at a time', 
 
 test('an entry is stale only when the command or its arguments moved', () => {
   assert.equal(isEntryStale(GRAPH_ENTRY, GRAPH_ENTRY), false);
-  // env drift alone is not worth rewriting four config files over.
+  // Tuning drift alone is not worth rewriting every config over…
   assert.equal(isEntryStale({ ...GRAPH_ENTRY, env: {} }, GRAPH_ENTRY), false);
+  // …but a change in which tools the server offers is.
+  const withReview = { ...GRAPH_ENTRY, env: { ...GRAPH_ENTRY.env, CODEGRAPH_MCP_TOOLS: 'explore,review' } };
+  assert.equal(isEntryStale(GRAPH_ENTRY, withReview), true);
+  assert.equal(isEntryStale(withReview, GRAPH_ENTRY), true);
+  assert.equal(isEntryStale(withReview, withReview), false);
 
   const previous = {
     command: '/ext/codebrain-1.1.0/runtime/linux-x64/node',
@@ -520,7 +525,7 @@ test('opencode is edited in place, keeping the comments in opencode.jsonc', () =
   assert.ok(text.includes('"theme": "dark"'));
   assert.equal(install('opencode', { ...ENTRY, env: { A: '1' } }, paths, 'global').action, 'unchanged');
 
-  assert.deepEqual(soleEntry('opencode', paths), { command: ENTRY.command, args: ENTRY.args });
+  assert.deepEqual(soleEntry('opencode', paths), { command: ENTRY.command, args: ENTRY.args, env: { A: '1' } });
 
   assert.equal(uninstall('opencode', paths).action, 'removed');
   const after = read(file);
@@ -553,4 +558,21 @@ test('a broken opencode.jsonc is refused rather than rebuilt without its comment
   writeFileSync(file, '{ "theme": ');
   assert.throws(() => install('opencode', ENTRY, paths, 'project'), /not valid JSON/);
   assert.equal(read(file), '{ "theme": ');
+});
+
+test('the tool-surface env reads back from every format, so a refresh can see it', () => {
+  const paths = sandbox();
+  const entry = {
+    ...GRAPH_ENTRY,
+    env: { CODEGRAPH_WATCH_DEBOUNCE_MS: '1000', CODEGRAPH_MCP_TOOLS: 'explore,review' },
+  };
+  for (const id of AGENT_TARGET_IDS) {
+    installTarget(CODEBRAIN_KEY, id, entry, paths, 'global');
+    const [found] = readInstalledEntries(CODEBRAIN_KEY, id, paths);
+    assert.equal(found.entry.env?.CODEGRAPH_MCP_TOOLS, 'explore,review', id);
+    const stored = targetEntry(id, entry, paths, 'global');
+    assert.equal(isEntryStale(found.entry, stored), false, `${id} is current`);
+    // An entry written before the review tool existed is due for a rewrite.
+    assert.equal(isEntryStale(found.entry, targetEntry(id, GRAPH_ENTRY, paths, 'global')), true, id);
+  }
 });

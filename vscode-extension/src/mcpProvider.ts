@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as vscode from 'vscode';
 import { AtlassianIntegration } from './atlassianSetup';
 import { codeBrainEnvironment } from './runtime';
@@ -27,17 +28,15 @@ export function registerMcpProvider(
       } catch {
         return [];
       }
-      // The runtime version is part of the definition's version, so VS Code
-      // restarts a running server after an update instead of keeping the old
-      // binary alive.
-      const version = `${extensionVersion}+${runtime.currentVersion() ?? 'local'}`;
       const workspaceFolder = getWorkspaceFolder();
+      const args = [...command.baseArgs, 'serve', '--mcp'];
+      const env = codeBrainEnvironment();
       const codeBrain = new vscode.McpStdioServerDefinition(
         'CodeBrain',
         command.command,
-        [...command.baseArgs, 'serve', '--mcp'],
-        codeBrainEnvironment(),
-        version,
+        args,
+        env,
+        definitionVersion(extensionVersion, command.command, args, env),
       );
       codeBrain.cwd = workspaceFolder?.uri;
 
@@ -47,12 +46,14 @@ export function registerMcpProvider(
       // stops trusting the rest of the tools too.
       if (!(await atlassian.isConfigured())) return [codeBrain];
 
+      const atlassianArgs = [atlassian.serverScriptPath()];
+      const atlassianEnv = await atlassian.serverEnvironment();
       const atlassianServer = new vscode.McpStdioServerDefinition(
         'CodeBrain Atlassian',
         command.command,
-        [atlassian.serverScriptPath()],
-        await atlassian.serverEnvironment(),
-        version,
+        atlassianArgs,
+        atlassianEnv,
+        definitionVersion(extensionVersion, command.command, atlassianArgs, atlassianEnv),
       );
       atlassianServer.cwd = workspaceFolder?.uri;
       return [codeBrain, atlassianServer];
@@ -69,11 +70,40 @@ export function registerMcpProvider(
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (
         event.affectsConfiguration('codebrain.autoRefresh.enabled') ||
-        event.affectsConfiguration('codebrain.autoRefresh.debounceMs')
+        event.affectsConfiguration('codebrain.autoRefresh.debounceMs') ||
+        event.affectsConfiguration('codebrain.mcp.reviewTool')
       ) {
         didChange.fire();
       }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => didChange.fire()),
   );
+}
+
+/**
+ * The definition's `version`, which is what VS Code keys its server lifetime
+ * and cached tool list on: while it stays the same, VS Code keeps the running
+ * server and the tools it listed last time. So it has to change whenever what
+ * the server offers changes — a runtime update (the command path carries the
+ * version), a new tool surface in `env` (the review tool), a setting.
+ *
+ * Token values are left out of the fingerprint: a credential change still
+ * changes it (the key set and the URLs do not, but the Atlassian provider
+ * fires a change of its own), and nothing derived from a secret ends up in a
+ * string VS Code persists.
+ */
+export function definitionVersion(
+  extensionVersion: string,
+  command: string,
+  args: readonly string[],
+  env: Record<string, string | number | null>,
+): string {
+  const visibleEnv = Object.keys(env)
+    .sort()
+    .map((key) => `${key}=${/TOKEN|SECRET|PASSWORD/i.test(key) ? '<redacted>' : String(env[key])}`);
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify([command, args, visibleEnv]))
+    .digest('hex')
+    .slice(0, 10);
+  return `${extensionVersion}+${fingerprint}`;
 }

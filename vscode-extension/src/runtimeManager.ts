@@ -5,18 +5,20 @@
  * Sources, first match wins:
  *
  *  1. `codebrain.runtime.path` — a runtime directory the user points at (a
- *     local build, an air-gapped copy). Used as-is and never updated.
- *  2. `runtime/<target>/` inside the extension — present only in a development
- *     checkout that ran `npm run build:runtime`. Never updated either.
- *  3. The npm-installed runtime in global storage (`runtimeInstaller.ts`),
+ *     local build from `npm run build:runtime`, an air-gapped copy). Used
+ *     as-is and never updated.
+ *  2. The npm-installed runtime in global storage (`runtimeInstaller.ts`),
  *     installed on first activation and updated in the background.
+ *
+ * Nothing inside the extension folder is ever picked up on its own: a stale
+ * `runtime/` left by an old build would otherwise shadow the npm runtime
+ * without the user asking for it.
  *
  * Commands never hold a runtime of their own: they call `resolve()` each time,
  * so an update takes effect for the next command without a reload, and the
  * first command after a fresh install simply waits for the install to finish.
  */
 
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { CodeBrainRuntime, describeRuntime, RuntimeCommand } from './runtime';
@@ -32,7 +34,6 @@ import {
   readCurrent,
   resolveVersion,
   RUNTIME_PACKAGE,
-  runtimeTarget,
   writeCurrent,
 } from './runtimeInstaller';
 
@@ -40,7 +41,7 @@ import {
 const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const FIRST_CHECK_DELAY_MS = 15_000;
 
-export type RuntimeSource = 'custom' | 'development' | 'managed';
+export type RuntimeSource = 'custom' | 'managed';
 
 interface ActiveRuntime {
   command: RuntimeCommand;
@@ -64,7 +65,7 @@ export class RuntimeManager implements CodeBrainRuntime, vscode.Disposable {
   readonly onDidChange = this.didChange.event;
 
   constructor(
-    private readonly context: vscode.ExtensionContext,
+    context: vscode.ExtensionContext,
     private readonly log: (message: string) => void,
   ) {
     this.storageRoot = join(context.globalStorageUri.fsPath, 'runtime');
@@ -126,9 +127,7 @@ export class RuntimeManager implements CodeBrainRuntime, vscode.Disposable {
   async checkNow(): Promise<void> {
     if (this.active && this.active.source !== 'managed') {
       void vscode.window.showInformationMessage(
-        this.active.source === 'custom'
-          ? 'CodeBrain is using the runtime set in "codebrain.runtime.path", which is never updated automatically. Clear the setting to use the npm-managed runtime.'
-          : 'CodeBrain is using the development runtime under runtime/ in the extension folder. Delete it to use the npm-managed runtime.',
+        'CodeBrain is using the runtime set in "codebrain.runtime.path", which is never updated automatically. Clear the setting to use the npm-managed runtime.',
       );
       return;
     }
@@ -166,11 +165,6 @@ export class RuntimeManager implements CodeBrainRuntime, vscode.Disposable {
       return { command: describeRuntime(path), source: 'custom' };
     }
 
-    const development = join(this.context.extensionUri.fsPath, 'runtime', runtimeTarget());
-    if (existsSync(join(development, 'lib', 'dist', 'bin', 'codegraph.js'))) {
-      return { command: describeRuntime(development), source: 'development' };
-    }
-
     const installed = readCurrent(this.storageRoot);
     if (installed) return this.managed(installed);
     return undefined;
@@ -184,11 +178,7 @@ export class RuntimeManager implements CodeBrainRuntime, vscode.Disposable {
     const active = this.active;
     if (!active) return;
     const what =
-      active.source === 'managed'
-        ? `${RUNTIME_PACKAGE}@${active.version}`
-        : active.source === 'custom'
-          ? 'codebrain.runtime.path'
-          : 'development runtime';
+      active.source === 'managed' ? `${RUNTIME_PACKAGE}@${active.version}` : 'codebrain.runtime.path';
     this.log(`[runtime] ${verb} ${what} (${active.command.command})`);
     if (active.command.repairedExecutables.length > 0) {
       this.log(`[runtime] restored the execute bit on ${active.command.repairedExecutables.join(', ')}`);

@@ -104,7 +104,7 @@ The message uses the model chosen with **CodeBrain: Choose AI Model**.
 ### 🧠 Independent AI Code Review
 Run **CodeBrain: Review Changes** from the Source Control title menu or Command Palette for a review that is independent of Copilot Review.
 
-The command combines the current Git diff with CodeGraph evidence and calls a model directly through the VS Code Language Model API. It produces a temporary Markdown report containing:
+The command combines the current Git diff with CodeGraph evidence and calls a model directly through the VS Code Language Model API. Part of that evidence is CodeGraph's own `codegraph_review` report: which symbols the changed lines live in, signatures that changed or exports that were removed while call sites **outside the diff** still use them, the blast radius, and the changed symbols no test reaches — computed from the graph, each with a `file:line`, so the model verifies concrete breakages instead of guessing at them. Uncommitted work is measured against `HEAD`, and a commit picked in `@codebrain /review` against its parent. It produces a temporary Markdown report containing:
 
 - Verdict and merge recommendation.
 - Critical, high, medium, and low findings.
@@ -169,6 +169,8 @@ Two things make CodeBrain useful to an agent: the **MCP server**, which gives it
 | GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `<workspace>/.github/mcp.json` |
 | Cursor | `~/.cursor/mcp.json` | `<workspace>/.cursor/mcp.json` |
 | opencode | `~/.config/opencode/opencode.jsonc` | `<workspace>/opencode.jsonc` |
+
+The server offers two tools: `codegraph_explore` for understanding code, and `codegraph_review` for reviewing a change set (changed signatures and removed exports whose callers outside the diff still use them, blast radius, untested changed code). Turn the second off with `codebrain.mcp.reviewTool`; registered agents are updated either way.
 
 Cursor starts MCP servers from the wrong folder, so its entry adds `--path` (`${workspaceFolder}` globally, the absolute folder per workspace). opencode's config is edited in place, so comments in `opencode.jsonc` survive.
 
@@ -243,6 +245,7 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 | `codebrain.runtime.version` | `latest` | npm dist-tag or exact version (e.g. `1.6.1`) to run. A pinned version is installed even with auto-update off. |
 | `codebrain.runtime.registry` | `""` | npm registry to install from. Empty uses your npm config, or `https://registry.npmjs.org/` without npm. |
 | `codebrain.runtime.path` | `""` | A runtime directory you manage yourself (`node`, `lib/`, `bin/`). Disables the npm install and auto-update. |
+| `codebrain.mcp.reviewTool` | `true` | Offer `codegraph_review` next to `codegraph_explore` on the CodeBrain MCP server, in VS Code and in every registered agent. |
 | `codebrain.autoRefresh.enabled` | `true` | Keep the index fresh with CodeBrain's native file watcher. |
 | `codebrain.autoRefresh.debounceMs` | `1000` | Quiet period (ms) before sync triggering. |
 | `codebrain.chat.maxContextFiles` | `12` | Max files returned by CodeBrain for a chat report. |

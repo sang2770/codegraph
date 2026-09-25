@@ -8,6 +8,10 @@ const shared = {
   sourcemap: true,
   minify: false,
   logLevel: 'info',
+  // Prefer a package's ESM build. jsonc-parser's `main` is a UMD wrapper whose
+  // `require('./impl/format')` esbuild cannot follow, so it would be left as a
+  // runtime require of a file that is not in dist/ and activation would fail.
+  mainFields: ['module', 'main'],
 };
 
 await build({

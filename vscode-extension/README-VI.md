@@ -110,6 +110,8 @@ Kết quả được lưu thành file Markdown tạm và mở bằng Markdown Pr
 
 ## 5. Review code với `/review`
 
+Cả `/review` và **CodeBrain: Review Changes** đều gửi kèm báo cáo `codegraph_review` của CodeGraph cho model: symbol nào chứa các dòng bị sửa, signature bị đổi hoặc export bị xoá trong khi call site **ngoài diff** vẫn dùng, blast radius, và symbol thay đổi nào chưa có test — tính từ graph, kèm `file:line`, để model kiểm chứng lỗi cụ thể thay vì đoán. Thay đổi chưa commit được so với `HEAD`; commit được chọn thì so với commit cha.
+
 Sau khi sửa code, nhập:
 
 ```text
@@ -387,6 +389,8 @@ Agent cần hai thứ để dùng CodeBrain hiệu quả: **MCP server** cung c�
 | GitHub Copilot CLI | `~/.copilot/mcp-config.json` | `<workspace>/.github/mcp.json` |
 | Cursor | `~/.cursor/mcp.json` | `<workspace>/.cursor/mcp.json` |
 | opencode | `~/.config/opencode/opencode.jsonc` | `<workspace>/opencode.jsonc` |
+
+Server có hai tool: `codegraph_explore` để hiểu code, và `codegraph_review` để review một thay đổi (signature bị đổi / export bị xoá mà call site ngoài diff vẫn dùng, blast radius, code thay đổi chưa có test). Tắt tool thứ hai bằng `codebrain.mcp.reviewTool`; các agent đã đăng ký được cập nhật tự động.
 
 Cursor khởi động MCP server sai thư mục, nên entry của Cursor có thêm `--path` (`${workspaceFolder}` khi cài global, đường dẫn tuyệt đối khi cài cho workspace). File `opencode.jsonc` được sửa tại chỗ nên comment của bạn được giữ nguyên.
 

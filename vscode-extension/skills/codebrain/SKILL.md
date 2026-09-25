@@ -7,7 +7,7 @@ user-invocable: true
 
 # CodeBrain
 
-Use the `codegraph_explore` MCP tool (from the `codebrain` MCP server) before grep, repository-wide search, or opening a chain of source files when the project has a `.codegraph/` index.
+Use the `codegraph_explore` MCP tool (from the `codebrain` MCP server) before grep, repository-wide search, or opening a chain of source files when the project has a `.codegraph/` index. To review a change set, start with `codegraph_review` instead (see "For reviews" below).
 
 One focused query should name the question, relevant symbols, file paths, or workflow endpoints. Treat returned line-numbered source as already read. It also includes call paths and a blast-radius summary.
 
@@ -32,10 +32,11 @@ For explanations:
 
 For reviews:
 
-1. Inspect the diff or selected code and query changed symbols/files with `codegraph_explore`.
-2. Use callers, callees, and blast radius to assess regressions.
-3. Report findings by severity with file/line evidence, consequence, and recommendation.
-4. Treat changes to shared contracts, persistence, authentication, concurrency, lifecycle, or broad fan-out code as high risk until tests prove otherwise.
-5. Review only. Do not edit code unless the user separately asks for a fix.
+1. Call `codegraph_review` once, before reading or grepping. Pass `base: "HEAD"` for uncommitted changes, or the PR's base branch (e.g. `"origin/main"`) for a branch; `base` is what turns on breaking-change detection. Its Findings list changed signatures, removed exports still in use, callers outside the diff, and changed code no test reaches — each with `file:line`.
+2. Verify those findings against the diff. For a symbol it names, call `codegraph_explore` with that name to get its source. Do not grep for callers of a changed function; the report already has them.
+3. If `codegraph_review` is not available, query the changed symbols/files with `codegraph_explore` instead and use its callers and blast radius.
+4. Report findings by severity with file/line evidence, consequence, and recommendation.
+5. Treat changes to shared contracts, persistence, authentication, concurrency, lifecycle, or broad fan-out code as high risk until tests prove otherwise.
+6. Review only. Do not edit code unless the user separately asks for a fix.
 
 If the `codegraph_explore` tool is not available at all, the MCP server is not registered for this agent — tell the user to run **CodeBrain: Install MCP + Skill for Agents** in VS Code, then answer with normal tools.

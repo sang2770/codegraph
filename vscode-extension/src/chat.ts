@@ -32,6 +32,7 @@ import { ReportManager } from './reportManager';
 import { normalizeReport, ReportKind } from './reports';
 import { readProjectReadmeContext } from './readmeContext';
 import { customReviewPrompt } from './reviewInstructions';
+import { codeGraphReviewEvidence, fetchCodeGraphReview } from './codegraphReview';
 import {
   codeBrainEnvironment,
   runCodeBrain,
@@ -1177,6 +1178,7 @@ function reviewEvidence(
   maxDiffCharacters: number,
   readmeContext: string,
   attachments: string,
+  codeGraphReport: string | undefined,
 ): string {
   return [
     gitContext.target
@@ -1202,6 +1204,7 @@ function reviewEvidence(
       '## Project README context\nNo README.md was found in the project or near the active file.',
     '## CodeBrain source, call paths, and blast radius',
     graphContext,
+    codeGraphReviewEvidence(codeGraphReport),
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -1561,6 +1564,19 @@ export function registerChatParticipant(
         );
         evidenceContext = graphContext;
         changedFiles = gitContext.changedFiles;
+        // After explore, which has already brought the index up to date.
+        const codeGraphReport = gitContext.isRepository
+          ? await fetchCodeGraphReview(
+              runtime,
+              folder.uri.fsPath,
+              gitContext.target
+                ? { commit: { hash: gitContext.target.hash, parent: gitContext.target.parent } }
+                : {},
+              gitContext.changedFiles,
+              token,
+              log,
+            )
+          : undefined;
         const readmeContext = readProjectReadmeContext(
           folder.uri.fsPath,
           editorContext,
@@ -1578,6 +1594,7 @@ export function registerChatParticipant(
               maxDiffCharacters,
               readmeContext,
               attached.evidence,
+              codeGraphReport,
             ),
             codeBrainContext: graphContext,
             expand,

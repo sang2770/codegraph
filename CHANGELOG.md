@@ -9,6 +9,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- `codegraph_explore` now understands a question written as plain prose, the way agents often pass the user's question straight through: it works out which classes and functions the words refer to (so "a BlackRose log file" finds `BlackRoseLog`) and leads with their source, instead of returning a handful of loosely related matches. Queries that already name symbols behave exactly as before.
+- Asking Claude Code to review your uncommitted changes ("review my changes", "code review this diff") now hands it CodeGraph's review up front — which functions you changed, who calls them from outside the diff, signatures that changed, and what no test covers — so it checks those instead of grepping around the diff for them. It only kicks in when the working tree actually has changes, and `CODEGRAPH_NO_PROMPT_HOOK=1` still turns it off.
+
+### Fixes
+
+- `codegraph install` and `codegraph upgrade` no longer stop to ask whether you want to join the CodeGraph Pro beta waitlist.
+- Vendored minified files (such as `*.min.js` bundles) no longer crowd the real answer out of `codegraph_explore` results when a question uses common words like "parse" or "get".
 
 ## [1.6.1] - 2026-09-18
 

@@ -544,6 +544,7 @@ export function readInstalledEntries(
       const block = sliceTomlBlock(content, `[mcp_servers.${serverKey}]`);
       const command = /^[ \t]*command[ \t]*=[ \t]*"((?:[^"\\]|\\.)*)"/m.exec(block);
       const args = /^[ \t]*args[ \t]*=[ \t]*\[([^\]]*)\]/m.exec(block);
+      const env = /^[ \t]*env[ \t]*=[ \t]*\{([^}]*)\}/m.exec(block);
       found.push({
         file,
         entry: {
@@ -551,18 +552,34 @@ export function readInstalledEntries(
           args: [...(args?.[1] ?? '').matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) =>
             unquoteTomlString(match[1] ?? ''),
           ),
+          ...(env
+            ? {
+                env: Object.fromEntries(
+                  [...(env[1] ?? '').matchAll(/([A-Za-z0-9_]+)[ \t]*=[ \t]*"((?:[^"\\]|\\.)*)"/g)].map(
+                    (match) => [match[1] ?? '', unquoteTomlString(match[2] ?? '')],
+                  ),
+                ),
+              }
+            : {}),
         },
       });
       continue;
     }
 
     if (file.format === 'jsonc') {
-      const mcp = readJsoncFile(file.path).mcp as Record<string, { command?: unknown }> | undefined;
+      const mcp = readJsoncFile(file.path).mcp as
+        | Record<string, { command?: unknown; environment?: Record<string, string> }>
+        | undefined;
       const command = mcp?.[serverKey]?.command;
+      const environment = mcp?.[serverKey]?.environment;
       if (Array.isArray(command) && command.length > 0) {
         found.push({
           file,
-          entry: { command: String(command[0]), args: command.slice(1).map(String) },
+          entry: {
+            command: String(command[0]),
+            args: command.slice(1).map(String),
+            ...(environment && typeof environment === 'object' ? { env: environment } : {}),
+          },
         });
       }
       continue;
@@ -578,16 +595,26 @@ export function readInstalledEntries(
 }
 
 /**
- * True when a registered entry no longer points at the command this build
- * would write — the state every extension update leaves behind, since the
- * install directory carries the version number.
+ * Environment keys that change what the server offers, not just how it tunes
+ * itself — a drift in one of these is worth rewriting the entry for.
+ */
+const SURFACE_ENV_KEYS = ['CODEGRAPH_MCP_TOOLS', 'CODEGRAPH_MCP_PROFILE'];
+
+/**
+ * True when a registered entry no longer matches what this build would write
+ * — the state every runtime update leaves behind, since the install directory
+ * carries the version number, and the state an older install is in when the
+ * tool surface changed (the review tool being added).
  *
- * Only the command and its arguments are compared: `env` is not read back from
- * Codex's TOML, and a tuning value that drifted is not worth rewriting four
- * config files over.
+ * The command, its arguments and the tool-surface env keys are compared. Other
+ * env values (the watcher debounce) are tuning, and a drift there is not worth
+ * rewriting every agent's config over.
  */
 export function isEntryStale(installed: McpServerEntry, current: McpServerEntry): boolean {
   if (installed.command !== current.command) return true;
+  for (const key of SURFACE_ENV_KEYS) {
+    if ((installed.env?.[key] ?? '') !== (current.env?.[key] ?? '')) return true;
+  }
   const args = installed.args ?? [];
   return (
     args.length !== current.args.length ||

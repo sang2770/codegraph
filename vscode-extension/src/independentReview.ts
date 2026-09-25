@@ -1,5 +1,7 @@
 import { resolve, sep } from 'node:path';
 import * as vscode from 'vscode';
+import { codeGraphReviewEvidence, fetchCodeGraphReview } from './codegraphReview';
+import { CodeBrainRuntime } from './runtime';
 import { collectGitReviewContext } from './gitContext';
 import { ImpactAnalysis, ImpactAnalysisService } from './impact';
 import { selectCodeBrainModel } from './modelSelection';
@@ -511,6 +513,7 @@ function reviewPrompt(
   diff: string,
   diffTruncated: boolean,
   folder: vscode.WorkspaceFolder,
+  codeGraphReport: string | undefined,
 ): string {
   const signals = analysis.assessment.signals
     .map(
@@ -549,6 +552,8 @@ ${signals}
 
 ${reviewContext}
 
+${codeGraphReviewEvidence(codeGraphReport)}
+
 Treat the Git diff as the source of truth for what changed. Treat graph evidence as supporting context. Only report a finding when the diff and surrounding source provide concrete evidence. Findings must point to a changed file and a relevant changed line; do not report speculative style preferences, hypothetical issues, or findings based only on file names. Be explicit about uncertainty.${diffTruncated ? '\n\nImportant: The Git diff was truncated before it reached the model. Lower confidence, avoid claiming the full change was reviewed, and call this out in the review limits.' : ''}${truncationWarning}`,
     folder,
   );
@@ -572,9 +577,11 @@ function addFindingLinks(
 
 export async function runIndependentReview(
   impactService: ImpactAnalysisService,
+  runtime: CodeBrainRuntime,
   reports: ReportManager,
   presenter: ReviewPresenter,
   token: vscode.CancellationToken,
+  log: (message: string) => void,
 ): Promise<void> {
   const folder = getWorkspaceFolder();
   if (!folder) {
@@ -605,10 +612,14 @@ export async function runIndependentReview(
     folder.uri.fsPath,
     maxDiffCharacters,
   );
+  // After `analyze`, which has already brought the index up to date.
+  const codeGraphReport = gitContext.isRepository
+    ? await fetchCodeGraphReview(runtime, folder.uri.fsPath, {}, gitContext.changedFiles, token, log)
+    : undefined;
   const request = await model.sendRequest(
     [
       vscode.LanguageModelChatMessage.User(
-        reviewPrompt(analysis, gitContext.diff, gitContext.truncated, folder),
+        reviewPrompt(analysis, gitContext.diff, gitContext.truncated, folder, codeGraphReport),
       ),
     ],
     {},

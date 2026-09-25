@@ -22,7 +22,8 @@ import {
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
-import { isTestFile, normalizeNameToken } from '../search/query-utils';
+import { isTestFile, normalizeNameToken, STOP_WORDS } from '../search/query-utils';
+import { extractProseCandidates, splitIdentifierSegments } from '../search/identifier-segments';
 import {
   existsSync,
   readFileSync,
@@ -2768,8 +2769,11 @@ export class ToolHandler {
         // codegraph_node's findSymbolMatches.) Qualified tokens keep findAllSymbols.
         const isQual = /[.\/]|::/.test(t);
         const raw = isQual ? this.findAllSymbols(cg, t).nodes : cg.getNodesByName(t);
+        // Generated/minified files (vendored *.min.js) define every short name
+        // and co-name them all in one file, so they'd pass the corroboration
+        // guard for any bare word ("parse", "get") and take the named tier.
         let cands = raw
-          .filter((n) => CALLABLE.has(n.kind) && !isTestPath(n.filePath))
+          .filter((n) => CALLABLE.has(n.kind) && !isTestPath(n.filePath) && !isGeneratedFile(n.filePath))
           .sort((a, b) => (bodyLines(b) > 1 ? 1 : 0) - (bodyLines(a) > 1 ? 1 : 0) || bodyLines(b) - bodyLines(a));
         // Field-name seeding fallback (#1196): a camelCase token that names NO
         // definition of its own is usually an object-literal key / API field
@@ -2779,14 +2783,16 @@ export class ToolHandler {
         // whose name contains the token at a hump boundary or as a prefix.
         // Exact-empty + camel-shaped only (bare words keep the NL-stopword
         // guard below), shortest-first, capped so a hot infix can't flood.
-        if (cands.length === 0 && !isQual && /[a-z][A-Z]/.test(t)) {
+        // Not for the project name ("BlackRose"): it is an infix of half the
+        // repo's names, so it would seed arbitrary ones (#720).
+        if (cands.length === 0 && !isQual && /[a-z][A-Z]/.test(t) && !projectNameTokens.has(normalizeNameToken(t))) {
           const lcToken = t.toLowerCase();
           cands = cg
             .getNodesByNameSubstring(t, {
               kinds: ['function', 'method', 'component'],
               limit: 60,
             })
-            .filter((n) => CALLABLE.has(n.kind) && !isTestPath(n.filePath))
+            .filter((n) => CALLABLE.has(n.kind) && !isTestPath(n.filePath) && !isGeneratedFile(n.filePath))
             .filter((n) => {
               const idx = n.name.toLowerCase().indexOf(lcToken);
               if (idx < 0) return false;
@@ -2838,6 +2844,78 @@ export class ToolHandler {
           namedSeedIds.add(n.id);
         }
         for (const n of tierPicks) tierSeedIds.add(n.id);
+      }
+    }
+
+    // Prose seeding: agents often pass the user's QUESTION verbatim ("when a
+    // user opens a BlackRose log file, how does … the chart webview"), not a
+    // symbol bag. None of its words is shape-precise, so named seeding above
+    // adds nothing and FTS ranks incidental hits — measured on a VS Code
+    // extension: 2 symbols returned, the agent then did 10 Reads + 12 greps.
+    // The names ARE derivable from the prose, two ways, both verified against
+    // the graph so nothing is invented:
+    //  (a) adjacent words compound into a type name — "BlackRose log" →
+    //      `BlackRoseLog`, matched on whole identifier segments (the project-
+    //      name exclusion above doesn't apply: a project token followed by
+    //      another word is a precise prefix when every type carries it);
+    //  (b) the prompt hook's segment co-occurrence/rarity matcher —
+    //      "chart … messages … send" → `postMessageToChart`.
+    // Seeds join namedSeedIds (file score + RWR restart) AND the named-first
+    // tier — without the tier the dense text-matched cluster outranks them and
+    // they never render.
+    {
+      const proseWords = extractProseCandidates(query);
+      const words = query.match(/[A-Za-z][A-Za-z0-9]*/g) ?? [];
+      // Only when the query named nothing resolvable: a mixed query ("how does
+      // mutateElement end up re-rendering the canvas…") already has its seeds,
+      // and prose seeds there compete for the render budget (measured: it cost
+      // excalidraw's flow query the Scene.ts hop).
+      if (tierSeedIds.size === 0 && words.length >= 6 && proseWords.length >= 3) {
+        const TYPE_SEED_KINDS: NodeKind[] = ['class', 'interface', 'struct', 'trait', 'protocol', 'enum'];
+        const usable = (n: Node) => n.kind !== 'file' && n.kind !== 'import' && !isTestFile(n.filePath) && !isGeneratedFile(n.filePath);
+        const seeds: Node[] = [];
+        const addSeed = (n: Node) => {
+          if (seeds.some((s) => s.id === n.id)) return;
+          seeds.push(n);
+        };
+
+        // (a) compounds of 2–3 adjacent words, longest first so "BlackRose log
+        // file" prefers BlackRoseLogFile* over BlackRoseLog* when both exist.
+        let compoundSeeds = 0;
+        const triedCompounds = new Set<string>();
+        for (let len = 3; len >= 2; len--) {
+          for (let i = 0; i + len <= words.length && compoundSeeds < 4; i++) {
+            const parts = words.slice(i, i + len);
+            if (parts.some((p) => p.length < 3 || STOP_WORDS.has(p.toLowerCase()))) continue;
+            const segs = parts.flatMap((p) => splitIdentifierSegments(p));
+            const compound = segs.join('');
+            if (compound.length < 8 || triedCompounds.has(compound)) continue;
+            triedCompounds.add(compound);
+            const hits = cg
+              .getNodesByNameSubstring(compound, { kinds: TYPE_SEED_KINDS, limit: 20 })
+              .filter((n) => {
+                const ns = splitIdentifierSegments(n.name);
+                return usable(n) && segs.every((s, k) => ns[k] === s);
+              })
+              .sort((a, b) => a.name.length - b.name.length)
+              .slice(0, 2);
+            for (const n of hits) { addSeed(n); compoundSeeds++; }
+          }
+        }
+
+        // (b) segment matches (same precision rules as the prompt hook).
+        for (const m of cg.getSegmentMatches(proseWords, 6)) {
+          const def = cg.getNodesByName(m.name)
+            .filter(usable)
+            .sort((a, b) => ((b.endLine ?? b.startLine) - b.startLine) - ((a.endLine ?? a.startLine) - a.startLine))[0];
+          if (def) addSeed(def);
+        }
+
+        for (const n of seeds.slice(0, 8)) {
+          if (!subgraph.nodes.has(n.id)) subgraph.nodes.set(n.id, n);
+          namedSeedIds.add(n.id);
+          tierSeedIds.add(n.id);
+        }
       }
     }
 

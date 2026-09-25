@@ -691,6 +691,11 @@
           "scope": "machine",
           "markdownDescription": "Use a CodeGraph runtime directory you manage yourself (one holding `node`, `lib/` and `bin/`, such as an unpacked `@xuansang2770/codegraph-<platform>` package or a local build). Disables the npm install and auto-update."
         },
+        "codebrain.mcp.reviewTool": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Expose CodeGraph's `codegraph_review` tool alongside `codegraph_explore` on the CodeBrain MCP server — in VS Code and in every agent registered with **CodeBrain: Install MCP + Skill for Agents**. It reports changed signatures and removed exports whose callers outside the diff still use them, the blast radius, and untested changed code. Turn off to offer `codegraph_explore` only."
+        },
         "codebrain.autoRefresh.enabled": {
           "type": "boolean",
           "default": true,

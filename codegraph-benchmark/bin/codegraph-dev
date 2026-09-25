@@ -1,0 +1,3 @@
+#!/bin/sh
+# Run the codegraph build in this repo's dist/ (npm run build) instead of the installed release.
+exec node "$(cd "$(dirname "$0")/../.." && pwd)/dist/bin/codegraph.js" "$@"

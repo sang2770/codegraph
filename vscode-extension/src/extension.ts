@@ -67,7 +67,13 @@ export function activate(context: vscode.ExtensionContext): void {
       atlassian.refreshInstalledTargets();
       codeBrainMcp.refreshInstalledTargets();
     };
-    context.subscriptions.push(runtime.onDidChange(refreshAgents));
+    context.subscriptions.push(
+      runtime.onDidChange(refreshAgents),
+      // Turning the review tool on or off changes every registered entry.
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('codebrain.mcp.reviewTool')) refreshAgents();
+      }),
+    );
     runtime.start();
     refreshAgents();
 
@@ -103,9 +109,11 @@ export function activate(context: vscode.ExtensionContext): void {
           (_progress, token) =>
             runIndependentReview(
               impactController.analysisService,
+              runtime,
               reports,
               presenter,
               token,
+              logSink,
             ),
         ),
       ),

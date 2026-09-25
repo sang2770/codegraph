@@ -121,20 +121,45 @@ test('the first start installs from npm, and the next start reuses it offline', 
   }
 });
 
-test('a development runtime inside the extension wins over the managed one', posixOnly, () => {
+/** A runtime tree like `npm run build:runtime` leaves under `runtime/<target>/`. */
+function stageLocalRuntime(dir) {
+  mkdirSync(join(dir, 'lib', 'dist', 'bin'), { recursive: true });
+  writeFileSync(join(dir, 'node'), '');
+  chmodSync(join(dir, 'node'), 0o755);
+  writeFileSync(join(dir, 'lib', 'dist', 'bin', 'codegraph.js'), '');
+}
+
+test('a runtime left inside the extension folder is ignored', posixOnly, async () => {
   const root = mkdtempSync(join(tmpdir(), 'codebrain-manager-'));
   try {
     const ctx = context(root);
-    const dev = join(ctx.extensionUri.fsPath, 'runtime', target);
-    mkdirSync(join(dev, 'lib', 'dist', 'bin'), { recursive: true });
-    writeFileSync(join(dev, 'node'), '');
-    chmodSync(join(dev, 'node'), 0o755);
-    writeFileSync(join(dev, 'lib', 'dist', 'bin', 'codegraph.js'), '');
+    stageLocalRuntime(join(ctx.extensionUri.fsPath, 'runtime', target));
 
-    const { RuntimeManager } = load();
-    const manager = new RuntimeManager(ctx, () => {});
+    await withFakeNpm(root, async () => {
+      const { RuntimeManager } = load();
+      const manager = new RuntimeManager(ctx, () => {});
+      manager.start();
+      const runtime = await manager.resolve();
+      manager.dispose();
+      // The npm runtime, not the stale local one.
+      assert.ok(runtime.command.startsWith(join(root, 'storage', 'runtime')));
+      assert.equal(manager.currentVersion(), '1.6.1');
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('codebrain.runtime.path runs a local build and installs nothing', posixOnly, () => {
+  const root = mkdtempSync(join(tmpdir(), 'codebrain-manager-'));
+  try {
+    const local = join(root, 'local-runtime');
+    stageLocalRuntime(local);
+
+    const { RuntimeManager } = load({ path: local });
+    const manager = new RuntimeManager(context(root), () => {});
     manager.start();
-    assert.equal(manager.current().command, join(dev, 'node'));
+    assert.equal(manager.current().command, join(local, 'node'));
     assert.equal(manager.currentVersion(), undefined);
     manager.dispose();
     assert.equal(existsSync(join(root, 'storage', 'runtime')), false, 'nothing was installed');
