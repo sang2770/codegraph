@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.6.2] - 2026-09-25
+
 ### New Features
 
 - `codegraph_explore` now understands a question written as plain prose, the way agents often pass the user's question straight through: it works out which classes and functions the words refer to (so "a BlackRose log file" finds `BlackRoseLog`) and leads with their source, instead of returning a handful of loosely related matches. Queries that already name symbols behave exactly as before.
@@ -760,3 +763,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.5.0]: https://github.com/sang2770/codegraph/releases/tag/v1.5.0
 [1.6.0]: https://github.com/sang2770/codegraph/releases/tag/v1.6.0
 [1.6.1]: https://github.com/sang2770/codegraph/releases/tag/v1.6.1
+[1.6.2]: https://github.com/sang2770/codegraph/releases/tag/v1.6.2
