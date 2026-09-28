@@ -9,6 +9,12 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- GitHub Copilot in VS Code is now a supported agent. `codegraph install` writes the CodeGraph MCP server into VS Code's own `mcp.json` (your user profile, or `.vscode/mcp.json` for a single project) in the format Copilot Chat reads — previously only the Copilot CLI files were written, which VS Code ignores. Comments and other servers in the file are kept, and `codegraph uninstall` removes only the CodeGraph entry.
+- `codegraph install` now offers to add the code-review tool, `codegraph_review`, for every agent it configures, so an agent reviewing a change can see its callers outside the diff, broken signatures and untested code in one call. It is on by default; `--review-tool` and `--no-review-tool` answer the question up front, and `codegraph upgrade` keeps whichever choice you made.
+- `codegraph serve --mcp` accepts `--tools` (for example `--tools explore,review`) to choose which tools agents are shown, the same as setting `CODEGRAPH_MCP_TOOLS`.
+
 
 ## [1.6.2] - 2026-09-25
 

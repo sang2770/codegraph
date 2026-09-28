@@ -134,23 +134,22 @@ describe('Installer targets — contract', () => {
             // Seed pre-existing config.
             fs.mkdirSync(path.dirname(jsonPath), { recursive: true });
             const seed: Record<string, any> = { mcpServers: { other: { command: 'x' } } };
-            // opencode uses `mcp` not `mcpServers`. Match its shape too.
+            // opencode uses `mcp` and VS Code `servers`, not `mcpServers`.
             if (target.id === 'opencode') {
               delete seed.mcpServers;
               seed.mcp = { other: { type: 'local', command: ['x'], enabled: true } };
+            } else if (target.id === 'vscode') {
+              delete seed.mcpServers;
+              seed.servers = { other: { type: 'stdio', command: 'x' } };
             }
             fs.writeFileSync(jsonPath, JSON.stringify(seed, null, 2) + '\n');
 
             target.install(location, { autoAllow: true });
 
             const after = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-            if (target.id === 'opencode') {
-              expect(after.mcp.other).toBeDefined();
-              expect(after.mcp.codegraph).toBeDefined();
-            } else {
-              expect(after.mcpServers.other).toBeDefined();
-              expect(after.mcpServers.codegraph).toBeDefined();
-            }
+            const key = target.id === 'opencode' ? 'mcp' : target.id === 'vscode' ? 'servers' : 'mcpServers';
+            expect(after[key].other).toBeDefined();
+            expect(after[key].codegraph).toBeDefined();
           });
 
           it('uninstall reverses install (alreadyConfigured returns to false)', () => {
@@ -1353,6 +1352,7 @@ describe('Installer targets — registry', () => {
     expect(getTarget('antigravity')?.id).toBe('antigravity');
     expect(getTarget('kiro')?.id).toBe('kiro');
     expect(getTarget('copilot')?.id).toBe('copilot');
+    expect(getTarget('vscode')?.id).toBe('vscode');
     expect(getTarget('not-a-real-target')).toBeUndefined();
   });
 
@@ -1980,5 +1980,184 @@ describe('Installer targets — opencode XDG config path (#535)', () => {
     expect(opencode.detect('global').installed).toBe(true);
     // But configuration state is read from the REAL path only.
     expect(opencode.detect('global').alreadyConfigured).toBe(false);
+  });
+});
+
+describe('Installer targets — review tool option (serve --tools explore,review)', () => {
+  let tmpHome: string;
+  let tmpCwd: string;
+  let origCwd: string;
+  let homeRestore: { restore: () => void };
+
+  beforeEach(() => {
+    tmpHome = mkTmpDir('rt-home');
+    tmpCwd = mkTmpDir('rt-cwd');
+    origCwd = process.cwd();
+    process.chdir(tmpCwd);
+    homeRestore = setHome(tmpHome);
+  });
+
+  afterEach(() => {
+    homeRestore.restore();
+    process.chdir(origCwd);
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    fs.rmSync(tmpCwd, { recursive: true, force: true });
+  });
+
+  // Every format carries the surface as the literal arg value (JSON array,
+  // TOML array, YAML list item), so a text search covers them all.
+  const configText = (target: (typeof ALL_TARGETS)[number], loc: 'global' | 'local'): string =>
+    target
+      .describePaths(loc)
+      .filter((p) => fs.existsSync(p))
+      .map((p) => fs.readFileSync(p, 'utf-8'))
+      .join('\n');
+
+  for (const target of ALL_TARGETS) {
+    for (const loc of (['global', 'local'] as const).filter((l) => target.supportsLocation(l))) {
+      describe(`${target.id} location=${loc}`, () => {
+        it('reviewTool=true writes the review surface, and a re-run is unchanged', () => {
+          target.install(loc, { autoAllow: true, reviewTool: true });
+          expect(configText(target, loc)).toContain('explore,review');
+          for (const f of target.install(loc, { autoAllow: true, reviewTool: true }).files) {
+            expect(f.action).toBe('unchanged');
+          }
+        });
+
+        it('reviewTool=false removes a surface an earlier install added', () => {
+          target.install(loc, { autoAllow: true, reviewTool: true });
+          target.install(loc, { autoAllow: true, reviewTool: false });
+          expect(configText(target, loc)).not.toContain('--tools');
+          expect(target.detect(loc).alreadyConfigured).toBe(true);
+        });
+
+        it('reviewTool=undefined (refresh) keeps the previous choice either way', () => {
+          target.install(loc, { autoAllow: true, reviewTool: true });
+          for (const f of target.install(loc, { autoAllow: false }).files) {
+            expect(f.action).toBe('unchanged');
+          }
+          expect(configText(target, loc)).toContain('explore,review');
+
+          target.install(loc, { autoAllow: true, reviewTool: false });
+          target.install(loc, { autoAllow: false });
+          expect(configText(target, loc)).not.toContain('--tools');
+        });
+      });
+    }
+  }
+
+  it('refreshTargets preserves an opted-in review tool across an upgrade sweep', () => {
+    const claude = getTarget('claude')!;
+    claude.install('global', { autoAllow: true, reviewTool: true });
+    const [report] = refreshTargets([claude], 'global');
+    expect(report.status).toBe('unchanged');
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf-8'));
+    expect(cfg.mcpServers.codegraph.args).toEqual(['serve', '--mcp', '--tools', 'explore,review']);
+  });
+
+  it('cursor keeps --path last, after the review surface', () => {
+    getTarget('cursor')!.install('local', { autoAllow: true, reviewTool: true });
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmpCwd, '.cursor', 'mcp.json'), 'utf-8'));
+    expect(cfg.mcpServers.codegraph.args).toEqual(['serve', '--mcp', '--tools', 'explore,review', '--path', process.cwd()]);
+  });
+});
+
+describe('Installer targets — GitHub Copilot in VS Code', () => {
+  let tmpHome: string;
+  let tmpCwd: string;
+  let origCwd: string;
+  let homeRestore: { restore: () => void };
+
+  beforeEach(() => {
+    tmpHome = mkTmpDir('vsc-home');
+    tmpCwd = mkTmpDir('vsc-cwd');
+    origCwd = process.cwd();
+    process.chdir(tmpCwd);
+    homeRestore = setHome(tmpHome);
+  });
+
+  afterEach(() => {
+    homeRestore.restore();
+    process.chdir(origCwd);
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    fs.rmSync(tmpCwd, { recursive: true, force: true });
+  });
+
+  const vscode = () => getTarget('vscode')!;
+  const localFile = () => path.join(process.cwd(), '.vscode', 'mcp.json');
+
+  it('local install writes ./.vscode/mcp.json under `servers` — not the Copilot CLI files', () => {
+    vscode().install('local', { autoAllow: true });
+    const cfg = JSON.parse(fs.readFileSync(localFile(), 'utf-8'));
+    expect(cfg.servers.codegraph).toEqual({ type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'] });
+    expect(cfg.mcpServers).toBeUndefined();
+    expect(fs.existsSync(path.join(process.cwd(), '.github'))).toBe(false);
+    expect(fs.existsSync(path.join(process.cwd(), '.mcp.json'))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'linux')('global install writes $XDG_CONFIG_HOME/Code/User/mcp.json', () => {
+    vscode().install('global', { autoAllow: true });
+    expect(fs.existsSync(path.join(tmpHome, '.config', 'Code', 'User', 'mcp.json'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpHome, '.copilot'))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'darwin')('global install writes ~/Library/Application Support/Code/User/mcp.json', () => {
+    vscode().install('global', { autoAllow: true });
+    expect(fs.existsSync(path.join(tmpHome, 'Library', 'Application Support', 'Code', 'User', 'mcp.json'))).toBe(true);
+  });
+
+  it.runIf(process.platform === 'win32')('global install writes %APPDATA%\\Code\\User\\mcp.json', () => {
+    vscode().install('global', { autoAllow: true });
+    expect(fs.existsSync(path.join(process.env.APPDATA!, 'Code', 'User', 'mcp.json'))).toBe(true);
+  });
+
+  it('install and uninstall preserve comments, `inputs` and sibling servers', () => {
+    fs.mkdirSync(path.dirname(localFile()), { recursive: true });
+    const seed = [
+      '{',
+      '  // keep me',
+      '  "inputs": [{ "type": "promptString", "id": "token" }],',
+      '  "servers": {',
+      '    "other": { "type": "stdio", "command": "x" },',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    fs.writeFileSync(localFile(), seed);
+
+    vscode().install('local', { autoAllow: true });
+    let text = fs.readFileSync(localFile(), 'utf-8');
+    expect(text).toContain('// keep me');
+    expect(text).toContain('"inputs"');
+    expect(text).toContain('"other"');
+    expect(text).toContain('"codegraph"');
+    expect(vscode().detect('local').alreadyConfigured).toBe(true);
+
+    vscode().uninstall('local');
+    text = fs.readFileSync(localFile(), 'utf-8');
+    expect(text).toContain('// keep me');
+    expect(text).toContain('"other"');
+    expect(text).not.toContain('"codegraph"');
+  });
+
+  it('uninstall drops an emptied `servers` wrapper but keeps the file', () => {
+    vscode().install('local', { autoAllow: true });
+    vscode().uninstall('local');
+    expect(fs.existsSync(localFile())).toBe(true);
+    const cfg = JSON.parse(fs.readFileSync(localFile(), 'utf-8'));
+    expect(cfg.servers).toBeUndefined();
+  });
+
+  it('backs up an unparseable mcp.json before replacing it', () => {
+    fs.mkdirSync(path.dirname(localFile()), { recursive: true });
+    fs.writeFileSync(localFile(), '{ "servers": { broken');
+    vscode().install('local', { autoAllow: true });
+    expect(fs.readFileSync(localFile() + '.backup', 'utf-8')).toBe('{ "servers": { broken');
+    expect(JSON.parse(fs.readFileSync(localFile(), 'utf-8')).servers.codegraph).toBeDefined();
+  });
+
+  it('printConfig uses the `servers` key', () => {
+    expect(vscode().printConfig('local')).toContain('"servers"');
+    expect(vscode().printConfig('local')).not.toContain('mcpServers');
   });
 });

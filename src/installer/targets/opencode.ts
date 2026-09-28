@@ -47,8 +47,10 @@ import {
 } from './types';
 import {
   atomicWriteFileSync,
+  getServeArgs,
   jsonDeepEqual,
   removeMarkedSection,
+  resolveReviewTool,
   upsertInstructionsEntry,
 } from './shared';
 import {
@@ -115,10 +117,10 @@ function parseConfig(text: string): Record<string, any> {
   return result as Record<string, any>;
 }
 
-function getOpencodeServerEntry(): { type: string; command: string[]; enabled: boolean } {
+function getOpencodeServerEntry(reviewTool = false): { type: string; command: string[]; enabled: boolean } {
   return {
     type: 'local',
-    command: ['codegraph', 'serve', '--mcp'],
+    command: ['codegraph', ...getServeArgs(reviewTool)],
     enabled: true,
   };
 }
@@ -148,9 +150,9 @@ class OpencodeTarget implements AgentTarget {
     return { installed, alreadyConfigured, configPath: file };
   }
 
-  install(loc: Location, _opts: InstallOptions): WriteResult {
+  install(loc: Location, opts: InstallOptions): WriteResult {
     const files: WriteResult['files'] = [];
-    files.push(writeMcpEntry(loc));
+    files.push(writeMcpEntry(loc, opts.reviewTool));
 
     // AGENTS.md gets the short marker-fenced CodeGraph block (#704):
     // subagents and non-MCP harnesses read AGENTS.md but never the MCP
@@ -186,7 +188,7 @@ class OpencodeTarget implements AgentTarget {
   }
 }
 
-function writeMcpEntry(loc: Location): WriteResult['files'][number] {
+function writeMcpEntry(loc: Location, reviewTool?: boolean): WriteResult['files'][number] {
   const file = configPath(loc);
   const existed = fs.existsSync(file);
   let text = readConfigText(file);
@@ -200,7 +202,7 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
 
   const config = parseConfig(text);
   const before = config.mcp?.codegraph;
-  const after = getOpencodeServerEntry();
+  const after = getOpencodeServerEntry(resolveReviewTool(reviewTool, before?.command));
 
   if (jsonDeepEqual(before, after)) {
     return { path: file, action: 'unchanged' };

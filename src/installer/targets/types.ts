@@ -20,7 +20,7 @@ export type Location = 'global' | 'local';
  * lookup. New targets add a value here when they're added to the
  * registry. Keep these short and lowercase.
  */
-export type TargetId = 'claude' | 'cursor' | 'codex' | 'opencode' | 'hermes' | 'gemini' | 'antigravity' | 'kiro' | 'copilot';
+export type TargetId = 'claude' | 'cursor' | 'codex' | 'opencode' | 'hermes' | 'gemini' | 'antigravity' | 'kiro' | 'copilot' | 'vscode';
 
 /**
  * Result of `target.detect(location)`.
@@ -76,6 +76,12 @@ export interface InstallOptions {
    * leaves it untouched. Targets without a prompt-hook concept ignore it.
    */
   promptHook?: boolean;
+  /**
+   * List `codegraph_review` next to `codegraph_explore` (`serve --tools
+   * explore,review`). `true` adds it, `false` removes it, `undefined` keeps
+   * what the existing MCP entry has (refresh / upgrade).
+   */
+  reviewTool?: boolean;
 }
 
 export interface AgentTarget {

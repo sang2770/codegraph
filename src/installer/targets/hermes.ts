@@ -24,7 +24,7 @@ import {
   Location,
   WriteResult,
 } from './types';
-import { atomicWriteFileSync } from './shared';
+import { atomicWriteFileSync, REVIEW_TOOL_SURFACE } from './shared';
 
 type LineRange = { start: number; end: number };
 
@@ -51,7 +51,7 @@ class HermesTarget implements AgentTarget {
     };
   }
 
-  install(loc: Location, _opts: InstallOptions): WriteResult {
+  install(loc: Location, opts: InstallOptions): WriteResult {
     if (loc !== 'global') {
       return {
         files: [],
@@ -59,7 +59,7 @@ class HermesTarget implements AgentTarget {
       };
     }
     return {
-      files: [writeHermesConfig()],
+      files: [writeHermesConfig(opts.reviewTool)],
       notes: ['Start a new Hermes session for MCP changes to take effect.'],
     };
   }
@@ -120,11 +120,11 @@ function readText(file: string): string {
   }
 }
 
-function writeHermesConfig(): WriteResult['files'][number] {
+function writeHermesConfig(reviewTool?: boolean): WriteResult['files'][number] {
   const file = configPath();
   const existed = fs.existsSync(file);
   const before = readText(file);
-  const afterMcp = upsertCodeGraphMcpServer(before);
+  const afterMcp = upsertCodeGraphMcpServer(before, reviewTool);
   const after = upsertCodeGraphToolset(afterMcp);
 
   if (after === before) {
@@ -249,13 +249,17 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function renderCodeGraphMcpChild(): string[] {
+const REVIEW_TOOL_FLAG_LINE = '      - --tools';
+const REVIEW_TOOL_LINES = [REVIEW_TOOL_FLAG_LINE, `      - ${REVIEW_TOOL_SURFACE}`];
+
+function renderCodeGraphMcpChild(reviewTool = false): string[] {
   return [
     '  codegraph:',
     '    command: codegraph',
     '    args:',
     '      - serve',
     '      - --mcp',
+    ...(reviewTool ? REVIEW_TOOL_LINES : []),
     '    timeout: 120',
     '    connect_timeout: 60',
     '    enabled: true',
@@ -272,16 +276,17 @@ function hasCodeGraphMcpServer(content: string): boolean {
   return !!parent && !!childRange(lines, parent, 'codegraph');
 }
 
-function upsertCodeGraphMcpServer(content: string): string {
+function upsertCodeGraphMcpServer(content: string, reviewTool?: boolean): string {
   const lines = splitLines(content);
   const parent = topLevelRange(lines, 'mcp_servers');
   const child = parent ? childRange(lines, parent, 'codegraph') : null;
-  const replacement = renderCodeGraphMcpChild();
+  const hadReviewTool = !!child && lines.slice(child.start, child.end).includes(REVIEW_TOOL_FLAG_LINE);
+  const replacement = renderCodeGraphMcpChild(reviewTool ?? hadReviewTool);
 
   if (!parent) {
     if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
     if (lines.length > 0) lines.push('');
-    lines.push(...renderCodeGraphMcpBlock());
+    lines.push('mcp_servers:', ...replacement);
     return joinLines(lines);
   }
 

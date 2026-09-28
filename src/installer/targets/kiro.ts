@@ -35,6 +35,7 @@ import {
 } from './types';
 import {
   getMcpServerConfig,
+  resolveReviewTool,
   jsonDeepEqual,
   readJsonFile,
   writeJsonFile,
@@ -71,9 +72,9 @@ class KiroTarget implements AgentTarget {
     return { installed, alreadyConfigured, configPath: file };
   }
 
-  install(loc: Location, _opts: InstallOptions): WriteResult {
+  install(loc: Location, opts: InstallOptions): WriteResult {
     const files: WriteResult['files'] = [];
-    files.push(writeMcpEntry(loc));
+    files.push(writeMcpEntry(loc, opts.reviewTool));
 
     // The steering doc is no longer written — the codegraph usage
     // guidance ships in the MCP server's `initialize` response (issue
@@ -128,14 +129,14 @@ class KiroTarget implements AgentTarget {
   }
 }
 
-function writeMcpEntry(loc: Location): WriteResult['files'][number] {
+function writeMcpEntry(loc: Location, reviewTool?: boolean): WriteResult['files'][number] {
   const file = mcpJsonPath(loc);
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const existing = readJsonFile(file);
   const before = existing.mcpServers?.codegraph;
-  const after = getMcpServerConfig();
+  const after = getMcpServerConfig(resolveReviewTool(reviewTool, before?.args));
 
   if (jsonDeepEqual(before, after)) {
     return { path: file, action: 'unchanged' };

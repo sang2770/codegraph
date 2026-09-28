@@ -121,6 +121,14 @@ export function removeTomlTable(
   return { content: joined, action: 'removed' };
 }
 
+/** The text of a top-level dotted-key table block (header included), or null when absent. */
+export function getTomlTable(fileContent: string, header: string): string | null {
+  const headerLine = `[${header}]`;
+  const headerIdx = findHeaderIndex(fileContent, headerLine);
+  if (headerIdx === -1) return null;
+  return fileContent.substring(headerIdx, findNextTableHeader(fileContent, headerIdx + headerLine.length));
+}
+
 /**
  * Locate the byte index of a header line (`[foo.bar]`) when it
  * appears at the start of a line. Returns -1 if not found.

@@ -46,6 +46,7 @@ import {
 } from './types';
 import {
   getMcpServerConfig,
+  resolveReviewTool,
   jsonDeepEqual,
   readJsonFile,
   removeMarkedSection,
@@ -104,7 +105,7 @@ class CopilotCliTarget implements AgentTarget {
 
   install(loc: Location, opts: InstallOptions): WriteResult {
     const files: WriteResult['files'] = [];
-    files.push(writeMcpEntry(loc));
+    files.push(writeMcpEntry(loc, opts.reviewTool));
 
     // copilot-instructions.md gets the short marker-fenced CodeGraph
     // block (#704): Copilot CLI's own subagents and non-MCP reads never
@@ -159,14 +160,14 @@ class CopilotCliTarget implements AgentTarget {
   }
 }
 
-function writeMcpEntry(loc: Location): WriteResult['files'][number] {
+function writeMcpEntry(loc: Location, reviewTool?: boolean): WriteResult['files'][number] {
   const file = mcpJsonPath(loc);
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const existing = readJsonFile(file);
   const before = existing.mcpServers?.codegraph;
-  const after = getMcpServerConfig();
+  const after = getMcpServerConfig(resolveReviewTool(reviewTool, before?.args));
 
   if (jsonDeepEqual(before, after)) {
     return { path: file, action: 'unchanged' };

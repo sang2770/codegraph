@@ -65,8 +65,10 @@ import {
   WriteResult,
 } from './types';
 import {
+  getServeArgs,
   jsonDeepEqual,
   readJsonFile,
+  resolveReviewTool,
   writeJsonFile,
 } from './shared';
 
@@ -139,10 +141,10 @@ function resolveCodegraphCommand(): string {
  * field and (b) needs an absolute command path on macOS — see file
  * header.
  */
-function buildAntigravityEntry(): { command: string; args: string[] } {
+function buildAntigravityEntry(reviewTool = false): { command: string; args: string[] } {
   return {
     command: resolveCodegraphCommand(),
-    args: ['serve', '--mcp'],
+    args: getServeArgs(reviewTool),
   };
 }
 
@@ -172,7 +174,7 @@ class AntigravityTarget implements AgentTarget {
     return { installed, alreadyConfigured, configPath: file };
   }
 
-  install(loc: Location, _opts: InstallOptions): WriteResult {
+  install(loc: Location, opts: InstallOptions): WriteResult {
     if (loc !== 'global') {
       return {
         files: [],
@@ -180,7 +182,7 @@ class AntigravityTarget implements AgentTarget {
       };
     }
     const files: WriteResult['files'] = [];
-    files.push(writeMcpEntry());
+    files.push(writeMcpEntry(opts.reviewTool));
     // If the user originally installed on the legacy path and Antigravity
     // has since migrated, strip the stale legacy entry so they don't
     // wind up with two competing codegraph configs.
@@ -231,14 +233,14 @@ class AntigravityTarget implements AgentTarget {
   }
 }
 
-function writeMcpEntry(): WriteResult['files'][number] {
+function writeMcpEntry(reviewTool?: boolean): WriteResult['files'][number] {
   const file = preferredMcpConfigPath();
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const existing = readJsonFile(file);
   const before = existing.mcpServers?.codegraph;
-  const after = buildAntigravityEntry();
+  const after = buildAntigravityEntry(resolveReviewTool(reviewTool, before?.args));
 
   if (jsonDeepEqual(before, after)) {
     return { path: file, action: 'unchanged' };

@@ -3,7 +3,8 @@
  *
  * Multi-target: writes MCP server config + instructions for the
  * agents the user picks (Claude Code, Cursor, Codex CLI, opencode,
- * Hermes Agent, Gemini CLI, Antigravity IDE, Kiro, GitHub Copilot CLI).
+ * Hermes Agent, Gemini CLI, Antigravity IDE, Kiro, GitHub Copilot CLI,
+ * GitHub Copilot in VS Code).
  * Defaults to the Claude-only behavior for backwards compatibility
  * when no targets are explicitly chosen and nothing else is detected.
  *
@@ -65,6 +66,8 @@ export interface RunInstallerOptions {
   location?: Location;
   /** Skip the auto-allow prompt; use this value directly. */
   autoAllow?: boolean;
+  /** Skip the review-tool prompt; use this value directly. */
+  reviewTool?: boolean;
   /**
    * Skip every confirm and use defaults: location=global,
    * autoAllow=true, target=auto. For scripting / CI.
@@ -228,6 +231,28 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     }
   }
 
+  // Step 4⅞: list codegraph_review next to codegraph_explore (every target).
+  // The default surface is explore-only because extra tools steer a coding
+  // agent into mis-picks; review is the exception worth offering, since an
+  // agent reviewing a change calls it on purpose, once, at a known moment.
+  let reviewTool: boolean;
+  if (opts.reviewTool !== undefined) {
+    reviewTool = opts.reviewTool;
+  } else if (useDefaults) {
+    reviewTool = true;
+  } else {
+    const ans = await clack.confirm({
+      message:
+        'Add the code-review tool (codegraph_review)? One call shows a change\'s callers outside the diff, broken signatures, blast radius and untested code.',
+      initialValue: true,
+    });
+    if (clack.isCancel(ans)) {
+      clack.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+    reviewTool = ans;
+  }
+
   // Step 5: per-target install loop.
   const installedIds: TargetId[] = [];
   let sawCreated = false;
@@ -239,7 +264,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
       );
       continue;
     }
-    const result = target.install(location, { autoAllow, promptHook });
+    const result = target.install(location, { autoAllow, promptHook, reviewTool });
     installedIds.push(target.id);
     for (const file of result.files) {
       if (file.action === 'created') sawCreated = true;
@@ -393,9 +418,9 @@ export interface RefreshReport {
  *
  * Strictly a refresh, never a first install:
  *   - targets that aren't `alreadyConfigured` are skipped untouched;
- *   - permissions are not written (`autoAllow: false`) and the prompt
- *     hook is left as-is (`promptHook: undefined`), so choices the user
- *     made at install time — or by hand since — are preserved.
+ *   - permissions are not written (`autoAllow: false`), and the prompt
+ *     hook and review tool are left as-is (`undefined`), so choices the
+ *     user made at install time — or by hand since — are preserved.
  *
  * Every write underneath is the targets' own idempotent upsert, so a
  * re-run on an already-current machine reports `unchanged` everywhere.
@@ -455,8 +480,8 @@ export async function runUninstaller(opts: RunUninstallerOptions): Promise<void>
     const sel = await clack.select({
       message: 'Remove CodeGraph from all your projects, or just this one?',
       options: [
-        { value: 'global' as const, label: 'All projects (global)', hint: '~/.claude, ~/.cursor, ~/.codex, ~/.config/opencode, ~/.hermes, ~/.gemini, ~/.kiro, ~/.copilot' },
-        { value: 'local'  as const, label: 'Just this project (local)', hint: './.claude, ./.cursor, ./opencode.jsonc, ./.gemini, ./.kiro, ./.github' },
+        { value: 'global' as const, label: 'All projects (global)', hint: '~/.claude, ~/.cursor, ~/.codex, ~/.config/opencode, ~/.hermes, ~/.gemini, ~/.kiro, ~/.copilot, VS Code user mcp.json' },
+        { value: 'local'  as const, label: 'Just this project (local)', hint: './.claude, ./.cursor, ./opencode.jsonc, ./.gemini, ./.kiro, ./.github, ./.vscode' },
       ],
       initialValue: 'global' as const,
     });

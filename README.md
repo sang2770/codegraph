@@ -381,11 +381,12 @@ npx @xuansang2770/codegraph
 ```
 
 The installer will:
-- Ask which agent(s) to configure — auto-detects installed ones from: **Claude Code**, **Cursor**, **Codex CLI**, **opencode**, **Hermes Agent**, **Gemini CLI**, **Antigravity IDE**, **Kiro**, **GitHub Copilot CLI**
+- Ask which agent(s) to configure — auto-detects installed ones from: **Claude Code**, **Cursor**, **Codex CLI**, **opencode**, **Hermes Agent**, **Gemini CLI**, **Antigravity IDE**, **Kiro**, **GitHub Copilot CLI**, **GitHub Copilot in VS Code**
 - Prompt to install `codegraph` on your PATH (so agents can launch the MCP server)
 - Ask whether configs apply to all your projects or just this one
 - Write each chosen agent's MCP server config, plus a small marker-fenced CodeGraph section in the agent's instructions file (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md` / `copilot-instructions.md`) — that's how subagents and non-MCP agents learn the `codegraph explore` command, since the MCP server's own guidance only reaches the main agent. Removed cleanly by `codegraph uninstall`.
 - Set up auto-allow permissions when Claude Code is one of the targets
+- Ask whether to add the code-review tool (`codegraph_review`) next to `codegraph_explore` — on by default
 
 The installer **wires up your agents only — it does not index your code.** After it finishes, build each project's graph yourself with `codegraph init` (step 3). One global `codegraph install` covers every project; you run `codegraph init` once per project.
 
@@ -404,11 +405,12 @@ codegraph install --print-config codex               # print snippet, no file wr
 | `--location` | `global`, `local` | prompt |
 | `--yes` | (boolean) | prompt every step |
 | `--no-permissions` | (boolean) skip Claude auto-allow list | permissions on |
+| `--review-tool` / `--no-review-tool` | add or leave out `codegraph_review` for every agent | prompt (on with `--yes`) |
 | `--print-config <id>` | dump snippet for one agent and exit | — |
 
 ### 2. Restart Your Agent
 
-Restart your agent (Claude Code / Cursor / Codex CLI / opencode / Hermes Agent / Gemini CLI / Antigravity IDE / Kiro / GitHub Copilot CLI) for the MCP server to load.
+Restart your agent (Claude Code / Cursor / Codex CLI / opencode / Hermes Agent / Gemini CLI / Antigravity IDE / Kiro / GitHub Copilot CLI) for the MCP server to load. In VS Code, reload the window and pick the codegraph tools in Copilot Chat's Agent mode.
 
 ### 3. Initialize Projects
 
@@ -767,6 +769,7 @@ is written):
 - **Antigravity IDE**
 - **Kiro**
 - **GitHub Copilot CLI**
+- **GitHub Copilot in VS Code**
 
 ## Supported Languages
 

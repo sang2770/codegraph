@@ -21,12 +21,35 @@ import {
  * all JSON-shaped agent configs (Claude, Cursor, opencode), only the
  * surrounding wrapper differs. Codex (TOML) builds its own block.
  */
-export function getMcpServerConfig(): { type: string; command: string; args: string[] } {
+export function getMcpServerConfig(reviewTool = false): { type: string; command: string; args: string[] } {
   return {
     type: 'stdio',
     command: 'codegraph',
-    args: ['serve', '--mcp'],
+    args: getServeArgs(reviewTool),
   };
+}
+
+/** `serve --tools` value that adds `codegraph_review` to the default explore-only surface. */
+export const REVIEW_TOOL_SURFACE = 'explore,review';
+
+export function getServeArgs(reviewTool = false): string[] {
+  return ['serve', '--mcp', ...(reviewTool ? ['--tools', REVIEW_TOOL_SURFACE] : [])];
+}
+
+/** Whether a written args list already enables `codegraph_review`. */
+export function hasReviewToolArgs(args: unknown): boolean {
+  if (!Array.isArray(args)) return false;
+  const i = args.indexOf('--tools');
+  const value = i === -1 ? undefined : args[i + 1];
+  return typeof value === 'string' && value.split(',').map((s) => s.trim()).includes('review');
+}
+
+/**
+ * `InstallOptions.reviewTool` → the value to write. `undefined` (a refresh)
+ * keeps whatever the on-disk entry already has, so an opt-out survives upgrades.
+ */
+export function resolveReviewTool(option: boolean | undefined, existingArgs: unknown): boolean {
+  return option ?? hasReviewToolArgs(existingArgs);
 }
 
 /**

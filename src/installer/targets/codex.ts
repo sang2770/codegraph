@@ -27,6 +27,7 @@ import {
 import {
   atomicWriteFileSync,
   getMcpServerConfig,
+  REVIEW_TOOL_SURFACE,
   removeMarkedSection,
   upsertInstructionsEntry,
 } from './shared';
@@ -34,7 +35,7 @@ import {
   CODEGRAPH_SECTION_END,
   CODEGRAPH_SECTION_START,
 } from '../instructions-template';
-import { buildTomlTable, removeTomlTable, upsertTomlTable } from './toml';
+import { buildTomlTable, getTomlTable, removeTomlTable, upsertTomlTable } from './toml';
 
 const TOML_HEADER = 'mcp_servers.codegraph';
 
@@ -73,7 +74,7 @@ class CodexTarget implements AgentTarget {
     return { installed, alreadyConfigured, configPath: tomlPath };
   }
 
-  install(loc: Location, _opts: InstallOptions): WriteResult {
+  install(loc: Location, opts: InstallOptions): WriteResult {
     if (loc !== 'global') {
       return {
         files: [],
@@ -82,7 +83,7 @@ class CodexTarget implements AgentTarget {
     }
     const files: WriteResult['files'] = [];
 
-    files.push(writeMcpEntry());
+    files.push(writeMcpEntry(opts.reviewTool));
 
     // AGENTS.md gets the short marker-fenced CodeGraph block (#704):
     // subagents and non-MCP harnesses read AGENTS.md but never the MCP
@@ -133,24 +134,24 @@ class CodexTarget implements AgentTarget {
   }
 }
 
-function buildCodegraphBlock(): string {
-  const mcp = getMcpServerConfig();
+function buildCodegraphBlock(reviewTool = false): string {
+  const mcp = getMcpServerConfig(reviewTool);
   return buildTomlTable(TOML_HEADER, {
     command: mcp.command,
     args: mcp.args,
   });
 }
 
-function writeMcpEntry(): WriteResult['files'][number] {
+function writeMcpEntry(reviewTool?: boolean): WriteResult['files'][number] {
   const file = tomlConfigPath();
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  const block = buildCodegraphBlock();
   // Single read — `existing === ''` derives both "is the file empty
   // or absent" and "what was its content," avoiding a TOCTOU window
   // between two `fs.existsSync` calls.
   const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '';
+  const block = buildCodegraphBlock(reviewTool ?? tomlBlockHasReviewTool(existing));
   const created = existing.length === 0;
   const { content: nextContent, action } = upsertTomlTable(existing, TOML_HEADER, block);
 
@@ -159,6 +160,12 @@ function writeMcpEntry(): WriteResult['files'][number] {
   }
   atomicWriteFileSync(file, nextContent);
   return { path: file, action: created ? 'created' : 'updated' };
+}
+
+/** Shallow read of the written `args` — enough to keep a refresh from dropping the review tool. */
+function tomlBlockHasReviewTool(content: string): boolean {
+  const block = getTomlTable(content, TOML_HEADER);
+  return !!block && block.includes(`"--tools", "${REVIEW_TOOL_SURFACE}"`);
 }
 
 /**

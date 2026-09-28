@@ -34,6 +34,7 @@ import {
 } from './types';
 import {
   getMcpServerConfig,
+  resolveReviewTool,
   jsonDeepEqual,
   readJsonFile,
   removeMarkedSection,
@@ -81,9 +82,9 @@ class GeminiTarget implements AgentTarget {
     return { installed, alreadyConfigured, configPath: file };
   }
 
-  install(loc: Location, _opts: InstallOptions): WriteResult {
+  install(loc: Location, opts: InstallOptions): WriteResult {
     const files: WriteResult['files'] = [];
-    files.push(writeMcpEntry(loc));
+    files.push(writeMcpEntry(loc, opts.reviewTool));
 
     // GEMINI.md gets the short marker-fenced CodeGraph block (#704):
     // subagents and non-MCP harnesses read GEMINI.md but never the MCP
@@ -128,14 +129,14 @@ class GeminiTarget implements AgentTarget {
   }
 }
 
-function writeMcpEntry(loc: Location): WriteResult['files'][number] {
+function writeMcpEntry(loc: Location, reviewTool?: boolean): WriteResult['files'][number] {
   const file = settingsJsonPath(loc);
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const existing = readJsonFile(file);
   const before = existing.mcpServers?.codegraph;
-  const after = getMcpServerConfig();
+  const after = getMcpServerConfig(resolveReviewTool(reviewTool, before?.args));
 
   if (jsonDeepEqual(before, after)) {
     return { path: file, action: 'unchanged' };

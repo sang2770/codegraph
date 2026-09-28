@@ -4,9 +4,14 @@
  * Filtering happens in ListTools (getTools) and is enforced again on execute().
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { ToolHandler } from '../src/mcp/tools';
 
 const ENV = 'CODEGRAPH_MCP_TOOLS';
+const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
 describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
   const original = process.env[ENV];
@@ -124,5 +129,69 @@ describe('CODEGRAPH_MCP_PROFILE=review', () => {
 
     const allowed = await new ToolHandler(null).execute('codegraph_review', {});
     expect(allowed.content[0].text).not.toMatch(/disabled/);
+  });
+});
+
+/**
+ * `serve --tools <list>` — the installer's review-tool option writes this arg
+ * (it survives every agent's config format, where an env block does not), so
+ * it must select the same surface CODEGRAPH_MCP_TOOLS does, end to end.
+ */
+describe('serve --tools', () => {
+  let tempDir: string | null = null;
+  let child: ChildProcessWithoutNullStreams | null = null;
+
+  afterEach(async () => {
+    if (child) {
+      const exited = new Promise<void>((resolve) => child!.once('exit', () => resolve()));
+      child.kill('SIGKILL');
+      await Promise.race([exited, new Promise((r) => setTimeout(r, 3000))]);
+      child = null;
+    }
+    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    tempDir = null;
+  });
+
+  async function listedBy(args: string[]): Promise<string[]> {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-serve-tools-'));
+    const env = { ...process.env, CODEGRAPH_NO_DAEMON: '1', CODEGRAPH_WASM_RELAUNCHED: '1' };
+    delete env[ENV];
+    delete env.CODEGRAPH_MCP_PROFILE;
+    child = spawn(process.execPath, [BIN, 'serve', '--mcp', ...args], {
+      cwd: tempDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env,
+    }) as ChildProcessWithoutNullStreams;
+
+    const response = new Promise<Record<string, any>>((resolve, reject) => {
+      let buf = '';
+      const timer = setTimeout(() => reject(new Error('timeout waiting for tools/list')), 15000);
+      child!.stdout.on('data', (chunk: Buffer) => {
+        buf += chunk.toString();
+        for (const line of buf.split('\n')) {
+          try {
+            const msg = JSON.parse(line);
+            if (msg.id === 2) { clearTimeout(timer); resolve(msg); }
+          } catch { /* partial line or noise */ }
+        }
+      });
+    });
+    const send = (msg: object) => child!.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
+    send({
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+    });
+    send({ id: 2, method: 'tools/list' });
+    const res = await response;
+    return (res.result.tools as Array<{ name: string }>).map((t) => t.name).sort();
+  }
+
+  it('lists review alongside explore', async () => {
+    expect(await listedBy(['--tools', 'explore,review'])).toEqual(['codegraph_explore', 'codegraph_review']);
+  });
+
+  it('keeps the default explore-only surface without the flag', async () => {
+    expect(await listedBy([])).toEqual(['codegraph_explore']);
   });
 });

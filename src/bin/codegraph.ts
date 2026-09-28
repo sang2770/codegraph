@@ -1764,13 +1764,19 @@ program
   .option('-p, --path <path>', 'Project path (optional for MCP mode, uses rootUri from client)')
   .option('--mcp', 'Run as MCP server (stdio transport)')
   .option('--no-watch', 'Disable the file watcher (no auto-sync; useful on slow filesystems like WSL2 /mnt drives)')
-  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean }) => {
+  .option('--tools <list>', 'Comma-separated MCP tools to list, e.g. "explore,review" (same as CODEGRAPH_MCP_TOOLS)')
+  .action(async (options: { path?: string; mcp?: boolean; watch?: boolean; tools?: string }) => {
     const projectPath = options.path ? resolveProjectPath(options.path) : undefined;
 
     // Commander sets watch=false when --no-watch is passed. Route it through
     // the same env-var chokepoint the watcher and MCP server already honor.
     if (options.watch === false) {
       process.env.CODEGRAPH_NO_WATCH = '1';
+    }
+    // Same chokepoint for the tool surface: an arg survives every agent's
+    // config format (JSON, TOML, YAML), where an env block does not.
+    if (options.tools?.trim()) {
+      process.env.CODEGRAPH_MCP_TOOLS = options.tools;
     }
 
     try {
@@ -2286,11 +2292,13 @@ program
  */
 program
   .command('install')
-  .description('Install codegraph MCP server into one or more agents (Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity, Kiro, GitHub Copilot CLI)')
+  .description('Install codegraph MCP server into one or more agents (Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity, Kiro, GitHub Copilot CLI, GitHub Copilot in VS Code)')
   .option('-t, --target <ids>', 'Target agent(s): comma-separated ids, or "auto"|"all"|"none". Default: prompt')
   .option('-l, --location <where>', 'Install location: "global" or "local". Default: prompt')
   .option('-y, --yes', 'Non-interactive: defaults to --location=global --target=auto, auto-allow on')
   .option('--no-permissions', 'Skip writing the auto-allow permissions list (Claude Code only)')
+  .option('--review-tool', 'Add the codegraph_review code-review tool for every agent (default: prompt; on with --yes)')
+  .option('--no-review-tool', 'Do not add the codegraph_review tool (removes it from an earlier install)')
   .option('--print-config <id>', 'Print MCP config snippet for the named agent and exit (no file writes)')
   .option('--refresh', 'Rewrite what previous installs configured, for already-configured agents only (never adds new ones). Run automatically by `codegraph upgrade`')
   .action(async (opts: {
@@ -2298,6 +2306,7 @@ program
     location?: string;
     yes?: boolean;
     permissions?: boolean;
+    reviewTool?: boolean;
     printConfig?: string;
     refresh?: boolean;
   }) => {
@@ -2368,6 +2377,9 @@ program
         target: opts.target,
         location: opts.location as 'global' | 'local' | undefined,
         autoAllow,
+        // Both --review-tool and --no-review-tool are defined, so commander
+        // leaves this undefined when neither is given and the installer prompts.
+        reviewTool: opts.reviewTool,
         yes: opts.yes,
       });
     } catch (err) {
@@ -2386,7 +2398,7 @@ program
  */
 program
   .command('uninstall')
-  .description('Remove codegraph from your agents (Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity, Kiro, GitHub Copilot CLI)')
+  .description('Remove codegraph from your agents (Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity, Kiro, GitHub Copilot CLI, GitHub Copilot in VS Code)')
   .option('-t, --target <ids>', 'Target agent(s): comma-separated ids, or "all". Default: all')
   .option('-l, --location <where>', 'Uninstall location: "global" or "local". Default: prompt')
   .option('-y, --yes', 'Non-interactive: defaults to --location=global --target=all')
