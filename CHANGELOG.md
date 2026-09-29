@@ -9,16 +9,6 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### New Features
-
-- GitHub Copilot in VS Code is now a supported agent. `codegraph install` writes the CodeGraph MCP server into VS Code's own `mcp.json` (your user profile, or `.vscode/mcp.json` for a single project) in the format Copilot Chat reads — previously only the Copilot CLI files were written, which VS Code ignores. Comments and other servers in the file are kept, and `codegraph uninstall` removes only the CodeGraph entry.
-- `codegraph install` now offers to add the code-review tool, `codegraph_review`, for every agent it configures, so an agent reviewing a change can see its callers outside the diff, broken signatures and untested code in one call. It is on by default; `--review-tool` and `--no-review-tool` answer the question up front, and `codegraph upgrade` keeps whichever choice you made.
-- `codegraph serve --mcp` accepts `--tools` (for example `--tools explore,review`) to choose which tools agents are shown, the same as setting `CODEGRAPH_MCP_TOOLS`.
-- `codegraph_review` now starts with an `Index:` line saying whether the graph matches the code being reviewed — the commit it describes, when it was indexed, and which reviewed files changed since — and warns at the top when any are out of date, so a review tool can decide whether to trust the report or fall back.
-- `codegraph_review` accepts `symbols` to focus a review on the functions or classes you already know changed, and lists the riskiest changed symbols first, so a report cut short by its size limit keeps the ones that matter most.
-- `codegraph_review` reports show which directories a change sits between — what the changed code depends on and what uses it — so a reviewer sees the architecture around a change without reading other files.
-- The `format: "json"` review report is now a versioned contract (`schemaVersion`), carries the freshness and architecture sections, and keeps the top-ranked symbols with their exact caller counts when it has to shrink to fit.
-
 
 ## [1.6.2] - 2026-09-25
 
