@@ -77,3 +77,6 @@ __tests__/zz-scratch*
 
 # linux-arm64 kernel cross-build cache (rust:1-bookworm builder)
 target-linux/
+
+# Reference projects checked out locally (not part of codegraph)
+sub-modules/
