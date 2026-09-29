@@ -29,8 +29,9 @@
  */
 
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
-import { resolve as pathResolve } from 'path';
+import { posix as pathPosix, resolve as pathResolve } from 'path';
 import type CodeGraph from '../index';
 import type { Edge, Node, NodeKind } from '../types';
 import { isTestFile } from '../search/query-utils';
@@ -61,6 +62,12 @@ export interface ReviewOptions {
   maxCallers?: number;
   /** Max changed symbols analyzed in depth (default 60). */
   maxSymbols?: number;
+  /**
+   * Focus the report on these symbols (bare `name` or qualified `Class.method`).
+   * They are looked up in the changed files even when no hunk touches them;
+   * every other changed symbol is left out.
+   */
+  symbols?: string[];
   /** `markdown` (default, densest) or `json` for programmatic consumers. */
   format?: 'markdown' | 'json';
 }
@@ -119,17 +126,55 @@ export interface ChangedSymbol {
   oldSignature?: string;
 }
 
+/**
+ * Whether the graph the report was built from matches the code under review.
+ * Every "after" fact comes from the index, so a reviewer (or the tool driving
+ * it) needs this to decide whether to trust the report or fall back.
+ */
+export interface IndexFreshness {
+  /** `git rev-parse HEAD` of the worktree the index describes; null without git. */
+  headCommit: string | null;
+  /** Completeness of the last full index run; null for an index predating the marker. */
+  state: 'indexing' | 'complete' | 'partial' | 'failed' | null;
+  /** ISO time of the most recent file index; null when nothing is indexed. */
+  lastIndexedAt: string | null;
+  /** codegraph version that built the index. */
+  builtWith: string | null;
+  /** The index was built by an older extractor — a re-index would add data. */
+  engineOutdated: boolean;
+  /** Changed files whose on-disk content differs from what the index holds. */
+  staleFiles: string[];
+  /** Changed files the index has never seen (new and unsynced, excluded, or not code). */
+  unindexedFiles: string[];
+  /** True when the index is complete and holds the current content of every reviewed file. */
+  fresh: boolean;
+}
+
+/** One directory the change touches, and which directories it sits between. */
+export interface ModuleContext {
+  /** Project-relative directory (`.` for the root). */
+  module: string;
+  changedFiles: number;
+  /** Directories the changed files import from, with the number of files imported. */
+  dependsOn: Array<{ module: string; files: number }>;
+  /** Directories that import the changed files, with the number of importing files. */
+  usedBy: Array<{ module: string; files: number }>;
+}
+
 export interface ReviewReport {
   base: string | null;
   head: string | null;
   /** Where the change set came from — it decides what the scope line may claim. */
   source: 'git' | 'diff' | 'files';
   changedFiles: ChangedFile[];
+  /** Ordered most-risky first — see {@link rankSymbols}. */
   symbols: ChangedSymbol[];
   findings: Finding[];
   /** Files outside the diff that depend on changed code. */
   rippleFiles: Array<{ path: string; callSites: number }>;
   affectedTests: string[];
+  index: IndexFreshness;
+  architecture: ModuleContext[];
   /**
    * Conditions that make the report itself less trustworthy (an after-side that
    * isn't what `head` names, breaking-change detection switched off). Rendered
@@ -664,6 +709,8 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
   let unindexed = 0;
   let truncatedSymbols = 0;
   const unreviewedFiles: string[] = [];
+  const focus = (opts.symbols ?? []).map(n => n.trim()).filter(Boolean);
+  const matchedFocus = new Set<string>();
 
   for (const file of changedFiles) {
     if (file.status === 'deleted') continue;
@@ -673,7 +720,7 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
       continue;
     }
     let omittedHere = 0;
-    for (const node of selectChangedNodes(nodes, file)) {
+    for (const node of selectFocusedNodes(nodes, file, focus, matchedFocus)) {
       if (symbols.length >= maxSymbols) {
         truncatedSymbols++;
         omittedHere++;
@@ -701,8 +748,19 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
     );
   }
 
+  if (focus.length > 0) {
+    const missing = focus.filter(n => !matchedFocus.has(n));
+    if (missing.length > 0) {
+      notes.push(
+        `${missing.length} requested symbol(s) are not defined in the changed files: ` +
+        `${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ', …' : ''}. ` +
+        'Check the name, or add the file that defines it to `files`.'
+      );
+    }
+  }
+
   // --- 3. Pre-change comparison (breaking changes) --------------------------
-  const removed: RemovedSymbol[] = [];
+  let removed: RemovedSymbol[] = [];
   if (opts.base && gitRoot) {
     // Re-parsing the pre-change blob needs this process's grammars, and an MCP
     // server is query-only: it opens the DB but never parses, so nothing has
@@ -734,8 +792,13 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
     );
   }
 
+  if (focus.length > 0) {
+    removed = removed.filter(r => focus.some(f => r.name === f || r.name.endsWith(`.${f}`) || f.endsWith(`.${r.name}`)));
+  }
+
   // --- 4. Findings ----------------------------------------------------------
   const findings = buildFindings(symbols, removed);
+  rankSymbols(symbols, findings);
 
   // --- 5. Ripple + tests ----------------------------------------------------
   const rippleCounts = new Map<string, number>();
@@ -762,6 +825,23 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
   for (const p of rippleCounts.keys()) if (isTestFile(p)) affectedTests.add(p);
   for (const sym of symbols) for (const t of sym.coveringTests) affectedTests.add(t);
 
+  // --- 6. Freshness + architecture -----------------------------------------
+  const index = computeFreshness(cg, gitRoot, changedFiles);
+  if (index.staleFiles.length > 0) {
+    warnings.push(
+      `The index is out of date for ${index.staleFiles.length} reviewed file(s) ` +
+      `(${index.staleFiles.slice(0, 5).join(', ')}${index.staleFiles.length > 5 ? ', …' : ''}): ` +
+      'their symbols, callers and line numbers describe an older version. Run `codegraph sync` and review again.'
+    );
+  }
+  if (index.state === 'partial' || index.state === 'failed' || index.state === 'indexing') {
+    warnings.push(
+      `The last full index run did not complete (state: ${index.state}), so callers in files it missed are absent. ` +
+      'Re-run `codegraph index` before trusting "no callers" or "no test" claims.'
+    );
+  }
+  const architecture = computeArchitecture(cg, changedFiles);
+
   return {
     base: opts.base ?? null,
     head: opts.head ?? null,
@@ -771,9 +851,135 @@ export async function analyzeReview(cg: CodeGraph, opts: ReviewOptions = {}): Pr
     findings,
     rippleFiles,
     affectedTests: [...affectedTests].sort(),
+    index,
+    architecture,
     warnings,
     notes,
   };
+}
+
+/** A bare `name` or qualified `Class.method` / `mod::fn` naming this node. */
+function matchesSymbolName(node: Node, wanted: string): boolean {
+  const qualified = node.qualifiedName || node.name;
+  return node.name === wanted || qualified === wanted ||
+    qualified.endsWith(`.${wanted}`) || qualified.endsWith(`::${wanted}`);
+}
+
+/**
+ * The hunk-selected nodes, or — when the caller named symbols — those named
+ * ones anywhere in the file: naming a symbol is the caller saying it changed,
+ * whether or not a hunk we can see lands in it.
+ */
+function selectFocusedNodes(nodes: Node[], file: ChangedFile, focus: string[], matched: Set<string>): Node[] {
+  if (focus.length === 0) return selectChangedNodes(nodes, file);
+  const picked: Node[] = [];
+  for (const n of nodes) {
+    if (!REVIEWABLE_KINDS.has(n.kind)) continue;
+    const hits = focus.filter(f => matchesSymbolName(n, f));
+    if (hits.length === 0) continue;
+    for (const h of hits) matched.add(h);
+    picked.push(n);
+  }
+  return picked;
+}
+
+/**
+ * Most-risky first, in place: the symbol's worst finding, then how many call
+ * sites outside the diff it has, then its blast radius. The JSON budget and the
+ * markdown cut both drop from the END, so this order is what decides which
+ * symbols survive a small `maxChars`.
+ */
+function rankSymbols(symbols: ChangedSymbol[], findings: Finding[]): void {
+  const severityRank: Record<Severity, number> = { high: 0, medium: 1, low: 2 };
+  const worst = new Map<string, number>();
+  for (const f of findings) {
+    const key = `${f.file}\u0000${f.symbol}`;
+    worst.set(key, Math.min(worst.get(key) ?? 3, severityRank[f.severity]));
+  }
+  const worstOf = (s: ChangedSymbol) =>
+    worst.get(`${s.node.filePath}\u0000${s.node.qualifiedName || s.node.name}`) ?? 3;
+  symbols.sort((a, b) =>
+    worstOf(a) - worstOf(b) ||
+    b.externalCallers.length - a.externalCallers.length ||
+    b.blastRadius - a.blastRadius ||
+    a.node.filePath.localeCompare(b.node.filePath) ||
+    a.node.startLine - b.node.startLine,
+  );
+}
+
+function computeFreshness(cg: CodeGraph, gitRoot: string | null, changedFiles: ChangedFile[]): IndexFreshness {
+  const staleFiles: string[] = [];
+  const unindexedFiles: string[] = [];
+  for (const f of changedFiles) {
+    const tracked = cg.getFile(f.path);
+    if (f.status === 'deleted') {
+      // Still indexed after the file is gone: its symbols would read as live.
+      if (tracked) staleFiles.push(f.path);
+      continue;
+    }
+    let content: string;
+    try {
+      content = readFileSync(pathResolve(cg.getProjectRoot(), f.path), 'utf-8');
+    } catch {
+      continue;
+    }
+    if (!tracked) {
+      // Not proof of staleness: excluded, gitignored and non-code files are
+      // never indexed either, and calling those stale would cry wolf.
+      unindexedFiles.push(f.path);
+    } else if (tracked.contentHash !== createHash('sha256').update(content).digest('hex')) {
+      staleFiles.push(f.path);
+    }
+  }
+  const headOut = gitRoot ? runGit(gitRoot, ['rev-parse', 'HEAD']) : null;
+  const lastIndexed = cg.getLastIndexedAt();
+  const state = cg.getIndexState();
+  return {
+    headCommit: headOut ? headOut.trim() : null,
+    state,
+    lastIndexedAt: lastIndexed != null ? new Date(lastIndexed).toISOString() : null,
+    builtWith: cg.getIndexBuildInfo().version,
+    engineOutdated: cg.isIndexStale(),
+    staleFiles,
+    unindexedFiles,
+    fresh: staleFiles.length === 0 && state !== 'partial' && state !== 'failed' && state !== 'indexing',
+  };
+}
+
+const MAX_MODULES = 12;
+const MAX_MODULE_LINKS = 8;
+
+function moduleOf(filePath: string): string {
+  return pathPosix.dirname(filePath);
+}
+
+/** Directory-level neighbours of the change — the architecture a diff alone never shows. */
+function computeArchitecture(cg: CodeGraph, changedFiles: ChangedFile[]): ModuleContext[] {
+  const byModule = new Map<string, { changed: number; deps: Map<string, Set<string>>; users: Map<string, Set<string>> }>();
+  const add = (links: Map<string, Set<string>>, file: string) => {
+    const mod = moduleOf(file);
+    const set = links.get(mod) ?? new Set<string>();
+    set.add(file);
+    links.set(mod, set);
+  };
+  for (const f of changedFiles) {
+    if (f.status === 'deleted') continue;
+    const mod = moduleOf(f.path);
+    const entry = byModule.get(mod) ?? { changed: 0, deps: new Map(), users: new Map() };
+    entry.changed++;
+    for (const dep of cg.getFileDependencies(f.path)) if (moduleOf(dep) !== mod) add(entry.deps, dep);
+    for (const user of cg.getFileDependents(f.path)) if (moduleOf(user) !== mod) add(entry.users, user);
+    byModule.set(mod, entry);
+  }
+  const top = (links: Map<string, Set<string>>) =>
+    [...links.entries()]
+      .map(([module, files]) => ({ module, files: files.size }))
+      .sort((a, b) => b.files - a.files || a.module.localeCompare(b.module))
+      .slice(0, MAX_MODULE_LINKS);
+  return [...byModule.entries()]
+    .map(([module, e]) => ({ module, changedFiles: e.changed, dependsOn: top(e.deps), usedBy: top(e.users) }))
+    .sort((a, b) => b.changedFiles - a.changedFiles || a.module.localeCompare(b.module))
+    .slice(0, MAX_MODULES);
 }
 
 function buildChangedSymbol(
@@ -1156,6 +1362,7 @@ export function renderReviewMarkdown(
   out.push(
     `# Review context — ${report.changedFiles.length} file(s), ${report.symbols.length} changed symbol(s)`,
     `Scope: ${describeScope(report)}`,
+    `Index: ${describeIndex(report.index)}`,
   );
 
   // Above the findings, because these say the findings themselves are partial
@@ -1198,6 +1405,19 @@ export function renderReviewMarkdown(
   if (report.notes.length > 0) {
     out.push('', '## Notes');
     for (const n of report.notes) out.push(`- ${n}`);
+  }
+
+  // Short and bounded (MAX_MODULES), so it goes above the long per-symbol
+  // section instead of being the first thing the char cap cuts.
+  const linked = report.architecture.filter(m => m.dependsOn.length > 0 || m.usedBy.length > 0);
+  if (linked.length > 0) {
+    out.push('', '## Architecture context (directories the change sits between)');
+    const list = (links: ModuleContext['dependsOn']) => links.map(l => `${l.module} (${l.files})`).join(', ');
+    for (const m of linked) {
+      out.push(`- \`${m.module}\` — ${m.changedFiles} changed file(s)`);
+      if (m.dependsOn.length > 0) out.push(`    depends on: ${list(m.dependsOn)}`);
+      if (m.usedBy.length > 0) out.push(`    used by: ${list(m.usedBy)}`);
+    }
   }
 
   // --- Changed symbols + who calls them ------------------------------------
@@ -1277,6 +1497,17 @@ export function renderReviewMarkdown(
   return truncate(out.join('\n'), Math.max(1000, maxChars - footer.length)) + footer;
 }
 
+/** One line a reviewer can trust or distrust the whole report by. */
+function describeIndex(index: IndexFreshness): string {
+  const parts = [index.fresh ? 'fresh' : 'STALE'];
+  if (index.headCommit) parts.push(`HEAD ${index.headCommit.slice(0, 12)}`);
+  if (index.state) parts.push(index.state);
+  if (index.lastIndexedAt) parts.push(`indexed ${index.lastIndexedAt}`);
+  if (index.builtWith) parts.push(`codegraph ${index.builtWith}`);
+  if (index.engineOutdated) parts.push('built by an older extractor — `codegraph index` adds data');
+  return parts.join(' · ');
+}
+
 /** What the report actually compared — never a range the caller did not ask for. */
 function describeScope(report: ReviewReport): string {
   if (report.base) {
@@ -1331,9 +1562,15 @@ const JSON_LIST_CAP = 40;
 /** What the JSON report is currently allowed to carry, tightened until it fits. */
 interface JsonBudget {
   symbols: number;
+  /** Call sites listed per symbol (the counts stay exact). */
+  callers: number;
   lists: number;
   findings: number;
 }
+
+/** Top-ranked symbols kept until every list has been cut — they are the ranked context. */
+const JSON_SYMBOL_FLOOR = 5;
+const JSON_CALLERS_FLOOR = 3;
 
 /**
  * The JSON report, held to the SAME char budget as the markdown one — it used
@@ -1341,17 +1578,21 @@ interface JsonBudget {
  * lands on the one consumer (a program, wiring the result into a context) least
  * able to skim past it. Truncating JSON text would hand back something that no
  * longer parses, so the budget is met by shedding content in order of what a
- * reviewer can most afford to lose — symbol detail, then the ripple/test lists,
- * and only last the findings themselves — recording each drop in `notes`.
+ * reviewer can most afford to lose — per-symbol call-site lists, the
+ * lower-ranked symbols, the ripple/test/architecture lists (a symbol already
+ * carries its own call sites), the top-ranked symbols, and only last the
+ * findings themselves — recording each drop in `notes`. Compact (no indentation): a program parses it, and indentation
+ * nearly doubled the size the budget had to pay for.
  */
 export function renderReviewJson(report: ReviewReport, cg: CodeGraph, opts: ReviewOptions = {}): string {
   const maxChars = Math.max(2000, opts.maxChars ?? DEFAULTS.maxChars);
   const budget: JsonBudget = {
     symbols: report.symbols.length,
+    callers: Math.max(...report.symbols.map(s => s.callers.length), 0),
     lists: JSON_LIST_CAP,
     findings: report.findings.length,
   };
-  const render = () => JSON.stringify(toJson(report, cg, opts, budget), null, 2);
+  const render = () => JSON.stringify(toJson(report, cg, opts, budget));
 
   let text = render();
   while (text.length > maxChars && shrink(budget)) text = render();
@@ -1360,12 +1601,24 @@ export function renderReviewJson(report: ReviewReport, cg: CodeGraph, opts: Revi
 
 /** Tighten the next-cheapest knob. False once nothing is left to give up. */
 function shrink(budget: JsonBudget): boolean {
-  if (budget.symbols > 0) {
-    budget.symbols = budget.symbols > 1 ? Math.floor(budget.symbols / 2) : 0;
+  if (budget.callers > JSON_CALLERS_FLOOR) {
+    budget.callers = JSON_CALLERS_FLOOR;
+    return true;
+  }
+  if (budget.symbols > JSON_SYMBOL_FLOOR) {
+    budget.symbols = Math.max(JSON_SYMBOL_FLOOR, Math.floor(budget.symbols / 2));
+    return true;
+  }
+  if (budget.lists > 10) {
+    budget.lists = 10;
     return true;
   }
   if (budget.lists > 0) {
-    budget.lists = budget.lists > 10 ? 10 : 0;
+    budget.lists = 0;
+    return true;
+  }
+  if (budget.symbols > 0) {
+    budget.symbols = budget.symbols > 1 ? Math.floor(budget.symbols / 2) : 0;
     return true;
   }
   if (budget.findings > 1) {
@@ -1389,6 +1642,18 @@ function toJson(report: ReviewReport, cg: CodeGraph, opts: ReviewOptions, budget
       'Raise maxChars or narrow `files` for the rest.'
     );
   }
+  if (report.symbols.some(sym => sym.callers.length > budget.callers)) {
+    notes.push(
+      `Call-site lists were trimmed to ${budget.callers} per symbol to fit maxChars=${cap}; ` +
+      '`callerCount` still has each full count. Raise maxChars to list them all.'
+    );
+  }
+  if (budget.lists < JSON_LIST_CAP) {
+    notes.push(
+      `The changed-file, ripple, test and architecture lists were cut to ${budget.lists} entr(ies) to fit maxChars=${cap} ` +
+      '(their `…Count` fields keep the totals).'
+    );
+  }
   if (budget.findings < report.findings.length) {
     notes.push(
       `${report.findings.length - budget.findings} finding(s) were dropped to fit maxChars=${cap} — ` +
@@ -1396,15 +1661,21 @@ function toJson(report: ReviewReport, cg: CodeGraph, opts: ReviewOptions, budget
     );
   }
   return {
+    schemaVersion: REVIEW_JSON_SCHEMA_VERSION,
     base: report.base,
     head: report.head,
     source: report.source,
+    index: report.index,
     warnings: report.warnings,
-    changedFiles: report.changedFiles.map(f => ({ path: f.path, status: f.status, oldPath: f.oldPath })),
+    changedFileCount: report.changedFiles.length,
+    changedFiles: report.changedFiles
+      .slice(0, budget.lists)
+      .map(f => ({ path: f.path, status: f.status, oldPath: f.oldPath })),
     findingCount: report.findings.length,
     findings: report.findings.slice(0, budget.findings),
     symbolCount: report.symbols.length,
-    symbols: report.symbols.slice(0, symbolLimit).map(s => ({
+    symbols: report.symbols.slice(0, symbolLimit).map((s, i) => ({
+      riskRank: i + 1,
       name: s.node.qualifiedName || s.node.name,
       kind: s.node.kind,
       file: s.node.filePath,
@@ -1414,7 +1685,8 @@ function toJson(report: ReviewReport, cg: CodeGraph, opts: ReviewOptions, budget
       oldSignature: s.oldSignature,
       isNew: s.isNew,
       blastRadius: s.blastRadius,
-      callers: s.callers.map(c => ({
+      callerCount: s.callers.length,
+      callers: s.callers.slice(0, budget.callers).map(c => ({
         name: c.node.qualifiedName || c.node.name,
         file: c.node.filePath,
         line: c.edge.line ?? c.node.startLine,
@@ -1431,6 +1703,16 @@ function toJson(report: ReviewReport, cg: CodeGraph, opts: ReviewOptions, budget
     rippleFiles: report.rippleFiles.slice(0, budget.lists),
     affectedTestCount: report.affectedTests.length,
     affectedTests: report.affectedTests.slice(0, budget.lists),
+    architecture: report.architecture.slice(0, budget.lists),
     notes,
   };
 }
+
+/**
+ * Bumped only on a breaking change to {@link ReviewJson}; new fields are added
+ * as optional without a bump, so a consumer should ignore keys it doesn't know.
+ */
+export const REVIEW_JSON_SCHEMA_VERSION = 1;
+
+/** The `format: 'json'` report — the contract a programmatic reviewer parses. */
+export type ReviewJson = ReturnType<typeof toJson>;

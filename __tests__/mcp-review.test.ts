@@ -526,10 +526,12 @@ describe('analyzeReview over an indexed project', () => {
     expect(full.length).toBeGreaterThan(2500);
     expect(capped.length).toBeLessThanOrEqual(2500);
     // Cutting JSON text would hand back something that no longer parses, so the
-    // budget is met by dropping symbol detail — findings always survive.
+    // budget is met by shedding detail — the long call-site list goes first,
+    // its exact count stays, and findings always survive.
     const parsed = JSON.parse(capped);
     expect(Array.isArray(parsed.findings)).toBe(true);
-    expect(parsed.symbolCount).toBeGreaterThan(parsed.symbols.length);
+    const login = parsed.symbols.find((s: { name: string }) => s.name === 'login');
+    expect(login.callers.length).toBeLessThan(login.callerCount);
     expect(parsed.notes.join('\n')).toContain('trimmed');
 
     cg.destroy();
@@ -827,6 +829,197 @@ describe.runIf(hasGit())('breaking-change detection against a base ref', () => {
     expect(uncommitted.notes.join('\n')).toContain('breaking-change detection');
     expect(uncommitted.warnings).toHaveLength(0);
 
+    cg.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Freshness, focus, ranking, architecture — what an external review driver
+//    needs to decide whether to trust the report and what to read first.
+// ---------------------------------------------------------------------------
+
+describe('review report: freshness, symbol focus, ranking, architecture', () => {
+  let tmpDir: string | undefined;
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  const indexed = async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-ctx-'));
+    writeProject(tmpDir);
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    return cg;
+  };
+
+  it('reports a fresh index when every reviewed file matches what was indexed', async () => {
+    const cg = await indexed();
+    const report = await analyzeReview(cg, { files: ['src/service.ts'] });
+    expect(report.index.fresh).toBe(true);
+    expect(report.index.staleFiles).toEqual([]);
+    expect(report.index.state).toBe('complete');
+    expect(report.index.lastIndexedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(await buildReview(cg, { files: ['src/service.ts'] })).toContain('Index: fresh');
+    cg.destroy();
+  });
+
+  it('names a reviewed file edited after indexing, and warns at the top', async () => {
+    const cg = await indexed();
+    fs.appendFileSync(path.join(tmpDir!, 'src/service.ts'), 'export const late = 1;\n');
+
+    const report = await analyzeReview(cg, { files: ['src/service.ts', 'src/api.ts'] });
+    expect(report.index.fresh).toBe(false);
+    expect(report.index.staleFiles).toEqual(['src/service.ts']);
+    expect(report.warnings.join('\n')).toMatch(/out of date for 1 reviewed file.*src\/service\.ts/);
+
+    const md = await buildReview(cg, { files: ['src/service.ts'] });
+    expect(md).toContain('Index: STALE');
+    expect(md.indexOf('out of date')).toBeLessThan(md.indexOf('## Findings'));
+    cg.destroy();
+  });
+
+  it('does not call a never-indexed file stale — excluded and non-code files are never indexed', async () => {
+    const cg = await indexed();
+    fs.writeFileSync(path.join(tmpDir!, 'NOTES.md'), '# notes\n');
+    const report = await analyzeReview(cg, { files: ['src/service.ts', 'NOTES.md'] });
+    expect(report.index.fresh).toBe(true);
+    expect(report.index.unindexedFiles).toEqual(['NOTES.md']);
+    cg.destroy();
+  });
+
+  it('focuses on the named symbols, even ones no hunk touches', async () => {
+    const cg = await indexed();
+    // The hunk lands in login only; naming logout is the caller saying it changed.
+    const report = await analyzeReview(cg, {
+      diff: [
+        'diff --git a/src/service.ts b/src/service.ts',
+        '--- a/src/service.ts',
+        '+++ b/src/service.ts',
+        '@@ -1,3 +1,3 @@',
+        '+  return email;',
+      ].join('\n'),
+      symbols: ['logout'],
+    });
+    expect(report.symbols.map(s => s.node.name)).toEqual(['logout']);
+    cg.destroy();
+  });
+
+  it('notes a requested symbol the changed files do not define', async () => {
+    const cg = await indexed();
+    const report = await analyzeReview(cg, { files: ['src/service.ts'], symbols: ['login', 'nope'] });
+    expect(report.symbols.map(s => s.node.name)).toEqual(['login']);
+    expect(report.notes.join('\n')).toContain('not defined in the changed files: nope');
+    cg.destroy();
+  });
+
+  it('ranks the symbol with more call sites outside the diff first', async () => {
+    const cg = await indexed();
+    // login has two outside callers (api, cli); logout has one (a test).
+    const report = await analyzeReview(cg, { files: ['src/service.ts'] });
+    expect(report.symbols.map(s => s.node.name)).toEqual(['login', 'logout']);
+
+    const json = JSON.parse(await buildReview(cg, { files: ['src/service.ts'], format: 'json' }));
+    expect(json.symbols[0]).toMatchObject({ riskRank: 1, name: 'login' });
+    expect(json.symbols[1]).toMatchObject({ riskRank: 2, name: 'logout' });
+    cg.destroy();
+  });
+
+  it('sheds the lowest-ranked symbols first when the JSON budget is tight', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-ctx-'));
+    fs.mkdirSync(path.join(tmpDir, 'src/callers'), { recursive: true });
+    // f0 is called from 12 files, f1 from 11, … f11 from 1: a strict risk order.
+    const N = 12;
+    fs.writeFileSync(
+      path.join(tmpDir, 'src/service.ts'),
+      Array.from({ length: N }, (_, i) => `export function f${i}(x: number): number {\n  return x + ${i};\n}\n`).join('\n'),
+    );
+    for (let k = 0; k < N; k++) {
+      const used = Array.from({ length: N - k }, (_, i) => `f${i}`);
+      fs.writeFileSync(
+        path.join(tmpDir, `src/callers/c${k}.ts`),
+        `import { ${used.join(', ')} } from '../service';\n\n` +
+          `export function caller${k}(): number {\n  return ${used.map(u => `${u}(1)`).join(' + ')};\n}\n`,
+      );
+    }
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+
+    const names = async (maxChars?: number) =>
+      JSON.parse(await buildReview(cg, { files: ['src/service.ts'], format: 'json', maxChars, maxCallers: 20 }))
+        .symbols.map((s: { name: string }) => s.name);
+    const full = await names(200000);
+    expect(full).toEqual(Array.from({ length: N }, (_, i) => `f${i}`));
+
+    // Shedding drops from the END of the ranking at every budget, and some
+    // budget keeps a proper, non-empty prefix — the riskiest symbols.
+    let sawPartial = false;
+    for (let maxChars = 2000; maxChars <= 12000; maxChars += 500) {
+      const trimmed = await names(maxChars);
+      expect(trimmed).toEqual(full.slice(0, trimmed.length));
+      if (trimmed.length > 0 && trimmed.length < full.length) sawPartial = true;
+    }
+    expect(sawPartial).toBe(true);
+    cg.destroy();
+  });
+
+  it('shows which directories the changed files sit between', async () => {
+    const cg = await indexed();
+    const report = await analyzeReview(cg, { files: ['src/service.ts'] });
+    const src = report.architecture.find(m => m.module === 'src');
+    expect(src).toBeDefined();
+    expect(src!.changedFiles).toBe(1);
+    // Same-directory importers (api.ts, cli.ts) are not architecture; the test dir is.
+    expect(src!.usedBy).toEqual([{ module: '__tests__', files: 1 }]);
+    expect(await buildReview(cg, { files: ['src/service.ts'] })).toContain('used by: __tests__ (1)');
+    cg.destroy();
+  });
+
+  it('versions the JSON contract and carries freshness + architecture', async () => {
+    const cg = await indexed();
+    const json = JSON.parse(await buildReview(cg, { files: ['src/service.ts'], format: 'json' }));
+    expect(json.schemaVersion).toBe(1);
+    expect(json.index).toMatchObject({ fresh: true, staleFiles: [], state: 'complete' });
+    expect(Array.isArray(json.architecture)).toBe(true);
+    cg.destroy();
+  });
+
+  it('accepts `symbols` through the MCP tool as an array or a comma-separated string', async () => {
+    const cg = await indexed();
+    const handler = new ToolHandler(cg);
+    const asArray = await handler.execute('codegraph_review', { files: ['src/service.ts'], symbols: ['logout'] });
+    const asString = await handler.execute('codegraph_review', { files: 'src/service.ts', symbols: 'logout' });
+    for (const res of [asArray, asString]) {
+      expect(res.isError ?? false).toBe(false);
+      expect(res.content[0]!.text).toContain('`logout`');
+      expect(res.content[0]!.text).not.toContain('`login`');
+    }
+    cg.destroy();
+  });
+});
+
+describe.runIf(hasGit())('review report: HEAD commit of the reviewed worktree', () => {
+  let tmpDir: string | undefined;
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  it('records the commit the index describes', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-review-head-'));
+    writeProject(tmpDir);
+    git(tmpDir, ['init']);
+    git(tmpDir, ['config', 'user.email', 'test@example.com']);
+    git(tmpDir, ['config', 'user.name', 'Test']);
+    git(tmpDir, ['add', '-A']);
+    git(tmpDir, ['commit', '-m', 'baseline']);
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
+
+    const cg = CodeGraph.initSync(tmpDir);
+    await cg.indexAll();
+    const report = await analyzeReview(cg, { files: ['src/service.ts'] });
+    expect(report.index.headCommit).toBe(head);
+    expect(await buildReview(cg, { files: ['src/service.ts'] })).toContain(`HEAD ${head.slice(0, 12)}`);
     cg.destroy();
   });
 });

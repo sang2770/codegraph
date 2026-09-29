@@ -102,8 +102,10 @@ It answers, from the pre-built graph, what the diff itself cannot show:
 - the blast radius, which tests cover it, and which changed symbols no test
   reaches.
 
-Read its Findings section first: each one is a checkable claim with file:line
-evidence. Then drill into any symbol it names with \`codegraph_explore\` —
+Check its \`Index:\` line first: \`STALE\` means the graph holds an older version
+of some reviewed files (the warning names them), so treat their callers and line
+numbers as unverified. Then read the Findings section: each one is a checkable
+claim with file:line evidence. Then drill into any symbol it names with \`codegraph_explore\` —
 do NOT grep for callers of a changed function; the report already has them.
 
 By default the report carries **no source code**, because you already hold the

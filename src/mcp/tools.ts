@@ -725,6 +725,11 @@ export const tools: ToolDefinition[] = [
           type: 'string',
           description: 'A raw unified diff to analyze, for when the caller already fetched the PR diff. It decides WHICH files and hunks are analyzed (overriding `files`), but it does NOT replace `base` — pass `base` as well, or breaking-change detection (the HIGH findings) stays off.',
         },
+        symbols: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Focus the report on these changed symbols (bare name or qualified "Class.method"), for when the caller already knows what changed. They are found anywhere in the changed files; other changed symbols are left out. Omit to analyze every symbol the diff touches.',
+        },
         includeSource: {
           type: 'string',
           description: 'How much verbatim source to include. "none" (default) = structure only — cheapest, and you already hold the diff. "callers" = bodies of call sites outside the diff (the code that actually breaks). "changed" = bodies of the changed symbols. "all" = both.',
@@ -4967,6 +4972,12 @@ export class ToolHandler {
       maxChars = clamp(Number(args.maxChars), 2000, 200000);
     }
 
+    const symbols = Array.isArray(args.symbols)
+      ? args.symbols.flatMap(v => (typeof v === 'string' ? splitFiles(v) : [])).slice(0, 200)
+      : typeof args.symbols === 'string'
+        ? splitFiles(args.symbols).slice(0, 200)
+        : undefined;
+
     const includeSource = args.includeSource as ReviewOptions['includeSource'] | undefined;
     const format = args.format === 'json' ? 'json' : 'markdown';
 
@@ -4975,6 +4986,7 @@ export class ToolHandler {
       head: args.head as string | undefined,
       files,
       diff: rawDiff,
+      symbols,
       includeSource: includeSource ?? 'none',
       maxCallers: clamp(Number(args.maxCallers) || 8, 1, 50),
       maxSymbols: clamp(Number(args.maxSymbols) || 60, 1, 400),
