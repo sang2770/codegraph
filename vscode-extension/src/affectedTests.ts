@@ -225,6 +225,8 @@ export function detectProjectMarkers(root: string): ProjectMarkers {
 export async function runAffectedTests(
   args: { root: string; tests: string[] } | undefined,
   fallback: () => { root: string; tests: string[] } | undefined,
+  /** Told about a run that targets the affected files rather than the whole suite. */
+  onTargetedRun?: (testFiles: number) => void,
 ): Promise<void> {
   const target = args?.tests?.length ? args : fallback();
   if (!target || target.tests.length === 0) {
@@ -293,4 +295,19 @@ export async function runAffectedTests(
     vscode.window.createTerminal({ name, cwd: target.root });
   terminal.show(true);
   terminal.sendText(command);
+  if (isTargetedRun(command, target.tests)) {
+    onTargetedRun?.(target.tests.length);
+  }
+}
+
+/**
+ * Whether a test command runs the affected files rather than the whole suite.
+ *
+ * Only targeted runs save waiting time; counting `npm test` or `mvn test`
+ * would credit CodeBrain for a full-suite run it did not shorten.
+ */
+export function isTargetedRun(command: string, tests: readonly string[]): boolean {
+  if (tests.some((test) => command.includes(test))) return true;
+  // Go runs per package directory.
+  return packageDirs(tests).some((dir) => dir !== './' && command.includes(dir));
 }

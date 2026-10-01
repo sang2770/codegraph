@@ -83,6 +83,18 @@ export class BlastRadiusLensProvider
     }
   }
 
+  /**
+   * Affected test files already measured for a file at the current
+   * generation, or `undefined` when the file-level lens has not computed them.
+   */
+  public cachedTests(root: string, relativePath: string): string[] | undefined {
+    const depth = vscode.workspace.getConfiguration('codebrain').get<number>('impact.maxDepth', 5);
+    return this.cache.get(
+      { root, kind: 'blast', parts: [relativePath, depth] },
+      this.freshness.generation(root),
+    )?.testPaths;
+  }
+
   private markFailed(id: string): void {
     this.failed.add(id);
     this.changeEmitter.fire();

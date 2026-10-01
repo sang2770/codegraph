@@ -52,6 +52,14 @@ Interact directly with your codebase using the `@codebrain` participant. It auto
 - **`/fix`**: Analyzes a reported bug, traces the failure path and root cause, and proposes a safe solution with a focused validation plan. The report itself does not edit files; **Apply fix with CodeBrain Dev** hands it to the agent to write the failing test, fix, and verify.
   - *Example*: `@codebrain /fix Login returns 401 after the token refresh succeeds`
 
+- **`/test`**: Writes unit tests for your changes and for the callers they could break, in your project's existing framework, file layout and mocking style. **Create test files** previews and creates them; **Run these tests** runs them.
+  - *Example*: `@codebrain /test Cover the new discount rules and the checkout callers`
+
+- **`/pr`**: Writes the pull request description for your branch from its diff against the base branch, its commits, the Jira ticket and the change impact — summary, acceptance-criteria table, blast radius and risk, tests to run, safety checklist, rollback. **Copy PR description** puts it on the clipboard; with the GitHub Pull Requests extension installed, **Create Pull Request** opens its create view.
+  - *Example*: `@codebrain /pr`
+
+- **Apply to Workspace**: when `/fix`, `/implement` or `/test` proposes concrete code, one click opens a diff for every proposed file and applies them only after you confirm. Edited files stay unsaved, so the editor's undo still works; a proposal that no longer matches your code is skipped and named rather than applied somewhere you did not see.
+
 - **Jira and Confluence context, automatically.** When the question names a Jira key — or your branch carries one, like `feature/ABC-123-reset` — every command reads the ticket, its comments and acceptance criteria, and the linked Confluence spec first. `/explain` then points out where the code drifts from the spec, and `/review` adds an acceptance-criteria coverage table.
 
 - **User guides**: ask `/explain` for a *"user guide"* (or *"hướng dẫn sử dụng"*) and you get a step-by-step guide — prerequisites, steps, examples, troubleshooting — instead of a code walkthrough.
@@ -78,6 +86,14 @@ Every file shows its blast radius above line 1 — no command needed:
 ```
 
 Click the first lens to run a full impact analysis, or the second to run just those tests. Turn it off with `codebrain.codeLens.enabled`.
+
+In files you have changed, every function and method also gets its own lens:
+
+```text
+⑂ 7 callers in 4 files   ▶ Run 2 affected tests
+```
+
+Click the caller count to jump to a caller or start an impact analysis. Caller counts are fetched only for lenses on screen. Set `codebrain.codeLens.symbols` to `allFiles` to show them everywhere, or `off`.
 
 ### 🧪 Run Affected Tests
 CodeBrain finds which tests matter, then runs them. Available from the CodeLens, the Source Control title bar, the impact panel, or **CodeBrain: Run Affected Tests**.
@@ -153,6 +169,22 @@ See what the graph context cost versus reading the same files in full.
 
 > [!TIP]
 > All metrics are stored locally inside VS Code's workspace state. No telemetry or billing data is uploaded. These are context-size estimates, not model billing data.
+
+### 📑 Executive ROI Report
+**CodeBrain: Export Executive ROI Report** turns this workspace's recorded activity into a report for managers: an executive summary, key indicators grouped as AI cost, developer velocity and quality, weekly and monthly trends with charts, and the engineer-hours saved per activity.
+
+- Formats: **HTML** (charts and tables; print to PDF from a browser), **Markdown** (for Confluence or a wiki), **JSON** (add up several developers' reports for a team total).
+- Periods: last 30 days, last 90 days, this year, or all recorded history.
+- **Measured vs estimated.** Token savings and avoided file reads are measured from real file sizes. Hours are estimates — activity counts × the minutes in `codebrain.roi.*` — and every assumption is printed in the report. Activities without an agreed figure default to 0 minutes, so they add no hours until your team sets one. Only affected-test runs that targeted the affected files count toward test time saved.
+
+### 🔧 CodeBrain Tools for Other Agents in VS Code
+Copilot's agent mode, and any agent that uses VS Code's language-model tools, can call CodeBrain directly:
+
+| Tool | Reference | What it returns |
+| :--- | :--- | :--- |
+| `codebrain_get_impact` | `#codebrainImpact` | Dependents, affected tests, risk and reasons for the working-tree changes or given files |
+| `codebrain_get_affected_tests` | `#codebrainAffectedTests` | The test files to run instead of the full suite |
+| `codebrain_explore_symbol` | `#codebrainExplore` | Verbatim line-numbered source, call paths and blast radius for named symbols |
 
 ### 🩺 Index Status & Coverage
 **CodeBrain: Show Index Status** opens a panel showing:
@@ -268,6 +300,10 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 | `codebrain.impact.maxDepth` | `5` | Maximum dependency depth for affected-test detection. |
 | `codebrain.impact.detectDepthTruncation` | `true` | Detect whether the traversal was cut short by `maxDepth` and report counts as a lower bound when it was. |
 | `codebrain.codeLens.enabled` | `true` | Show each file's blast radius as a CodeLens above line 1. |
+| `codebrain.codeLens.symbols` | `changedFiles` | Where to show the per-function `N callers \| Run affected tests` lens: `changedFiles`, `allFiles`, or `off`. |
+| `codebrain.roi.fullSuiteMinutes` / `codebrain.roi.affectedTestMinutes` | `20` / `1` | Minutes a full-suite run and an affected-tests-only run take, for the ROI report's test-time estimate. |
+| `codebrain.roi.minutesSavedPerReview` / `…PerFix` | `35` / `100` | Minutes one review or `/fix` analysis is assumed to save, for the ROI report. |
+| `codebrain.roi.minutesSavedPerExplain` / `…PerImplement` / `…PerTest` / `…PerPr` | `0` | Minutes those answers are assumed to save; `0` counts none until your team sets a figure. |
 | `codebrain.tests.command` | `""` | Command for **Run Affected Tests**, using `${files}`. Empty detects the runner and confirms first. |
 | `codebrain.metrics.enabled` | `true` | Record local token savings and analytics. |
 | `codebrain.reports.openPreview` | `true` | Automatically open generated Markdown reports in preview mode. |
@@ -305,6 +341,7 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - `CodeBrain: Open Workflow Graph` — Open the interactive visual graph.
 - `CodeBrain: Token Savings Dashboard` — Open the savings metrics UI.
 - `CodeBrain: Reset Token Savings` — Clear metrics history.
+- `CodeBrain: Export Executive ROI Report` — Export the workspace's measured savings and estimated hours as HTML, Markdown, or JSON.
 - `CodeBrain: Restore Dismissed Review Findings` — Bring back dismissed findings.
 - `CodeBrain: Export Latest Report as Markdown` — Export findings.
 - `CodeBrain: Atlassian (Jira + Confluence)` — Enter the base URLs and personal access tokens the first time; afterwards edit, test, or clear the connection.
@@ -325,7 +362,7 @@ Customize CodeBrain by editing your `.vscode/settings.json`:
 - **Trusted Workspace**: CodeBrain runs a local runtime and reads local workspace files; it requires workspace trust to be enabled.
 - **Network on first start**: The CodeGraph runtime is downloaded from npm (or your `codebrain.runtime.registry` mirror) the first time, and on updates. Use `codebrain.runtime.path` on machines with no registry access.
 - **Filesystem Workspace**: Virtual workspaces are not supported.
-- **Chat Models**: Chat commands (`/explain`, `/implement`, `/fix`, `/review`) require an active model available through VS Code Chat. **CodeBrain: Review Changes** requires a model available through the VS Code Language Model API and uses `codebrain.ai.model` when configured. Deterministic local commands (e.g. Impact scoring, Workflow Graph, Index status, export) work offline without a chat model.
+- **Chat Models**: Chat commands (`/explain`, `/implement`, `/fix`, `/review`, `/test`, `/pr`) require an active model available through VS Code Chat. **CodeBrain: Review Changes** requires a model available through the VS Code Language Model API and uses `codebrain.ai.model` when configured. Deterministic local commands (e.g. Impact scoring, Workflow Graph, Index status, export) work offline without a chat model.
 
 ---
 

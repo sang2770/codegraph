@@ -84,3 +84,11 @@ test('offers the project test script last, as the broadest fallback', () => {
 test('returns nothing to guess at when no runner is detectable', () => {
   assert.deepEqual(buildTestCommands(EMPTY, ['a.test.ts']), []);
 });
+
+test('only a run that names the affected files counts as a targeted run', async () => {
+  const { isTargetedRun } = loadTypeScript('affectedTests.ts');
+  assert.equal(isTargetedRun('npx vitest run test/a.test.ts', ['test/a.test.ts']), true);
+  assert.equal(isTargetedRun('go test ./pkg/cart', ['pkg/cart/cart_test.go']), true);
+  assert.equal(isTargetedRun('npm test', ['test/a.test.ts']), false);
+  assert.equal(isTargetedRun('mvn test', ['src/test/CartTest.java']), false);
+});

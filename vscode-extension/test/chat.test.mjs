@@ -486,3 +486,34 @@ test('a slow or cancelled lookup stops holding up the report', async () => {
   assert.equal(await withDeadline(Promise.resolve(1), 1_000, { isCancellationRequested: true }), undefined);
 });
 
+
+test('routes test-generation and PR-description requests without stealing reviews', () => {
+  const { splitPullRequest } = loadTypeScript('chat.ts', { vscode });
+  assert.equal(inferCommand({ command: 'test', prompt: '' }), 'test');
+  assert.equal(inferCommand({ command: 'pr', prompt: '' }), 'pr');
+  assert.equal(inferCommand({ command: undefined, prompt: 'Write unit tests for the cart total' }), 'test');
+  assert.equal(inferCommand({ command: undefined, prompt: 'viết unit test cho hàm này' }), 'test');
+  assert.equal(inferCommand({ command: undefined, prompt: 'Write the pull request description' }), 'pr');
+  assert.equal(inferCommand({ command: undefined, prompt: 'tạo pr cho nhánh này' }), 'pr');
+  // Asking which tests a change affects is still an impact review, and fixing a
+  // failing test is still a fix.
+  assert.equal(inferCommand({ command: undefined, prompt: 'Which tests are affected by my change?' }), 'review');
+  assert.equal(inferCommand({ command: undefined, prompt: 'fix the failing unit test' }), 'fix');
+  assert.equal(inferCommand({ command: undefined, prompt: 'review this pull request' }), 'review');
+
+  assert.deepEqual(splitPullRequest('# ABC-1 Add reset\n\n## Summary\nText'), {
+    title: 'ABC-1 Add reset',
+    body: '## Summary\nText',
+  });
+});
+
+test('describes the detected test runner and an existing affected test to model', (t) => {
+  const { describeTestSetup } = loadTypeScript('chat.ts', { vscode });
+  const root = mkdtempSync(join(tmpdir(), 'codebrain-test-setup-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ devDependencies: { vitest: '1' } }));
+  writeFileSync(join(root, 'cart.test.ts'), "import { it } from 'vitest';");
+  const text = describeTestSetup(root, ['missing.test.ts', 'cart.test.ts']);
+  assert.match(text, /Vitest: `npx vitest run TEST_FILES`/);
+  assert.match(text, /Existing test to model: cart\.test\.ts\n```ts\nimport \{ it \} from 'vitest';/);
+});

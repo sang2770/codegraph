@@ -70,7 +70,11 @@
     "onCommand:codebrain.refreshJiraBoard",
     "onCommand:codebrain.jiraSelectProjects",
     "onCommand:codebrain.jiraCheckoutBranch",
-    "onCommand:codebrain.openIssueForCurrentBranch"
+    "onCommand:codebrain.openIssueForCurrentBranch",
+    "onCommand:codebrain.exportExecutiveReport",
+    "onLanguageModelTool:codebrain_get_impact",
+    "onLanguageModelTool:codebrain_get_affected_tests",
+    "onLanguageModelTool:codebrain_explore_symbol"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -157,7 +161,7 @@
         "id": "codebrain.chat",
         "name": "codebrain",
         "fullName": "CodeBrain",
-        "description": "Explain, implement, fix, and review code with your code graph and Jira/Confluence context.",
+        "description": "Explain, implement, fix, test, and review code — and write PR descriptions — with your code graph and Jira/Confluence context.",
         "isSticky": true,
         "sampleRequest": "How does a login request reach the database?",
         "commands": [
@@ -180,6 +184,16 @@
             "name": "fix",
             "description": "Analyze a bug, trace its root cause through the code graph, and propose a concrete solution and validation plan.",
             "sampleRequest": "Checkout throws a null reference on an empty cart — find the root cause."
+          },
+          {
+            "name": "test",
+            "description": "Generate unit tests for your changes and the callers they could break, in your project's framework and conventions — then create the files and run them in one click.",
+            "sampleRequest": "Write unit tests for my changes to the cart total."
+          },
+          {
+            "name": "pr",
+            "description": "Write the pull request description for this branch: summary, acceptance-criteria table from the Jira ticket, blast radius, tests to run, and a safety checklist.",
+            "sampleRequest": "Write the PR description for this branch."
           }
         ],
         "disambiguation": [
@@ -213,6 +227,24 @@
               "Implement ABC-123.",
               "Add rate limiting to the login endpoint.",
               "Triển khai chức năng xuất báo cáo PDF."
+            ]
+          },
+          {
+            "category": "Unit test generation",
+            "description": "Generates automated tests for changed code and the callers it could break, following the project's existing test framework.",
+            "examples": [
+              "Write unit tests for my changes.",
+              "Generate tests for this function.",
+              "Viết unit test cho thay đổi này."
+            ]
+          },
+          {
+            "category": "Pull request description",
+            "description": "Writes a pull request or merge request description from the branch diff, commits, Jira ticket, and change impact.",
+            "examples": [
+              "Write the PR description for this branch.",
+              "Create a merge request description.",
+              "Viết mô tả PR cho nhánh này."
             ]
           }
         ]
@@ -460,6 +492,18 @@
         "command": "codebrain.openIssueForCurrentBranch",
         "title": "CodeBrain: Open the Jira Issue for This Branch",
         "icon": "$(issues)"
+      },
+      {
+        "command": "codebrain.applyCodeProposal",
+        "title": "CodeBrain: Apply Code Proposal"
+      },
+      {
+        "command": "codebrain.exportExecutiveReport",
+        "title": "CodeBrain: Export Executive ROI Report"
+      },
+      {
+        "command": "codebrain.showSymbolCallers",
+        "title": "CodeBrain: Show Callers"
       }
     ],
     "menus": {
@@ -718,6 +762,14 @@
         },
         {
           "command": "codebrain.unpinModule",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.applyCodeProposal",
+          "when": "false"
+        },
+        {
+          "command": "codebrain.showSymbolCallers",
           "when": "false"
         }
       ],
@@ -1038,9 +1090,165 @@
           "default": "",
           "description": "Command used by \"CodeBrain: Run Affected Tests\". Use ${files} where the affected test paths should go (for example: npx vitest run ${files}). Leave empty to detect the project's test runner and confirm before running.",
           "scope": "resource"
+        },
+        "codebrain.codeLens.symbols": {
+          "type": "string",
+          "enum": [
+            "changedFiles",
+            "allFiles",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Only in files with uncommitted changes.",
+            "In every indexed file.",
+            "Never."
+          ],
+          "default": "changedFiles",
+          "description": "Show a \"N callers | Run affected tests\" CodeLens above each function and method. Caller counts are fetched only for lenses on screen."
+        },
+        "codebrain.roi.fullSuiteMinutes": {
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "markdownDescription": "Minutes one full test-suite run takes. Used to estimate the time an affected-tests-only run saves. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
+        },
+        "codebrain.roi.affectedTestMinutes": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "markdownDescription": "Minutes an affected-tests-only run takes. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
+        },
+        "codebrain.roi.minutesSavedPerReview": {
+          "type": "number",
+          "default": 35,
+          "minimum": 0,
+          "markdownDescription": "Minutes one CodeBrain review or impact analysis in chat is assumed to save versus reviewing by hand. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
+        },
+        "codebrain.roi.minutesSavedPerFix": {
+          "type": "number",
+          "default": 100,
+          "minimum": 0,
+          "markdownDescription": "Minutes one /fix analysis is assumed to save versus debugging by hand. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
+        },
+        "codebrain.roi.minutesSavedPerExplain": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Minutes one /explain answer or user guide is assumed to save. 0 counts none until your team sets a figure. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
+        },
+        "codebrain.roi.minutesSavedPerImplement": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Minutes one /implement plan is assumed to save. 0 counts none until your team sets a figure. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
+        },
+        "codebrain.roi.minutesSavedPerTest": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Minutes one /test answer is assumed to save. 0 counts none until your team sets a figure. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
+        },
+        "codebrain.roi.minutesSavedPerPr": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Minutes one /pr description is assumed to save. 0 counts none until your team sets a figure. Appears as a stated assumption in **CodeBrain: Export Executive ROI Report**."
         }
       }
-    }
+    },
+    "languageModelTools": [
+      {
+        "name": "codebrain_get_impact",
+        "displayName": "CodeBrain: Change Impact",
+        "toolReferenceName": "codebrainImpact",
+        "userDescription": "Dependents, affected tests, and risk of the working-tree changes or of given files.",
+        "modelDescription": "Measure the blast radius of a code change from the CodeBrain code graph: which files depend on the changed files (directly and transitively), which test files exercise them, the risk level with its reasons, and the main workflows touched. Omit \"files\" to analyze the uncommitted working-tree changes. Use before editing shared code, and before claiming a change is safe.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Project-relative paths of the changed files. Omit to use the working-tree changes."
+            },
+            "projectPath": {
+              "type": "string",
+              "description": "A directory inside a project with a .codegraph/ index, for multi-project workspaces. Omit for the active project."
+            }
+          }
+        },
+        "canBeReferencedInPrompt": true,
+        "icon": "$(type-hierarchy)",
+        "tags": [
+          "codebrain",
+          "code-graph"
+        ]
+      },
+      {
+        "name": "codebrain_get_affected_tests",
+        "displayName": "CodeBrain: Affected Tests",
+        "toolReferenceName": "codebrainAffectedTests",
+        "userDescription": "The test files that exercise the changed files.",
+        "modelDescription": "List the test files that exercise the given files, found by walking the CodeBrain dependency graph, so you can run those instead of the full suite. Omit \"files\" to use the uncommitted working-tree changes.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Project-relative paths of the changed files. Omit to use the working-tree changes."
+            },
+            "projectPath": {
+              "type": "string",
+              "description": "A directory inside a project with a .codegraph/ index. Omit for the active project."
+            }
+          }
+        },
+        "canBeReferencedInPrompt": true,
+        "icon": "$(type-hierarchy)",
+        "tags": [
+          "codebrain",
+          "code-graph"
+        ]
+      },
+      {
+        "name": "codebrain_explore_symbol",
+        "displayName": "CodeBrain: Explore Symbols",
+        "toolReferenceName": "codebrainExplore",
+        "userDescription": "Verbatim source with line numbers, call paths, and blast radius for named symbols.",
+        "modelDescription": "Return the verbatim, line-numbered source of the named symbols plus the call paths between them and their blast radius, from the CodeBrain code graph — one call instead of searching and reading files. Query with a precise list of symbol names (including qualified ones such as ClassName.methodName) or file names, not a sentence. Treat the returned source as already read.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Symbol, qualified, or file names to look up, separated by spaces."
+            },
+            "maxFiles": {
+              "type": "number",
+              "description": "Maximum number of files to return, 1-40."
+            },
+            "projectPath": {
+              "type": "string",
+              "description": "A directory inside a project with a .codegraph/ index. Omit for the active project."
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "canBeReferencedInPrompt": true,
+        "icon": "$(type-hierarchy)",
+        "tags": [
+          "codebrain",
+          "code-graph"
+        ]
+      }
+    ]
   },
   "scripts": {
     "check": "tsc --noEmit",

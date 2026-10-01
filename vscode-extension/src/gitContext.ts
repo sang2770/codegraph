@@ -205,3 +205,87 @@ export async function collectGitCommitReviewContext(
     target,
   };
 }
+
+export interface GitBranchContext extends GitReviewContext {
+  /** Current branch name, or undefined on a detached HEAD. */
+  branch?: string;
+  /** Base the branch is compared with, e.g. `origin/main`. */
+  base?: string;
+  /** Commits on the branch since it left the base, newest first. */
+  commits: GitCommit[];
+}
+
+/** The branch a pull request would target: the remote's default, else a conventional name that exists. */
+export async function detectBaseBranch(
+  cwd: string,
+  preferred?: string,
+): Promise<string | undefined> {
+  const exists = async (ref: string) =>
+    (await git(cwd, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`], 1000)).code === 0;
+  if (preferred?.trim()) {
+    for (const candidate of [preferred.trim(), `origin/${preferred.trim()}`]) {
+      if (await exists(candidate)) return candidate;
+    }
+  }
+  const remoteHead = await git(cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], 1000);
+  if (remoteHead.code === 0 && remoteHead.stdout.trim()) {
+    return remoteHead.stdout.trim();
+  }
+  for (const candidate of ['origin/main', 'origin/master', 'origin/develop', 'main', 'master', 'develop']) {
+    if (await exists(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Everything a pull request from the current branch would contain: the
+ * commits since it left the base, and the diff from the merge base to the
+ * working tree (uncommitted work included — it is usually about to be pushed).
+ *
+ * Without a base this degrades to the working-tree context, which is still a
+ * useful description of what is about to be proposed.
+ */
+export async function collectGitBranchContext(
+  cwd: string,
+  maxDiffCharacters: number,
+  preferredBase?: string,
+): Promise<GitBranchContext> {
+  const workingTree = await collectGitReviewContext(cwd, maxDiffCharacters);
+  if (!workingTree.isRepository) {
+    return { ...workingTree, commits: [] };
+  }
+  const branchResult = await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'], 1000);
+  const branch = branchResult.code === 0 && branchResult.stdout.trim() !== 'HEAD' ? branchResult.stdout.trim() : undefined;
+  const base = await detectBaseBranch(cwd, preferredBase);
+  if (!base) {
+    return { ...workingTree, branch, commits: [] };
+  }
+  const mergeBase = await git(cwd, ['merge-base', 'HEAD', base], 1000);
+  if (mergeBase.code !== 0 || !mergeBase.stdout.trim()) {
+    return { ...workingTree, branch, base, commits: [] };
+  }
+  const fork = mergeBase.stdout.trim();
+  const [log, stat, files, diff] = await Promise.all([
+    git(cwd, ['log', '--format=%H%x09%h%x09%s', `${fork}..HEAD`], 100_000),
+    git(cwd, ['diff', '--relative', '--stat', fork, '--'], 100_000),
+    git(cwd, ['diff', '--relative', '--name-only', fork, '--'], 100_000),
+    git(cwd, ['diff', '--relative', '--no-ext-diff', '--no-color', '--unified=8', fork, '--'], maxDiffCharacters),
+  ]);
+  const commits = log.stdout
+    .split(/\r?\n/)
+    .map((line) => line.split('\t'))
+    .filter((parts) => parts.length >= 3 && parts[0] && parts[1])
+    .map(([hash, shortHash, ...subject]) => ({ hash: hash!, shortHash: shortHash!, subject: subject.join('\t') }));
+  const untracked = workingTree.changedFiles.filter((file) => !cleanPaths(files.stdout).includes(file));
+  return {
+    isRepository: true,
+    status: workingTree.status,
+    stat: stat.stdout.trim(),
+    diff: diff.stdout.trim(),
+    changedFiles: [...new Set([...cleanPaths(files.stdout), ...untracked])],
+    truncated: diff.truncated || stat.truncated || files.truncated || log.truncated,
+    branch,
+    base,
+    commits,
+  };
+}

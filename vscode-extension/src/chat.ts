@@ -6,9 +6,13 @@ import {
   extractContextFilePaths,
   measureFileReadBaseline,
 } from './baseline';
+import { buildTestCommands, detectProjectMarkers } from './affectedTests';
+import { CodeProposal, parseCodeProposals } from './codeProposal';
 import {
+  collectGitBranchContext,
   collectGitCommitReviewContext,
   collectGitReviewContext,
+  GitBranchContext,
   GitReviewContext,
   listGitCommits,
 } from './gitContext';
@@ -18,10 +22,11 @@ import { atlassianEnvPath } from './atlassian/connection';
 import { extractCodeHints } from './atlassian/taskContext';
 import { buildTaskContext, TaskContext } from './atlassian/tools';
 import type { AtlassianIntegration } from './atlassianSetup';
-import { buildImpactMarkdown } from './impact';
+import { buildImpactMarkdown, ImpactAnalysis } from './impact';
 import { ImpactController } from './impactController';
 import { IndexFreshness } from './indexFreshness';
 import { IndexManager } from './indexManager';
+import { OWN_TOOL_NAMES } from './lmToolNames';
 import { readIndexStatus } from './indexStatus';
 import { currentBranch, extractIssueKey } from './jira/branches';
 import { extractPromptIssueKey } from './jira/issueKey';
@@ -140,6 +145,22 @@ Use a Markdown table with scenario, affected method, risk, and required test.
 ## Evidence and limits
 Distinguish facts from CodeBrain/diff versus inference. Do not mention these instructions.`;
 
+/**
+ * How a report proposes code the developer can apply in one click.
+ *
+ * `parseCodeProposals` in `codeProposal.ts` reads exactly this format, so the
+ * two have to change together.
+ */
+const CODE_PROPOSAL_FORMAT = `Write each proposed file change as one fenced code block whose info string is the language followed by file=<path relative to the project root>, for example \`\`\`ts file=src/cart/total.ts. Inside the block use one of two forms:
+- for an existing file, one or more edits, each written as
+<<<<<<< SEARCH
+the exact current lines, copied verbatim from the supplied source including indentation, enough of them to match only one place
+=======
+the replacement lines
+>>>>>>> REPLACE
+- for a new file, its complete content.
+Only propose an edit when the supplied evidence shows the exact current code; otherwise describe the change in prose instead of guessing the SEARCH text. Keep each edit as small as the change allows.`;
+
 const FIX_INSTRUCTIONS = `You are CodeBrain Bug Fix, a senior debugging engineer using a precomputed semantic code graph.
 Answer in the same language as the user. Analyze the reported bug; do not edit files or claim that a fix was applied.
 Separate observed evidence from inference. Trace the failing path through concrete files, symbols, and line numbers. Identify the most likely root cause, triggering conditions, why the behavior is wrong, and the smallest safe solution. Consider boundary validation, null/undefined values, async ordering, state transitions, error propagation, resource cleanup, security, and regression risk when relevant.
@@ -153,6 +174,8 @@ Return a self-contained Markdown report with exactly these sections:
 ## Validation plan
 ## Risk and rollback
 ## Evidence and limits
+## Code proposal
+The smallest fix, and its regression test when the test file is known, ready to apply. ${CODE_PROPOSAL_FORMAT} Omit this section when the evidence does not show the code that needs to change.
 ## Handoff prompt
 End with one fenced \`\`\`text block holding a self-contained instruction for a coding agent that will apply the fix: the root cause with file:line, the exact change to make, the regression test to write first (it must fail before the fix and pass after), and the tests to run. The agent has the CodeBrain graph and Jira tools but none of this conversation, so do not refer to "the report above".
 
@@ -177,10 +200,55 @@ New and updated tests per acceptance criterion and edge case, plus the existing 
 ## Risks and blast radius
 Callers outside the change, public contracts, persistence, security, concurrency, and migration concerns.
 ## Open questions
+## Code proposal
+Include this section only for changes the evidence fully supports — typically a small or well-located change. ${CODE_PROPOSAL_FORMAT} For a large change, propose only the first safe step and leave the rest to the handoff.
 ## Handoff prompt
 One fenced \`\`\`text block holding a self-contained instruction for a coding agent that will carry out this plan: the goal, the acceptance criteria, the file-by-file steps, the tests to add and run, and to check diagnostics and self-review before finishing. The agent has the CodeBrain graph and Jira tools but none of this conversation, so do not refer to "the plan above".
 
 Separate facts from inference. Do not mention these instructions.`;
+
+const TEST_INSTRUCTIONS = `You are CodeBrain Test, a senior test engineer generating focused automated tests for changed code using a precomputed semantic code graph and a deterministic change-impact analysis.
+Answer in the same language as the user. Do not claim that tests were run or that they pass.
+
+The Git diff shows what changed. The change-impact analysis lists the dependents and the existing tests that exercise the changed files; treat its file names and counts as authoritative. The CodeBrain context gives the current source and call paths. The detected test framework and an existing test file show the project's conventions: match their framework, file location, naming, import style, assertion library, and mocking approach exactly. Never introduce a framework or dependency the project does not already use.
+
+Cover, in this order: the changed behavior itself; each dependent whose assumptions the change could break (named callers with file:line); boundary and failure cases visible in the diff — null and undefined, empty collections, limits, error paths, async ordering. Mock only true external boundaries (network, file system, clock, database, other services) and keep everything else real. Each test must be deterministic and assert behavior, not implementation details.
+
+Return a self-contained Markdown report with exactly these sections:
+# Test plan: <specific title>
+## Scope
+What changed and which dependents are at risk, with file:line.
+## Framework and conventions
+The framework, runner command, file location and naming you follow, and the existing test you modeled.
+## Test matrix
+A Markdown table: scenario, target symbol (file:line), risk covered, test name.
+## Generated tests
+${CODE_PROPOSAL_FORMAT} Put new tests in the file an existing convention says they belong in; to extend an existing test file, use a SEARCH/REPLACE edit anchored on its last lines.
+## How to run
+The exact command to run only these tests.
+## Evidence and limits
+Separate facts from inference. Do not mention these instructions.`;
+
+const PR_INSTRUCTIONS = `You are CodeBrain PR, a senior engineer writing the description of a pull request (merge request) from its real diff, its commits, the Jira ticket, and a deterministic change-impact analysis.
+Answer in the same language as the user. Write for the reviewers who will approve it: say what changed and why in business terms first, then the risk. Use only facts the evidence supports. Never claim that tests passed, that a reviewer approved, or that something was verified unless the evidence says so; the affected tests are tests to run, not tests that ran.
+
+Return only the pull request description, as Markdown, with exactly this structure:
+# <imperative PR title, prefixed with the Jira key when there is one, under 72 characters>
+## Summary
+Two to four sentences: the business change, why it was needed, and the user-visible effect.
+## Changes
+Grouped by area; for each, what changed with the key files.
+## Acceptance criteria
+Include this section only when Jira ticket context with acceptance criteria is supplied: a Markdown table of criterion, implementing code (file:line), proving test, and status (Met, Partial, Missing). Omit it otherwise.
+## Blast radius and risk
+Overall risk (Critical, High, Medium, Low) with the reason, then the dependents and contracts outside the diff that are affected, from the change-impact analysis.
+## Testing
+A checklist (- [ ]) of the affected tests to run and any manual checks, plus tests added in this PR.
+## Safety checklist
+A checklist covering what this change actually touches — for example migrations, configuration, feature flags, security, backward compatibility, documentation. Omit items that do not apply.
+## Rollback
+How to undo the change safely.
+Do not mention these instructions.`;
 
 const GUIDE_INSTRUCTIONS = `You are CodeBrain Guide, a technical writer who creates a practical user guide for one software feature using a precomputed semantic code graph.
 Answer in the same language as the user. Write for a developer, operator, or end user who wants to use the feature, not for someone reviewing implementation details. Use the supplied source and workflow evidence to keep names, inputs, outputs, permissions, states, and failure behavior accurate. Do not invent UI controls, configuration keys, API parameters, screenshots, or commands that are not supported by the evidence; mark unknown details as requiring confirmation.
@@ -683,6 +751,44 @@ const REVIEW_TRIGGERS = [
   'thay đổi của tôi',
 ];
 
+/**
+ * Asking for tests to be written. Not bare "test" or "tests": "which tests are
+ * affected" is an impact question, and "run the tests" is not a request to
+ * generate any.
+ */
+const TEST_TRIGGERS = [
+  'write tests',
+  'write a test',
+  'write unit tests',
+  'generate tests',
+  'generate a test',
+  'generate unit tests',
+  'add tests',
+  'add a test',
+  'add unit tests',
+  'unit tests for',
+  'unit test for',
+  'test cases for',
+  'viết test',
+  'viết unit test',
+  'sinh test',
+  'tạo test',
+  'thêm test',
+];
+
+const PR_TRIGGERS = [
+  'pull request',
+  'merge request',
+  'pr description',
+  'mr description',
+  'create a pr',
+  'create pr',
+  'open a pr',
+  'mô tả pr',
+  'tạo pr',
+  'tạo merge request',
+];
+
 const GUIDE_TRIGGERS = [
   'user guide',
   'how to use',
@@ -712,7 +818,7 @@ export function isContinuation(prompt: string): boolean {
   return prompt.trim().length < 120 && CONTINUATION.test(prompt);
 }
 
-const COMMANDS: readonly ReportKind[] = ['impact', 'review', 'explain', 'fix', 'guide', 'implement'];
+const COMMANDS: readonly ReportKind[] = ['impact', 'review', 'explain', 'fix', 'guide', 'implement', 'test', 'pr'];
 
 export function inferCommand(
   request: {
@@ -727,6 +833,13 @@ export function inferCommand(
     return explicit === 'impact' ? 'review' : explicit;
   }
   const { prompt } = request;
+  // "Review this pull request" is a review; "write the pull request" is not.
+  if (matchesTrigger(prompt, PR_TRIGGERS) && !matchesTrigger(prompt, REVIEW_TRIGGERS)) {
+    return 'pr';
+  }
+  if (matchesTrigger(prompt, TEST_TRIGGERS)) {
+    return 'test';
+  }
   if (matchesTrigger(prompt, FIX_TRIGGERS)) {
     return 'fix';
   }
@@ -1206,9 +1319,12 @@ async function explore(
 
   const mcpTool = vscode.lm.tools.find(
     (tool) =>
-      /(^|[._/-])codegraph_explore$/i.test(tool.name) ||
+      // CodeBrain's own language-model tools route back into this extension;
+      // picking one here would loop instead of reaching the graph server.
+      !OWN_TOOL_NAMES.has(tool.name) &&
+      (/(^|[._/-])codegraph_explore$/i.test(tool.name) ||
       (/(codebrain|codegraph)/i.test(tool.name) &&
-        /call paths|blast radius|knowledge graph/i.test(tool.description)),
+        /call paths|blast radius|knowledge graph/i.test(tool.description))),
   );
 
   if (mcpTool) {
@@ -1462,6 +1578,112 @@ function guideEvidence(
     .join('\n\n');
 }
 
+/** Longest excerpt of an existing test file shown as the convention to follow. */
+const MAX_SAMPLE_TEST_CHARACTERS = 6_000;
+
+/**
+ * The project's test setup as evidence: detected runners and one existing test
+ * to model, preferring a test the change already affects.
+ */
+export function describeTestSetup(
+  root: string,
+  affectedTests: readonly string[],
+  readFile: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): string {
+  const commands = buildTestCommands(detectProjectMarkers(root), ['TEST_FILES']);
+  const runners = commands.length
+    ? `${commands.map((command) => `- ${command.label}: \`${command.command}\``).join('\n')}\n(TEST_FILES stands for the test files to run.)`
+    : '- No test runner was detected from the project files. Infer it from the existing tests, and say so.';
+  let sample = '';
+  for (const test of affectedTests.slice(0, 5)) {
+    const path = join(root, test);
+    try {
+      if (!existsSync(path) || statSync(path).size > MAX_REFERENCE_FILE_BYTES) continue;
+      const fence = FENCE_LANGUAGES[extname(path).toLowerCase()] ?? '';
+      sample = `### Existing test to model: ${test}\n\`\`\`${fence}\n${trimForModel(readFile(path), MAX_SAMPLE_TEST_CHARACTERS, 'test file')}\n\`\`\``;
+      break;
+    } catch {
+      // Unreadable; try the next one.
+    }
+  }
+  return [
+    '## Detected test framework',
+    runners,
+    sample || 'No existing affected test file could be read; follow the conventions visible in the CodeBrain context.',
+  ].join('\n\n');
+}
+
+function impactEvidence(analysis: ImpactAnalysis | undefined, languageCode: string): string {
+  if (!analysis) {
+    return '## Deterministic change impact\nNot available for this request; rely on the CodeBrain context and say so.';
+  }
+  return `## Deterministic change impact (authoritative)\n\n${buildImpactMarkdown(analysis, languageCode)}`;
+}
+
+function testEvidence(
+  graphContext: string,
+  gitContext: GitReviewContext,
+  maxDiffCharacters: number,
+  impact: string,
+  testSetup: string,
+  editorContext: string,
+  readmeContext: string,
+  focus: string,
+): string {
+  return [
+    '## Code to test and editor focus',
+    editorContext || 'No active editor selection.',
+    focus,
+    '## Git status',
+    gitContext.status,
+    '## Git diff',
+    trimForModel(
+      gitContext.diff || 'No uncommitted diff. Test the code named in the request or the editor focus.',
+      maxDiffCharacters,
+      'Git diff',
+    ),
+    impact,
+    testSetup,
+    readmeContext,
+    '## CodeBrain source, call paths, and blast radius',
+    graphContext,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function prEvidence(
+  graphContext: string,
+  gitContext: GitBranchContext,
+  maxDiffCharacters: number,
+  impact: string,
+  focus: string,
+): string {
+  const commits = gitContext.commits.length
+    ? gitContext.commits.map((commit) => `- ${commit.shortHash} ${commit.subject}`).join('\n')
+    : 'No commits ahead of the base were found; the description covers the uncommitted changes.';
+  return [
+    '## Branch',
+    `${gitContext.branch ?? '(detached HEAD)'} → ${gitContext.base ?? 'no base branch found'}`,
+    focus ||
+      '## Jira ticket\nNo ticket was found in the prompt or the branch name. Omit the Acceptance criteria section.',
+    '## Commits',
+    commits,
+    '## Diff stat',
+    gitContext.stat || 'No diff stat available.',
+    '## Diff against the base (including uncommitted work)',
+    trimForModel(gitContext.diff || 'No diff against the base.', maxDiffCharacters, 'Git diff'),
+    gitContext.truncated
+      ? 'Warning: Git context was truncated; say which areas the description may not cover.'
+      : '',
+    impact,
+    '## CodeBrain source, call paths, and blast radius',
+    graphContext,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 /**
  * The Jira key a request is about: named in the prompt, else in the branch.
  *
@@ -1666,6 +1888,68 @@ function streamHandoffButtons(
   });
 }
 
+function streamProposalButtons(
+  stream: vscode.ChatResponseStream,
+  command: ReportKind,
+  root: string,
+  proposals: CodeProposal[],
+): void {
+  const files = `${proposals.length} file${proposals.length === 1 ? '' : 's'}`;
+  stream.button({
+    command: 'codebrain.applyCodeProposal',
+    title:
+      command === 'test'
+        ? `$(beaker) Create test files (${files})`
+        : `$(check) Apply to Workspace (${files})`,
+    arguments: [{ root, proposals, label: command === 'test' ? 'test' : command }],
+  });
+  if (command === 'test') {
+    stream.button({
+      command: 'codebrain.runAffectedTests',
+      title: '$(play) Run these tests',
+      arguments: [{ root, tests: proposals.map((proposal) => proposal.path) }],
+    });
+  }
+}
+
+/**
+ * The PR description without its title line, which every PR form asks for
+ * separately.
+ */
+export function splitPullRequest(report: string): { title: string; body: string } {
+  const match = /^#\s+(.+)$/m.exec(report);
+  if (!match) return { title: '', body: report.trim() };
+  return {
+    title: match[1]!.trim(),
+    body: `${report.slice(0, match.index)}${report.slice(match.index + match[0].length)}`.trim(),
+  };
+}
+
+const GITHUB_PR_EXTENSION = 'github.vscode-pull-request-github';
+
+function streamPullRequestButtons(stream: vscode.ChatResponseStream, report: string): void {
+  const { title, body } = splitPullRequest(report);
+  stream.button({
+    command: 'codebrain.chat.copyText',
+    title: '$(copy) Copy PR description',
+    arguments: [body, 'PR description copied.'],
+  });
+  if (title) {
+    stream.button({
+      command: 'codebrain.chat.copyText',
+      title: '$(copy) Copy title',
+      arguments: [title, 'PR title copied.'],
+    });
+  }
+  if (vscode.extensions.getExtension(GITHUB_PR_EXTENSION)) {
+    stream.button({
+      command: 'codebrain.chat.createPullRequest',
+      title: '$(git-pull-request-create) Create Pull Request',
+      arguments: [title, body],
+    });
+  }
+}
+
 export function registerChatParticipant(
   context: vscode.ExtensionContext,
   runtime: CodeBrainRuntime,
@@ -1790,6 +2074,10 @@ export function registerChatParticipant(
           ? 'Tracing the feature workflow and preparing a user guide…'
           : command === 'implement'
           ? 'Reading the requirement and locating where the change plugs in…'
+          : command === 'test'
+          ? 'Reading the change, its callers, and the project\'s test conventions…'
+          : command === 'pr'
+          ? 'Collecting the branch diff, commits, ticket, and blast radius…'
           : 'Tracing the workflow through CodeBrain…',
       );
       // Independent lookups, so neither waits on the other: the ticket can
@@ -2038,6 +2326,101 @@ export function registerChatParticipant(
           },
           token,
         );
+      } else if (command === 'test') {
+        const gitContext = await collectGitReviewContext(folder.uri.fsPath, maxDiffCharacters);
+        const graphContext = await explore(
+          exploreDeps,
+          folder,
+          buildReviewQuery(focusPrompt, gitContext, editorContext),
+          maxFiles,
+          request,
+          token,
+        );
+        evidenceContext = graphContext;
+        stream.progress('Finding the dependents and existing tests the change affects…');
+        const analysis = await impactController.analysisService
+          .analyze(folder, token, graphContext)
+          .then((result) => {
+            impactController.setLatest(result);
+            return result;
+          })
+          .catch((error: unknown) => {
+            log(`[chat] impact analysis for /test failed: ${error instanceof Error ? error.message : String(error)}`);
+            return undefined;
+          });
+        generatedReport = await generateReport(
+          {
+            ...reportBase,
+            instructions: TEST_INSTRUCTIONS,
+            userPrompt:
+              request.prompt || 'Generate tests for my changed code and the callers it could break.',
+            evidence: testEvidence(
+              graphContext,
+              gitContext,
+              maxDiffCharacters,
+              impactEvidence(analysis, responseLanguage.code),
+              describeTestSetup(folder.uri.fsPath, analysis?.affectedTests ?? []),
+              editorContext,
+              readProjectReadmeContext(folder.uri.fsPath, editorContext),
+              focusEvidence,
+            ),
+            codeBrainContext: graphContext,
+            expand,
+            maxToolRounds,
+          },
+          token,
+        );
+      } else if (command === 'pr') {
+        const gitContext = await collectGitBranchContext(
+          folder.uri.fsPath,
+          maxDiffCharacters,
+          config.get<string>('jira.baseBranch', ''),
+        );
+        if (!gitContext.isRepository) {
+          stream.markdown('CodeBrain needs a Git repository to describe a pull request.');
+          return { metadata: { command } };
+        }
+        if (gitContext.changedFiles.length === 0) {
+          stream.markdown(
+            `There is nothing to describe: this branch has no changes against ${gitContext.base ?? 'its base'}.`,
+          );
+          return { metadata: { command } };
+        }
+        const graphContext = await explore(
+          exploreDeps,
+          folder,
+          buildReviewQuery(focusPrompt, gitContext, editorContext),
+          maxFiles,
+          request,
+          token,
+        );
+        evidenceContext = graphContext;
+        stream.progress('Measuring the blast radius of the branch…');
+        const analysis = await impactController.analysisService
+          .analyze(folder, token, graphContext, gitContext.changedFiles)
+          .catch((error: unknown) => {
+            log(`[chat] impact analysis for /pr failed: ${error instanceof Error ? error.message : String(error)}`);
+            return undefined;
+          });
+        generatedReport = await generateReport(
+          {
+            ...reportBase,
+            instructions: PR_INSTRUCTIONS,
+            userPrompt: request.prompt || 'Write the pull request description for this branch.',
+            evidence: prEvidence(
+              graphContext,
+              gitContext,
+              maxDiffCharacters,
+              impactEvidence(analysis, responseLanguage.code),
+              focusEvidence,
+            ),
+            codeBrainContext: graphContext,
+            // The diff and the impact report are the evidence; a lookup would
+            // only delay a description the user is waiting to paste.
+            maxToolRounds: 0,
+          },
+          token,
+        );
       } else {
         const query = buildExplainQuery(focusPrompt, editorContext);
         const graphContext = await explore(
@@ -2094,6 +2477,7 @@ export function registerChatParticipant(
         baselineTokens: baseline.tokens,
         baselineFiles: baseline.measuredFiles,
         baselineMeasured: baseline.measured,
+        contextCharacters: evidenceContext.length,
       };
       try {
         await metrics.recordChatRequest(tokenSample);
@@ -2144,8 +2528,18 @@ export function registerChatParticipant(
           ? extractHandoffPrompt(normalizedReport) ??
             `Carry out the ${command === 'fix' ? 'bug fix' : 'implementation plan'} saved in ${reportUri?.fsPath ?? 'the latest CodeBrain report'}. Follow the codebrain-${command} workflow.`
           : undefined;
+      const proposals =
+        command === 'fix' || command === 'implement' || command === 'test'
+          ? parseCodeProposals(normalizedReport)
+          : [];
+      if (proposals.length > 0) {
+        streamProposalButtons(stream, command, folder.uri.fsPath, proposals);
+      }
       if (handoff) {
         streamHandoffButtons(stream, command, handoff, ticket?.key);
+      }
+      if (command === 'pr') {
+        streamPullRequestButtons(stream, normalizedReport);
       }
       if (reportUri) {
         stream.button({
@@ -2225,6 +2619,29 @@ export function registerChatParticipant(
           },
         ];
       }
+      if (result.metadata.command === 'test') {
+        return [
+          {
+            prompt: 'Review my changes for regression risk, including whether these tests cover it.',
+            label: 'Review the change with these tests',
+            command: 'review',
+          },
+        ];
+      }
+      if (result.metadata.command === 'pr') {
+        return [
+          {
+            prompt: 'Review this branch for regression risk and missing tests before I open the pull request.',
+            label: 'Review before opening',
+            command: 'review',
+          },
+          {
+            prompt: 'Write unit tests for the changes on this branch that are not covered yet.',
+            label: 'Generate missing tests',
+            command: 'test',
+          },
+        ];
+      }
       if (result.metadata.command === 'guide') {
         return [
           {
@@ -2259,6 +2676,33 @@ export function registerChatParticipant(
     ),
     vscode.commands.registerCommand('codebrain.chat.openDevAgent', (query: unknown) =>
       openDevAgent(typeof query === 'string' ? query : ''),
+    ),
+    vscode.commands.registerCommand('codebrain.chat.copyText', async (text: unknown, message: unknown) => {
+      await vscode.env.clipboard.writeText(typeof text === 'string' ? text : '');
+      void vscode.window.showInformationMessage(
+        `CodeBrain: ${typeof message === 'string' ? message : 'copied to the clipboard.'}`,
+      );
+    }),
+    vscode.commands.registerCommand(
+      'codebrain.chat.createPullRequest',
+      async (title: unknown, body: unknown) => {
+        // The GitHub extension's create view has its own title and description
+        // fields and no API to prefill them, so the description goes on the
+        // clipboard first — one paste away instead of retyped.
+        await vscode.env.clipboard.writeText(typeof body === 'string' ? body : '');
+        try {
+          await vscode.commands.executeCommand('pr.create');
+          void vscode.window.showInformationMessage(
+            `CodeBrain: the PR description is on your clipboard — paste it into the description field.${
+              typeof title === 'string' && title ? ` Title: ${title}` : ''
+            }`,
+          );
+        } catch {
+          void vscode.window.showInformationMessage(
+            'CodeBrain could not open the pull request view; the description is on your clipboard.',
+          );
+        }
+      },
     ),
     vscode.commands.registerCommand('codebrain.chat.copyHandoff', async (query: unknown) => {
       await vscode.env.clipboard.writeText(typeof query === 'string' ? query : '');

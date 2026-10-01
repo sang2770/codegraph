@@ -2,7 +2,15 @@ import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 
-export type ReportKind = 'explain' | 'review' | 'impact' | 'fix' | 'guide' | 'implement';
+export type ReportKind =
+  | 'explain'
+  | 'review'
+  | 'impact'
+  | 'fix'
+  | 'guide'
+  | 'implement'
+  | 'test'
+  | 'pr';
 
 interface MermaidBlock {
   source: string;
@@ -173,6 +181,10 @@ export function normalizeReport(
           ? `# User guide: ${subject || 'feature'}`
         : kind === 'implement'
           ? `# Implementation plan: ${subject || 'requested change'}`
+        : kind === 'test'
+          ? `# Test plan: ${subject || 'changed code'}`
+        : kind === 'pr'
+          ? `# ${subject || 'Pull request'}`
       : `# Workflow explanation: ${subject || 'selected code'}`;
 
   if (!report.startsWith('# ')) {
@@ -186,7 +198,9 @@ export function normalizeReport(
         `## Visual diagrams\n\n${missing.join('\n\n')}`,
       );
     }
-  } else if (!report.includes('```mermaid')) {
+  } else if (kind !== 'test' && kind !== 'pr' && !report.includes('```mermaid')) {
+    // A test file or a PR description is a deliverable, not an analysis: a
+    // placeholder diagram in it is noise the reader has to delete.
     report = insertDiagramSection(
       report,
       `## Diagram\n\n${fallbackDiagram(kind)}`,

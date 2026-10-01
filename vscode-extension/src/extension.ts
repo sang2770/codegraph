@@ -3,6 +3,8 @@ import { runAffectedTests } from './affectedTests';
 import { AtlassianIntegration } from './atlassianSetup';
 import { BlastRadiusLensProvider } from './blastRadiusLens';
 import { registerChatParticipant } from './chat';
+import { registerCodeProposals } from './codeProposal';
+import { exportExecutiveReport } from './executiveReport';
 import { removeFromAgents, setUpAgents } from './agents/setup';
 import { CodeBrainMcpRegistration } from './codegraphMcpSetup';
 import {
@@ -22,12 +24,14 @@ import {
 import { chooseCodeBrainModel } from './modelSelection';
 import { IndexManager } from './indexManager';
 import { MetricsStore } from './metrics';
+import { registerLanguageModelTools } from './lmTools';
 import { registerMcpProvider } from './mcpProvider';
 import { registerModulesView } from './modulesView';
 import { ReportManager } from './reportManager';
 import { showReleaseNotes, showReleaseNotesOnUpdate } from './releaseNotes';
 import { ReviewFinding, ReviewStore } from './reviewStore';
 import { RuntimeManager } from './runtimeManager';
+import { SymbolImpactLensProvider } from './symbolLens';
 import { editReviewInstructions, selectReviewProfile } from './reviewInstructions';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -96,6 +100,13 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     const presenter = new ReviewPresenter(context.extensionUri, reviewStore);
     const lensProvider = new BlastRadiusLensProvider(runtime, freshness, logSink);
+    const symbolLensProvider = new SymbolImpactLensProvider(runtime, freshness, lensProvider, logSink);
+    // Metrics are optional and must never fail the action they describe.
+    const quietly = (work: Promise<void>): void => {
+      work.catch(() => undefined);
+    };
+    registerCodeProposals(context, (files) => quietly(metrics.recordProposalApplied(files)));
+    registerLanguageModelTools(context, runtime, freshness, impactController.analysisService);
 
     context.subscriptions.push(
       freshness,
@@ -103,6 +114,11 @@ export function activate(context: vscode.ExtensionContext): void {
       presenter,
       lensProvider,
       vscode.languages.registerCodeLensProvider({ scheme: 'file' }, lensProvider),
+      symbolLensProvider,
+      vscode.languages.registerCodeLensProvider({ scheme: 'file' }, symbolLensProvider),
+      vscode.commands.registerCommand('codebrain.exportExecutiveReport', () =>
+        exportExecutiveReport(metrics),
+      ),
       vscode.languages.registerCodeActionsProvider(
         { scheme: 'file' },
         new ReviewCodeActionProvider(presenter),
@@ -233,7 +249,11 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.registerCommand(
         'codebrain.runAffectedTests',
         (argument?: { root: string; tests: string[] }) =>
-          runAffectedTests(argument, () => impactController.latestTestTarget()),
+          runAffectedTests(
+            argument,
+            () => impactController.latestTestTarget(),
+            (files) => quietly(metrics.recordAffectedTestRun(files)),
+          ),
       ),
       vscode.commands.registerCommand('codebrain.showReleaseNotes', () =>
         showReleaseNotes(context, { log: logSink }),

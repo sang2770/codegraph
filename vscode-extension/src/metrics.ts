@@ -23,8 +23,18 @@ export interface TokenSavingSample {
   affectedTests: number;
 }
 
+export type ChatCommand =
+  | 'explain'
+  | 'review'
+  | 'impact'
+  | 'fix'
+  | 'guide'
+  | 'implement'
+  | 'test'
+  | 'pr';
+
 export interface ChatRequestTokenSample {
-  command: 'explain' | 'review' | 'impact' | 'fix' | 'guide' | 'implement';
+  command: ChatCommand;
   model: string;
   generatedAt: string;
   codeBrainContextTokens: number;
@@ -36,6 +46,44 @@ export interface ChatRequestTokenSample {
   baselineTokens: number;
   baselineFiles: number;
   baselineMeasured: boolean;
+  /**
+   * Size of the graph evidence behind the answer. With `baselineTokens` it
+   * gives a like-for-like saving (both at the same bytes-per-token ratio);
+   * the model-counted `codeBrainContextTokens` is a different unit.
+   */
+  contextCharacters?: number;
+}
+
+/**
+ * One day of activity, the unit the executive report rolls up into weeks and
+ * months. Only counts and measured token totals are stored here; anything
+ * expressed in hours is derived at report time from assumptions the reader
+ * can see and change.
+ */
+export interface DailyMetrics {
+  /** Local calendar day, `YYYY-MM-DD`. */
+  date: string;
+  analyses: number;
+  measuredAnalyses: number;
+  contextTokens: number;
+  baselineTokens: number;
+  tokensSaved: number;
+  fileReadsAvoided: number;
+  /** Chat answers per command. */
+  chatRequests: Partial<Record<ChatCommand, number>>;
+  chatInputTokens: number;
+  chatOutputTokens: number;
+  /** Chat answers whose baseline was measurable. */
+  chatMeasured: number;
+  chatContextTokens: number;
+  chatBaselineTokens: number;
+  chatTokensSaved: number;
+  /** Affected-test runs that targeted specific files rather than the full suite. */
+  affectedTestRuns: number;
+  affectedTestFiles: number;
+  /** Code proposals applied to the workspace, and the files they changed. */
+  proposalsApplied: number;
+  proposalFiles: number;
 }
 
 export interface TokenSavingSnapshot {
@@ -49,6 +97,74 @@ export interface TokenSavingSnapshot {
   totalFileReadsAvoided: number;
   last?: TokenSavingSample;
   lastChatRequest?: ChatRequestTokenSample;
+  /** Oldest first; at most {@link MAX_HISTORY_DAYS} entries. */
+  daily?: DailyMetrics[];
+}
+
+/** Days of history kept, a little over a year so a yearly report has its baseline month. */
+export const MAX_HISTORY_DAYS = 400;
+
+export function emptyDay(date: string): DailyMetrics {
+  return {
+    date,
+    analyses: 0,
+    measuredAnalyses: 0,
+    contextTokens: 0,
+    baselineTokens: 0,
+    tokensSaved: 0,
+    fileReadsAvoided: 0,
+    chatRequests: {},
+    chatInputTokens: 0,
+    chatOutputTokens: 0,
+    chatMeasured: 0,
+    chatContextTokens: 0,
+    chatBaselineTokens: 0,
+    chatTokensSaved: 0,
+    affectedTestRuns: 0,
+    affectedTestFiles: 0,
+    proposalsApplied: 0,
+    proposalFiles: 0,
+  };
+}
+
+/** Local `YYYY-MM-DD`, so a day matches the reader's calendar rather than UTC's. */
+export function localDay(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * `daily` with today's entry updated by `change`, trimmed to the history cap.
+ *
+ * Pure so the roll-over and trimming are testable without a workspace.
+ */
+export function updateDaily(
+  daily: readonly DailyMetrics[] | undefined,
+  date: string,
+  change: (day: DailyMetrics) => DailyMetrics,
+): DailyMetrics[] {
+  const days = [...(daily ?? [])];
+  const index = days.findIndex((day) => day.date === date);
+  if (index === -1) {
+    days.push(change(emptyDay(date)));
+    days.sort((a, b) => a.date.localeCompare(b.date));
+  } else {
+    // Older entries may predate a field; fill it in rather than produce NaN.
+    days[index] = change({ ...emptyDay(date), ...days[index]! });
+  }
+  return days.slice(-MAX_HISTORY_DAYS);
+}
+
+/** Like-for-like saving of one chat answer, or `undefined` when unmeasurable. */
+export function chatSaving(
+  sample: Pick<ChatRequestTokenSample, 'baselineMeasured' | 'baselineTokens' | 'contextCharacters'>,
+): { contextTokens: number; saved: number } | undefined {
+  if (!sample.baselineMeasured || sample.contextCharacters === undefined) {
+    return undefined;
+  }
+  const contextTokens = Math.ceil(sample.contextCharacters / CHARACTERS_PER_TOKEN);
+  return { contextTokens, saved: Math.max(0, sample.baselineTokens - contextTokens) };
 }
 
 // v2: v1 totals were produced by a guessed per-file constant and a fixed 6.5x
@@ -108,6 +224,15 @@ export class MetricsStore {
       totalFileReadsAvoided:
         current.totalFileReadsAvoided + sample.fileReadsAvoided,
       last: sample,
+      daily: updateDaily(current.daily, localDay(new Date()), (day) => ({
+        ...day,
+        analyses: day.analyses + 1,
+        measuredAnalyses: day.measuredAnalyses + (sample.baselineMeasured ? 1 : 0),
+        contextTokens: day.contextTokens + (sample.baselineMeasured ? sample.contextTokens : 0),
+        baselineTokens: day.baselineTokens + sample.baselineTokens,
+        tokensSaved: day.tokensSaved + sample.tokensSaved,
+        fileReadsAvoided: day.fileReadsAvoided + sample.fileReadsAvoided,
+      })),
     } satisfies TokenSavingSnapshot);
     await vscode.commands.executeCommand(
       'setContext',
@@ -121,15 +246,58 @@ export class MetricsStore {
       return;
     }
     const current = this.snapshot();
+    const saving = chatSaving(sample);
     await this.context.workspaceState.update(STORAGE_KEY, {
       ...current,
       lastChatRequest: sample,
+      daily: updateDaily(current.daily, localDay(new Date()), (day) => ({
+        ...day,
+        chatRequests: {
+          ...day.chatRequests,
+          [sample.command]: (day.chatRequests[sample.command] ?? 0) + 1,
+        },
+        chatInputTokens: day.chatInputTokens + sample.inputTokens,
+        chatOutputTokens: day.chatOutputTokens + sample.outputTokens,
+        chatMeasured: day.chatMeasured + (saving ? 1 : 0),
+        chatContextTokens: day.chatContextTokens + (saving?.contextTokens ?? 0),
+        chatBaselineTokens: day.chatBaselineTokens + (saving ? sample.baselineTokens : 0),
+        chatTokensSaved: day.chatTokensSaved + (saving?.saved ?? 0),
+      })),
     } satisfies TokenSavingSnapshot);
     await vscode.commands.executeCommand(
       'setContext',
       'codebrain.tokenSavings.hasData',
       true,
     );
+  }
+
+  /** An affected-test run that targeted `files` test files instead of the whole suite. */
+  public async recordAffectedTestRun(files: number): Promise<void> {
+    await this.updateToday((day) => ({
+      ...day,
+      affectedTestRuns: day.affectedTestRuns + 1,
+      affectedTestFiles: day.affectedTestFiles + files,
+    }));
+  }
+
+  /** A code proposal applied from chat, changing `files` files. */
+  public async recordProposalApplied(files: number): Promise<void> {
+    await this.updateToday((day) => ({
+      ...day,
+      proposalsApplied: day.proposalsApplied + 1,
+      proposalFiles: day.proposalFiles + files,
+    }));
+  }
+
+  private async updateToday(change: (day: DailyMetrics) => DailyMetrics): Promise<void> {
+    if (!this.enabled()) {
+      return;
+    }
+    const current = this.snapshot();
+    await this.context.workspaceState.update(STORAGE_KEY, {
+      ...current,
+      daily: updateDaily(current.daily, localDay(new Date()), change),
+    } satisfies TokenSavingSnapshot);
   }
 
   public async reset(): Promise<void> {

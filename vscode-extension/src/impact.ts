@@ -417,6 +417,16 @@ export class ImpactAnalysisService {
     private readonly exploreCache = new GraphCache<string>(),
   ) {}
 
+  /** Dependents and affected tests of `changedFiles`, without the full analysis. */
+  public affected(
+    root: string,
+    changedFiles: readonly string[],
+    token?: vscode.CancellationToken,
+  ): Promise<AffectedTestResult> {
+    const depth = vscode.workspace.getConfiguration('codebrain').get<number>('impact.maxDepth', 5);
+    return this.runAffected(root, changedFiles, depth, token);
+  }
+
   /** One `affected` run at a given traversal depth. */
   private async runAffected(
     root: string,
@@ -455,6 +465,8 @@ export class ImpactAnalysisService {
     folder: vscode.WorkspaceFolder,
     token?: vscode.CancellationToken,
     graphContextOverride?: string,
+    /** Files to analyze instead of the working tree's changes (a branch, a tool call). */
+    changedFilesOverride?: readonly string[],
   ): Promise<ImpactAnalysis> {
     const startedAt = Date.now();
     const config = vscode.workspace.getConfiguration('codebrain');
@@ -474,13 +486,13 @@ export class ImpactAnalysisService {
     if (!graphContextOverride) {
       await this.freshness.ensureFresh(folder, token);
     }
-    const gitContext = await collectGitReviewContext(
-      folder.uri.fsPath,
-      maxDiffCharacters,
-    );
+    const workingTreeFiles =
+      changedFilesOverride && changedFilesOverride.length > 0
+        ? [...changedFilesOverride]
+        : (await collectGitReviewContext(folder.uri.fsPath, maxDiffCharacters)).changedFiles;
     const changedFiles =
-      gitContext.changedFiles.length > 0
-        ? gitContext.changedFiles
+      workingTreeFiles.length > 0
+        ? workingTreeFiles
         : [activeFile(folder)].filter((path): path is string => Boolean(path));
 
     if (changedFiles.length === 0) {
