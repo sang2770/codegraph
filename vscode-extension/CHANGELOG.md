@@ -4,15 +4,6 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 
 ## [Unreleased]
 
-### New Features
-
-- **Apply a fix in one click.** When `/fix`, `/implement` or `/test` proposes concrete code, the answer ends with **Apply to Workspace**. It opens a diff for every proposed file, and nothing changes until you confirm. Edited files are left unsaved so you can still undo them. Proposals that no longer match your code are skipped and named, never applied in the wrong place.
-- **New `/test` command.** `@codebrain /test` writes unit tests for your changes and for the callers they could break. It follows your project's existing test framework, file layout and mocking style. **Create test files** and **Run these tests** finish the job from the chat.
-- **New `/pr` command.** `@codebrain /pr` writes the pull request description for your branch from its diff, commits, Jira ticket and change impact: a summary, an acceptance-criteria table, blast radius and risk, tests to run, a safety checklist and a rollback note. Copy it in one click, or open the GitHub pull request view with the description ready to paste.
-- **Caller counts above every function.** A new CodeLens shows **N callers** above each function and method in files you have changed. Clicking it lists the callers and offers a full impact analysis. When the affected tests are known, a **Run affected tests** lens appears next to it. Choose where it shows with `codebrain.codeLens.symbols`.
-- **New Export Executive ROI Report command.** It turns this workspace's recorded activity into a report for managers. The report has an executive summary, key indicators, weekly and monthly trends with charts, and the engineer-hours saved by each activity. It comes as HTML (print it to PDF from your browser), Markdown, or JSON for adding up a team's reports. Token savings are measured. Hours are estimates from the minutes you set in `codebrain.roi.*`, and every assumption is printed in the report.
-- **Other agents in VS Code can use CodeBrain.** Copilot's agent mode and other agents that use VS Code's language-model tools now get three CodeBrain tools: change impact, affected tests, and symbol source with call paths. Reference them in a prompt as `#codebrainImpact`, `#codebrainAffectedTests` and `#codebrainExplore`.
-
 
 ## [2.2.0] - 2026-09-25
 
@@ -74,6 +65,13 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 - **Every file and line in a report is clickable.** Citations that exist on disk are offered as links under the report, and a `/review` also lists the files it covered as a navigable tree.
 - Follow-up questions now carry the earlier turns of the conversation as real chat turns, so "what about the other one?" resolves against what was actually discussed rather than an abbreviated paste.
 - Each command in Chat now suggests a real example question, and asking for documentation ("write a user guide for…", "viết tài liệu hướng dẫn…") gets a step-by-step user guide from `/explain` without any extra command.
+
+- **Apply a fix in one click.** When `/fix`, `/implement` or `/test` proposes concrete code, the answer ends with **Apply to Workspace**. It opens a diff for every proposed file, and nothing changes until you confirm. Edited files are left unsaved so you can still undo them. Proposals that no longer match your code are skipped and named, never applied in the wrong place.
+- **New `/test` command.** `@codebrain /test` writes unit tests for your changes and for the callers they could break. It follows your project's existing test framework, file layout and mocking style. **Create test files** and **Run these tests** finish the job from the chat.
+- **New `/pr` command.** `@codebrain /pr` writes the pull request description for your branch from its diff, commits, Jira ticket and change impact: a summary, an acceptance-criteria table, blast radius and risk, tests to run, a safety checklist and a rollback note. Copy it in one click, or open the GitHub pull request view with the description ready to paste.
+- **Caller counts above every function.** A new CodeLens shows **N callers** above each function and method in files you have changed. Clicking it lists the callers and offers a full impact analysis. When the affected tests are known, a **Run affected tests** lens appears next to it. Choose where it shows with `codebrain.codeLens.symbols`.
+- **New Export Executive ROI Report command.** It turns this workspace's recorded activity into a report for managers. The report has an executive summary, key indicators, weekly and monthly trends with charts, and the engineer-hours saved by each activity. It comes as HTML (print it to PDF from your browser), Markdown, or JSON for adding up a team's reports. Token savings are measured. Hours are estimates from the minutes you set in `codebrain.roi.*`, and every assumption is printed in the report.
+- **Other agents in VS Code can use CodeBrain.** Copilot's agent mode and other agents that use VS Code's language-model tools now get three CodeBrain tools: change impact, affected tests, and symbol source with call paths. Reference them in a prompt as `#codebrainImpact`, `#codebrainAffectedTests` and `#codebrainExplore`.
 
 ### Fixes
 
