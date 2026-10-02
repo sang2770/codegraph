@@ -139,6 +139,7 @@ export function activate(context: vscode.ExtensionContext): void {
               presenter,
               token,
               logSink,
+              atlassian,
             ),
         ),
       ),

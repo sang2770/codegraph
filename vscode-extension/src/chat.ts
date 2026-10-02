@@ -1768,7 +1768,7 @@ export function withDeadline<T>(
  * nothing. Any failure degrades to no ticket context, never to a failed
  * report.
  */
-async function collectTicketContext(
+export async function collectTicketContext(
   options: TicketContextOptions,
 ): Promise<TaskContext | undefined> {
   const { atlassian, log } = options;

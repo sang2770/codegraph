@@ -1,5 +1,8 @@
 import { resolve, sep } from 'node:path';
 import * as vscode from 'vscode';
+import type { AtlassianIntegration } from './atlassianSetup';
+import { collectTicketContext, ticketEvidence } from './chat';
+import type { TaskContext } from './atlassian/tools';
 import { codeGraphReviewEvidence, fetchCodeGraphReview } from './codegraphReview';
 import { CodeBrainRuntime } from './runtime';
 import { collectGitReviewContext } from './gitContext';
@@ -586,6 +589,7 @@ function reviewPrompt(
   folder: vscode.WorkspaceFolder,
   codeGraphReport: string | undefined,
   plan?: ReviewPlan,
+  ticket?: TaskContext,
 ): string {
   const signals = analysis.assessment.signals
     .map(
@@ -612,7 +616,7 @@ Return a concise Markdown review with exactly these sections:
 State whether the change is safe to merge, needs changes, or needs tests first. Include risk level ${analysis.risk.toUpperCase()} (${analysis.assessment.score}/${analysis.assessment.maxScore}).
 ## Findings
 For each finding add this marker on its own line: <!-- codebrain-finding severity="high" file="src/file.ts" line="42" code="the exact source text of that line" -->. Copy the code attribute verbatim from the diff (one line, at most 120 characters); it is used to correct a miscounted line number. Under each marker use exactly these concise labels: **Impact:** one sentence explaining what can break; **Recommendation:** one actionable fix or test, when needed. When the fix is a concrete replacement of the flagged line, add after the labels a fenced block that starts with three backticks and the word suggestion, containing only the replacement line(s) without the file's leading indentation. Do not invent findings.
-## Affected workflows
+${ticket ? '## Acceptance criteria coverage\nA Markdown table for every acceptance criterion in the Jira ticket: criterion, implementing code (file:line), proving test, status (Met, Partial, Missing). A criterion with no evidence in the diff or graph is Missing, not Met. Also name any change in the diff that no criterion asks for.\n' : ''}## Affected workflows
 Explain the highest-risk callers/dependents and distinguish direct from transitive impact when evidence allows.
 ## Test plan
 List affected tests and missing coverage. Never interpret zero indexed tests as proof of no risk.
@@ -625,7 +629,7 @@ ${signals}
 ${reviewContext}
 
 ${codeGraphReviewEvidence(codeGraphReport)}
-${plan ? `\n${planNotes(plan, plan.batches.flatMap((batch) => batch.files))}\n` : ''}
+${plan ? `\n${planNotes(plan, plan.batches.flatMap((batch) => batch.files))}\n` : ''}${ticket ? `\n${ticketEvidence(ticket)}\n` : ''}
 Treat the Git diff as the source of truth for what changed. Treat graph evidence as supporting context. Only report a finding when the diff and surrounding source provide concrete evidence. Findings must point to a changed file and a relevant changed line; do not report speculative style preferences, hypothetical issues, or findings based only on file names. Be explicit about uncertainty.${diffTruncated ? '\n\nImportant: The Git diff was truncated before it reached the model. Lower confidence, avoid claiming the full change was reviewed, and call this out in the review limits.' : ''}${truncationWarning}`,
     folder,
   );
@@ -656,6 +660,7 @@ function batchPrompt(
   position: string,
   codeGraphReport: string | undefined,
   folder: vscode.WorkspaceFolder,
+  ticket?: TaskContext,
 ): string {
   const related = analysis.graphContext
     .split(/\r?\n/)
@@ -671,6 +676,7 @@ Overall risk of the whole change: ${analysis.risk.toUpperCase()} (${analysis.ass
 
 ${planNotes(plan, batch.files)}
 
+${ticket ? `${ticketEvidence({ text: ticket.text.slice(0, 6_000) })}\n\nA finding may also be a change that contradicts the ticket or its acceptance criteria. Do not judge criteria coverage here; another pass does.\n` : ''}
 ### Git diff for this batch
 ${batch.diff}
 
@@ -718,6 +724,39 @@ async function mapPool<T, R>(
     }),
   );
   return results;
+}
+
+/** One pass over the whole change: which acceptance criteria does it satisfy? Batches cannot judge this alone. */
+async function criteriaCoverage(
+  model: vscode.LanguageModelChat,
+  ticket: TaskContext,
+  plan: ReviewPlan,
+  diff: string,
+  token: vscode.CancellationToken,
+  log: (message: string) => void,
+): Promise<string> {
+  if (ticket.criteria.length === 0) return '';
+  try {
+    const text = await askModel(
+      model,
+      `You are checking a code change against its Jira ticket.
+
+${ticketEvidence(ticket)}
+
+Changed files:
+${plan.batches.flatMap((batch) => batch.files).map((file) => `- ${file}`).join('\n')}
+
+### Git diff (may omit large files)
+${diff.slice(0, 80_000)}
+
+Reply with ONLY a Markdown table: criterion, implementing code (file:line), proving test, status (Met, Partial, Missing). A criterion with no evidence in the diff is Missing, never Met. After the table add one line naming any change that no criterion asks for, or "No unrequested changes."`,
+      token,
+    );
+    return `## Acceptance criteria coverage\n${text.trim()}`;
+  } catch (error) {
+    log(`Criteria coverage skipped: ${error instanceof Error ? error.message : String(error)}`);
+    return '';
+  }
 }
 
 /** Findings from every batch, plus an explicit coverage section so skipped files are visible. */
@@ -826,6 +865,7 @@ export async function runIndependentReview(
   presenter: ReviewPresenter,
   token: vscode.CancellationToken,
   log: (message: string) => void,
+  atlassian?: AtlassianIntegration,
 ): Promise<void> {
   const folder = getWorkspaceFolder();
   if (!folder) {
@@ -865,6 +905,16 @@ export async function runIndependentReview(
     );
   }
   const plan = buildReviewPlan(gitContext.changedFiles, gitContext.diff, maxDiffCharacters);
+  // The requirement the change is measured against; found from the branch name. Degrades to no ticket.
+  const ticket = await collectTicketContext({
+    atlassian,
+    root: folder.uri.fsPath,
+    prompt: '',
+    command: 'review',
+    log,
+    progress: () => undefined,
+    token,
+  });
   // After `analyze`, which has already brought the index up to date.
   const codeGraphReport = gitContext.isRepository
     ? await fetchCodeGraphReview(runtime, folder.uri.fsPath, {}, gitContext.changedFiles, token, log)
@@ -888,7 +938,7 @@ export async function runIndependentReview(
     const outputs = await mapPool(plan.batches, 3, async (batch, index) => {
       const text = await askModel(
         model,
-        batchPrompt(analysis, batch, plan, `part ${index + 1} of ${plan.batches.length}`, codeGraphReport, folder),
+        batchPrompt(analysis, batch, plan, `part ${index + 1} of ${plan.batches.length}`, codeGraphReport, folder, ticket),
         token,
       );
       if (!verify) return text;
@@ -897,10 +947,12 @@ export async function runIndependentReview(
       return checked.report;
     });
     markdown = assembleBatchedReview(analysis, plan, outputs) + verificationNote(dropped);
+    const coverage = ticket ? await criteriaCoverage(model, ticket, plan, gitContext.diff, token, log) : '';
+    if (coverage) markdown = markdown.replace('\n## Review coverage', `\n${coverage}\n\n## Review coverage`);
   } else {
     markdown = await askModel(
       model,
-      reviewPrompt(analysis, gitContext.diff, gitContext.truncated, folder, codeGraphReport, plan),
+      reviewPrompt(analysis, gitContext.diff, gitContext.truncated, folder, codeGraphReport, plan, ticket),
       token,
     );
     if (config.get<boolean>('review.verifyFindings', false)) {
