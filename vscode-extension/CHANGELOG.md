@@ -4,6 +4,9 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 
 ## [Unreleased]
 
+
+## [2.4.0] - 2026-10-02
+
 ### New Features
 
 - **Large changes are now reviewed in full.** Review Changes used to cut the diff at a size limit and silently skip the files past it. It now splits a big change into related batches (a source file together with its test, translation files together) and reviews every batch, then lists exactly which files were covered.
@@ -22,7 +25,6 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 
 - A finding is no longer lost when the model formats its marker slightly differently (attribute order, quote style, `L42` or `42-45` for a line, or words like "major" and "nit" for severity).
 - Review comments land on the right line more often. The reviewer now quotes the code it is commenting on, and CodeBrain uses that to correct a miscounted line number.
-
 
 ## [2.3.0] - 2026-10-01
 
