@@ -460,10 +460,14 @@ test('the previous answer\'s command, plan and ticket are read back from history
     command: 'implement',
     handoff: 'Do X.',
     ticket: 'ABC-1',
+    interview: false,
   });
+  const asked = new ChatResponseTurn([]);
+  asked.result = { metadata: { command: 'implement', interview: true } };
+  assert.equal(previousResult([asked]).interview, true);
   const junk = new ChatResponseTurn([]);
   junk.result = { metadata: { command: 'deploy', handoff: 42 } };
-  assert.deepEqual(previousResult([junk]), { command: undefined, handoff: undefined, ticket: undefined });
+  assert.deepEqual(previousResult([junk]), { command: undefined, handoff: undefined, ticket: undefined, interview: false });
   assert.deepEqual(previousResult([]), {});
 });
 

@@ -4,6 +4,24 @@ All notable changes to the CodeBrain VS Code extension are documented here.
 
 ## [Unreleased]
 
+### New Features
+
+- **Large changes are now reviewed in full.** Review Changes used to cut the diff at a size limit and silently skip the files past it. It now splits a big change into related batches (a source file together with its test, translation files together) and reviews every batch, then lists exactly which files were covered.
+- **Less noise in reviews.** Lockfiles, minified and generated code, vendored or build output, and binary assets are left out of the review, and the report says which files were skipped and why.
+- **Review chat no longer loses files in big changes.** `/review` used to cut the diff mid-file at a size limit. It now drops noise first, keeps each file's changes whole, and tells the reviewer exactly which files did not fit so it never claims to have read them.
+- **Fewer duplicate findings.** When one defect shows up in more than one part of a big review, it is reported once, at the highest severity.
+- **A heads-up before a costly review.** If a change needs more than three batches, CodeBrain shows how many files and model requests it will take and asks before starting. Change the threshold with `codebrain.review.confirmBatchesOver`.
+- **Apply a suggested fix from the editor.** When the reviewer can propose a concrete replacement for the flagged line, the lightbulb offers **Apply the suggested fix**. It is offered only while the line still reads as it did in the review, so a fix written for old code never overwrites new code.
+- **Optional fact-check of findings.** Turn on `codebrain.review.verifyFindings` and the review double-checks its findings against the diff, removing only those the diff proves wrong. Anything uncertain is kept, and the report lists what was removed and why. It costs one extra model request per review batch.
+- **Review plan for other agents.** Copilot's agent mode can call `#codebrainReviewPlan` to get the batches, per-file-type checklists and filtered files before it reviews a large change.
+- **`/implement` can interview you first.** When a request leaves decisions only you can make (scope, behavior, edge cases, compatibility), CodeBrain asks up to five grounded multiple-choice questions, each with a recommendation, before writing the plan. Answer with letters or say \"use the recommendations\" and the plan follows. Requests the ticket or the code already settle go straight to the plan. Turn it off with `codebrain.implement.interview`, or say \"no questions\". The CodeBrain Dev agent and the implement skill follow the same rule.
+- **Checklists that match the file.** Each review now applies rules for the language it is looking at (TypeScript/JavaScript, Python, Go, Java/Kotlin, C/C++, Rust, SQL, config files, tests) on top of your own review instructions.
+
+### Fixes
+
+- A finding is no longer lost when the model formats its marker slightly differently (attribute order, quote style, `L42` or `42-45` for a line, or words like "major" and "nit" for severity).
+- Review comments land on the right line more often. The reviewer now quotes the code it is commenting on, and CodeBrain uses that to correct a miscounted line number.
+
 
 ## [2.3.0] - 2026-10-01
 

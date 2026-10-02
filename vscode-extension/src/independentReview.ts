@@ -7,10 +7,19 @@ import { ImpactAnalysis, ImpactAnalysisService } from './impact';
 import { selectCodeBrainModel } from './modelSelection';
 import { ReportManager } from './reportManager';
 import { customReviewPrompt } from './reviewInstructions';
+import { buildVerifyPrompt, parseVerifyReply } from './reviewVerify';
+import { buildReviewPlan, estimateReviewCost, renderRules, ReviewBatch, ReviewPlan } from './reviewPlan';
 import { buildReviewContext } from './reviewContext';
 import {
+  buildSuggestionReplacement,
+  dedupeFindings,
+  extractSuggestion,
+  filterFindingBlocks,
   findingId,
+  formatFinding,
+  ParsedFinding,
   parseReviewFindings,
+  relocateByCode,
   resolveAnchor,
   ReviewFinding,
   ReviewStore,
@@ -55,7 +64,10 @@ function conciseFindingBody(body: string): string {
   const lines = [
     `**Impact:** ${impact || fallback || 'The review identified a potential issue on this line.'}`,
   ];
-  if (recommendation) lines.push(`**Recommendation:** ${recommendation}`);
+  const suggestion = extractSuggestion(text);
+  const advice = recommendation?.replace(/```suggestion[\s\S]*?```/gi, '').trim();
+  if (advice) lines.push(`**Recommendation:** ${advice}`);
+  if (suggestion) lines.push('**Suggested fix** (use the lightbulb to apply):', '```', suggestion, '```');
   return lines.join('\n\n').slice(0, 2_000);
 }
 
@@ -181,9 +193,13 @@ export class ReviewPresenter implements vscode.Disposable {
         lineCache.set(key, await documentLines(file.uri));
       }
       const lines = lineCache.get(key);
-      const anchorText = lines?.[item.line - 1]?.trim() ?? '';
+      // Models miscount lines; the code they quoted is the more reliable anchor.
+      const located = lines && item.code ? relocateByCode(lines, item.code, item.line) : undefined;
+      const line = located?.line ?? item.line;
+      const anchorText = lines?.[line - 1]?.trim() ?? '';
       const finding: ReviewFinding = {
         ...item,
+        line,
         file: file.path,
         anchorText,
         id: findingId({
@@ -420,6 +436,47 @@ export class ReviewPresenter implements vscode.Disposable {
       .map((item) => item.finding);
   }
 
+  /**
+   * The edit a finding's suggested fix would make, when it is still safe to make.
+   *
+   * Safe means the flagged line is still where the review saw it and still reads
+   * the same: a fix written for code that has since changed would overwrite the
+   * wrong thing, so it is not offered at all.
+   */
+  public suggestionFor(
+    finding: ReviewFinding,
+  ): { uri: vscode.Uri; range: vscode.Range; text: string } | undefined {
+    const suggestion = extractSuggestion(finding.body);
+    const item = this.rendered.find((entry) => entry.finding.id === finding.id);
+    if (!suggestion || !item || item.lost) return undefined;
+    const document = vscode.workspace.textDocuments.find(
+      (open) => open.uri.toString() === item.uri.toString(),
+    );
+    const lineIndex = item.line - 1;
+    if (!document || lineIndex >= document.lineCount) return undefined;
+    const original = document.lineAt(lineIndex).text;
+    if (finding.anchorText && original.trim() !== finding.anchorText) return undefined;
+    const text = buildSuggestionReplacement([original], suggestion);
+    if (text === undefined) return undefined;
+    return { uri: item.uri, range: document.lineAt(lineIndex).range, text };
+  }
+
+  public async applySuggestion(finding: ReviewFinding): Promise<void> {
+    const edit = this.suggestionFor(finding);
+    if (!edit) {
+      void vscode.window.showWarningMessage(
+        'That code has changed since the review, so CodeBrain did not apply the suggested fix.',
+      );
+      return;
+    }
+    const change = new vscode.WorkspaceEdit();
+    change.replace(edit.uri, edit.range, edit.text);
+    if (!(await vscode.workspace.applyEdit(change))) return;
+    // The flagged line is gone; keep the finding from lingering on its replacement.
+    await this.store.dismiss([finding.id]);
+    await this.render();
+  }
+
   public async dismiss(ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return;
     await this.store.dismiss(ids);
@@ -478,6 +535,20 @@ export class ReviewCodeActionProvider implements vscode.CodeActionProvider {
       explain.diagnostics = ours;
       actions.push(explain);
 
+      if (this.presenter.suggestionFor(finding)) {
+        const apply = new vscode.CodeAction(
+          'CodeBrain: apply the suggested fix',
+          vscode.CodeActionKind.QuickFix,
+        );
+        apply.command = {
+          command: 'codebrain.applyReviewSuggestion',
+          title: 'Apply the suggested fix',
+          arguments: [finding],
+        };
+        apply.diagnostics = ours;
+        actions.push(apply);
+      }
+
       const dismiss = new vscode.CodeAction(
         'CodeBrain: dismiss this finding (false positive)',
         vscode.CodeActionKind.QuickFix,
@@ -514,6 +585,7 @@ function reviewPrompt(
   diffTruncated: boolean,
   folder: vscode.WorkspaceFolder,
   codeGraphReport: string | undefined,
+  plan?: ReviewPlan,
 ): string {
   const signals = analysis.assessment.signals
     .map(
@@ -539,7 +611,7 @@ Return a concise Markdown review with exactly these sections:
 ## Verdict
 State whether the change is safe to merge, needs changes, or needs tests first. Include risk level ${analysis.risk.toUpperCase()} (${analysis.assessment.score}/${analysis.assessment.maxScore}).
 ## Findings
-For each finding add this marker on its own line: <!-- codebrain-finding severity="high" file="src/file.ts" line="42" -->. Under each marker use exactly these concise labels: **Impact:** one sentence explaining what can break; **Recommendation:** one actionable fix or test, when needed. Do not invent findings.
+For each finding add this marker on its own line: <!-- codebrain-finding severity="high" file="src/file.ts" line="42" code="the exact source text of that line" -->. Copy the code attribute verbatim from the diff (one line, at most 120 characters); it is used to correct a miscounted line number. Under each marker use exactly these concise labels: **Impact:** one sentence explaining what can break; **Recommendation:** one actionable fix or test, when needed. When the fix is a concrete replacement of the flagged line, add after the labels a fenced block that starts with three backticks and the word suggestion, containing only the replacement line(s) without the file's leading indentation. Do not invent findings.
 ## Affected workflows
 Explain the highest-risk callers/dependents and distinguish direct from transitive impact when evidence allows.
 ## Test plan
@@ -553,10 +625,182 @@ ${signals}
 ${reviewContext}
 
 ${codeGraphReviewEvidence(codeGraphReport)}
-
+${plan ? `\n${planNotes(plan, plan.batches.flatMap((batch) => batch.files))}\n` : ''}
 Treat the Git diff as the source of truth for what changed. Treat graph evidence as supporting context. Only report a finding when the diff and surrounding source provide concrete evidence. Findings must point to a changed file and a relevant changed line; do not report speculative style preferences, hypothetical issues, or findings based only on file names. Be explicit about uncertainty.${diffTruncated ? '\n\nImportant: The Git diff was truncated before it reached the model. Lower confidence, avoid claiming the full change was reviewed, and call this out in the review limits.' : ''}${truncationWarning}`,
     folder,
   );
+}
+
+/** Rules for the files under review, and what was deliberately left out, so the model never has to guess coverage. */
+function planNotes(plan: ReviewPlan, files: readonly string[]): string {
+  const lines = ['## Review rules for these files', renderRules(files)];
+  if (plan.excluded.length > 0) {
+    lines.push(
+      '## Not reviewed (filtered as noise)',
+      ...plan.excluded.slice(0, 40).map((item) => `- ${item.path}: ${item.reason}`),
+    );
+  }
+  if (plan.missingDiff.length > 0) {
+    lines.push(
+      '## Changed but no diff available (new, binary, or cut off) — say so instead of reviewing blind',
+      ...plan.missingDiff.slice(0, 40).map((path) => `- ${path}`),
+    );
+  }
+  return lines.join('\n');
+}
+
+function batchPrompt(
+  analysis: ImpactAnalysis,
+  batch: ReviewBatch,
+  plan: ReviewPlan,
+  position: string,
+  codeGraphReport: string | undefined,
+  folder: vscode.WorkspaceFolder,
+): string {
+  const related = analysis.graphContext
+    .split(/\r?\n/)
+    .filter((line) => batch.files.some((file) => line.includes(file)))
+    .join('\n')
+    .slice(0, 20_000);
+  return customReviewPrompt(
+    `You are CodeBrain Review. You are reviewing ${position} of a larger change, \"${batch.label}\": ${batch.files.length} file(s). Other batches cover the other files, so review ONLY these files, and review every one of them.
+
+Return only a Markdown list of findings. For each one add this marker on its own line: <!-- codebrain-finding severity="high" file="src/file.ts" line="42" code="the exact source text of that line" -->. Copy \`code\` verbatim from the diff (one line, at most 120 characters); it is used to correct a miscounted line number. Under each marker use exactly: **Impact:** one sentence on what can break; **Recommendation:** one actionable fix or test. When the fix is a concrete replacement of the flagged line, add after the labels a fenced block that starts with three backticks and the word suggestion, containing only the replacement line(s) without the file's leading indentation. If a file has no defect, add nothing for it. Do not invent findings; if you find none, reply "No findings in this batch."
+
+Overall risk of the whole change: ${analysis.risk.toUpperCase()} (${analysis.assessment.score}/${analysis.assessment.maxScore}).
+
+${planNotes(plan, batch.files)}
+
+### Git diff for this batch
+${batch.diff}
+
+### Graph evidence for these files
+${related || 'No file-matched graph lines were returned.'}
+
+${codeGraphReviewEvidence(codeGraphReport?.slice(0, 30_000))}
+
+Treat the diff as the source of truth. Findings must point to a changed line in one of the files above. Do not report speculative style preferences.`,
+    folder,
+  );
+}
+
+async function askModel(
+  model: vscode.LanguageModelChat,
+  prompt: string,
+  token: vscode.CancellationToken,
+): Promise<string> {
+  const request = await model.sendRequest(
+    [vscode.LanguageModelChatMessage.User(prompt)],
+    {},
+    token,
+  );
+  let text = '';
+  for await (const fragment of request.text) {
+    text += fragment;
+  }
+  return text;
+}
+
+/** Run `task` over `items` with at most `limit` in flight, preserving order. */
+async function mapPool<T, R>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await task(items[index]!, index);
+      }
+    }),
+  );
+  return results;
+}
+
+/** Findings from every batch, plus an explicit coverage section so skipped files are visible. */
+function assembleBatchedReview(
+  analysis: ImpactAnalysis,
+  plan: ReviewPlan,
+  outputs: readonly string[],
+): string {
+  // Batches overlap in what they notice (a caller change shows in both the callee's and the caller's batch),
+  // so repeats are merged in code. Output with no parsable marker is kept verbatim rather than dropped.
+  const parsed = dedupeFindings(outputs.flatMap((text) => parseReviewFindings(text)));
+  const unparsed = outputs
+    .map((text) => text.trim())
+    .filter(
+      (text) =>
+        text &&
+        !/^no findings in this batch\.?$/i.test(text) &&
+        parseReviewFindings(text).length === 0,
+    );
+  const findings = [...parsed.map(formatFinding), ...unparsed];
+  return [
+    '# CodeBrain Review',
+    '## Verdict',
+    `Reviewed ${plan.batches.reduce((sum, batch) => sum + batch.files.length, 0)} changed file(s) in ${plan.batches.length} batches. Risk level ${analysis.risk.toUpperCase()} (${analysis.assessment.score}/${analysis.assessment.maxScore}); ${findings.length === 0 ? 'no findings were reported' : 'see the findings below'}.`,
+    '## Findings',
+    findings.length > 0 ? findings.join('\n\n') : 'No blocking findings.',
+    '## Test plan',
+    `Affected tests: ${analysis.affectedTests.join(', ') || 'none detected (zero indexed tests is not zero risk)'}.`,
+    '## Review coverage',
+    ...plan.batches.map((batch, index) => `- Batch ${index + 1} (${batch.label}): ${batch.files.join(', ')}`),
+    ...(plan.excluded.length > 0 ? ['', 'Filtered as noise:', ...plan.excluded.map((item) => `- ${item.path}: ${item.reason}`)] : []),
+    ...(plan.missingDiff.length > 0 ? ['', 'Changed but not reviewed (no diff available):', ...plan.missingDiff.map((path) => `- ${path}`)] : []),
+  ].join('\n');
+}
+
+/**
+ * Optional fact-check of a review's findings against the diff. Any failure
+ * (model error, unreadable reply) keeps every finding: only a clear, reasoned
+ * "the diff proves this wrong" removes one.
+ */
+async function verifyFindings(
+  model: vscode.LanguageModelChat,
+  report: string,
+  diff: string,
+  token: vscode.CancellationToken,
+  log: (message: string) => void,
+): Promise<{ report: string; dropped: Array<{ finding: ParsedFinding; reason: string }> }> {
+  const findings = parseReviewFindings(report);
+  if (findings.length === 0 || !diff.trim()) return { report, dropped: [] };
+  try {
+    const reply = await askModel(model, buildVerifyPrompt(findings, diff), token);
+    const dropped = parseVerifyReply(reply, findings.length).map(({ index, reason }) => ({
+      finding: findings[index]!,
+      reason,
+    }));
+    if (dropped.length === 0) return { report, dropped };
+    return {
+      report: filterFindingBlocks(
+        report,
+        (candidate) =>
+          !dropped.some(
+            ({ finding }) =>
+              finding.file === candidate.file &&
+              finding.line === candidate.line &&
+              finding.body === candidate.body,
+          ),
+      ),
+      dropped,
+    };
+  } catch (error) {
+    log(`Finding verification skipped: ${error instanceof Error ? error.message : String(error)}`);
+    return { report, dropped: [] };
+  }
+}
+
+function verificationNote(dropped: ReadonlyArray<{ finding: ParsedFinding; reason: string }>): string {
+  if (dropped.length === 0) return '';
+  return [
+    '',
+    '## Verification',
+    `The fact-check pass removed ${dropped.length} finding(s) that the diff proves wrong:`,
+    ...dropped.map(({ finding, reason }) => `- ${finding.file}:${finding.line} — ${reason}`),
+  ].join('\n');
 }
 
 function addFindingLinks(
@@ -565,7 +809,7 @@ function addFindingLinks(
   allowedFiles?: Set<string>,
 ): string {
   return markdown.replace(
-    /<!--\s*codebrain-finding\s+severity="(?:critical|high|medium|low)"\s+file="([^"]+)"\s+line="(\d+)"\s*-->/gi,
+    /<!--\s*codebrain-finding\s+severity="(?:critical|high|medium|low)"\s+file="([^"]+)"\s+line="(\d+)"(?:\s+code=".*?")?\s*-->/gi,
     (marker, file: string, line: string) => {
       const target = workspaceRelativeFile(folder, file, allowedFiles);
       if (!target) return marker;
@@ -608,26 +852,61 @@ export async function runIndependentReview(
   }
 
   const analysis = await impactService.analyze(folder, token);
-  const gitContext = await collectGitReviewContext(
+  let gitContext = await collectGitReviewContext(
     folder.uri.fsPath,
     maxDiffCharacters,
   );
+  // A truncated diff silently drops whole files from the review. Re-read it with room for
+  // the full change and let the plan split it into batches, instead of reviewing a prefix.
+  if (gitContext.truncated && gitContext.isRepository) {
+    gitContext = await collectGitReviewContext(
+      folder.uri.fsPath,
+      Math.min(maxDiffCharacters * 8, 1_500_000),
+    );
+  }
+  const plan = buildReviewPlan(gitContext.changedFiles, gitContext.diff, maxDiffCharacters);
   // After `analyze`, which has already brought the index up to date.
   const codeGraphReport = gitContext.isRepository
     ? await fetchCodeGraphReview(runtime, folder.uri.fsPath, {}, gitContext.changedFiles, token, log)
     : undefined;
-  const request = await model.sendRequest(
-    [
-      vscode.LanguageModelChatMessage.User(
-        reviewPrompt(analysis, gitContext.diff, gitContext.truncated, folder, codeGraphReport),
-      ),
-    ],
-    {},
-    token,
-  );
-  let markdown = '';
-  for await (const fragment of request.text) {
-    markdown += fragment;
+
+  let markdown: string;
+  if (plan.batches.length > 1) {
+    const threshold = config.get<number>('review.confirmBatchesOver', 3);
+    if (plan.batches.length > threshold) {
+      const cost = estimateReviewCost(plan);
+      const proceed = await vscode.window.showWarningMessage(
+        `This change is large: CodeBrain will review ${plan.batches.reduce((n, b) => n + b.files.length, 0)} files in ${cost.requests} model requests (about ${Math.round(cost.inputTokens / 1000)}K input tokens)${plan.excluded.length ? `, after filtering ${plan.excluded.length} noise file(s)` : ''}.`,
+        { modal: true },
+        'Review all',
+      );
+      if (proceed !== 'Review all') return;
+    }
+    log(`Reviewing ${plan.batches.length} batches (${plan.excluded.length} file(s) filtered).`);
+    const verify = config.get<boolean>('review.verifyFindings', false);
+    const dropped: Array<{ finding: ParsedFinding; reason: string }> = [];
+    const outputs = await mapPool(plan.batches, 3, async (batch, index) => {
+      const text = await askModel(
+        model,
+        batchPrompt(analysis, batch, plan, `part ${index + 1} of ${plan.batches.length}`, codeGraphReport, folder),
+        token,
+      );
+      if (!verify) return text;
+      const checked = await verifyFindings(model, text, batch.diff, token, log);
+      dropped.push(...checked.dropped);
+      return checked.report;
+    });
+    markdown = assembleBatchedReview(analysis, plan, outputs) + verificationNote(dropped);
+  } else {
+    markdown = await askModel(
+      model,
+      reviewPrompt(analysis, gitContext.diff, gitContext.truncated, folder, codeGraphReport, plan),
+      token,
+    );
+    if (config.get<boolean>('review.verifyFindings', false)) {
+      const checked = await verifyFindings(model, markdown, gitContext.diff, token, log);
+      markdown = checked.report + verificationNote(checked.dropped);
+    }
   }
   if (!markdown.trim()) {
     throw new Error('The selected language model returned an empty review.');

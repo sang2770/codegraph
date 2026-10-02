@@ -185,6 +185,7 @@ Copilot's agent mode, and any agent that uses VS Code's language-model tools, ca
 | `codebrain_get_impact` | `#codebrainImpact` | Dependents, affected tests, risk and reasons for the working-tree changes or given files |
 | `codebrain_get_affected_tests` | `#codebrainAffectedTests` | The test files to run instead of the full suite |
 | `codebrain_explore_symbol` | `#codebrainExplore` | Verbatim line-numbered source, call paths and blast radius for named symbols |
+| `codebrain_get_review_plan` | `#codebrainReviewPlan` | The working-tree changes split into review batches, with a checklist per file type and the files filtered out as noise |
 
 ### 🩺 Index Status & Coverage
 **CodeBrain: Show Index Status** opens a panel showing:

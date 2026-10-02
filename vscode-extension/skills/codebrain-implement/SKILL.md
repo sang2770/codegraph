@@ -18,6 +18,18 @@ Deliver a working, tested change that satisfies the request and its acceptance c
 
 Call `codegraph_explore` with the names from the ticket and the request, plus the entry point and the layer you expect to change. Use its call paths and blast radius to find: the function(s) to change, the contracts they expose, who depends on them, and the tests that already cover them. Explore again with narrower names rather than grepping. Treat returned source as already read — it is current and line-numbered, so you can edit from it directly.
 
+## 2b. Interview — only for what the code and ticket cannot answer
+
+Before planning, list the decisions that only the user can make and that would change the plan: scope, user-visible behavior, edge cases, compatibility, data migration, performance or security targets. Drop every one the ticket's acceptance criteria or the code already answers, and never ask about naming or style.
+
+If none remain, go straight to the plan. Otherwise ask, then stop and wait for the answers:
+
+- One question at a time, most plan-changing first, at most five in all.
+- Multiple choice (2-3 options) whenever the options are knowable, with your recommended option and the reason. Open-ended only when they are not.
+- Ground each question in what you found (`file:line`, ticket text), so the user can see why it matters.
+- Do not start editing, and do not write the plan, until the answers are in. "Use the recommendations" or "no questions" from the user ends the interview at once.
+- Record each answer as an acceptance criterion marked as the user's decision.
+
 ## 3. Plan — and stop for approval
 
 Present a short plan before touching any file:

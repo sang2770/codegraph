@@ -8,7 +8,9 @@ import {
   AFFECTED_TESTS_TOOL,
   EXPLORE_SYMBOL_TOOL,
   IMPACT_TOOL,
+  REVIEW_PLAN_TOOL,
 } from './lmToolNames';
+import { buildReviewPlan, renderPlanMarkdown } from './reviewPlan';
 import { codeBrainEnvironment, CodeBrainRuntime, runCodeBrain } from './runtime';
 import { findIndexedRoot, getWorkspaceFolder, projectFolder } from './workspace';
 
@@ -199,7 +201,29 @@ export function registerLanguageModelTools(
     },
   };
 
+  const reviewPlanTool: vscode.LanguageModelTool<ProjectInput> = {
+    prepareInvocation() {
+      return { invocationMessage: 'CodeBrain: planning the review of the working-tree changes…' };
+    },
+    async invoke(options) {
+      const project = currentProject(options.input);
+      if ('guidance' in project) return text(project.guidance);
+      try {
+        const budget = vscode.workspace.getConfiguration('codebrain').get<number>('chat.maxDiffCharacters', 120_000);
+        let git = await collectGitReviewContext(project.root, budget);
+        if (git.truncated) git = await collectGitReviewContext(project.root, Math.min(budget * 8, 1_500_000));
+        if (!git.isRepository || git.changedFiles.length === 0) {
+          return text('There are no changed files in the working tree to plan a review for.');
+        }
+        return text(renderPlanMarkdown(buildReviewPlan(git.changedFiles, git.diff, budget)));
+      } catch (error) {
+        return text(`CodeBrain could not plan the review: ${errorText(error)}`);
+      }
+    },
+  };
+
   context.subscriptions.push(
+    vscode.lm.registerTool(REVIEW_PLAN_TOOL, reviewPlanTool),
     vscode.lm.registerTool(IMPACT_TOOL, impactTool),
     vscode.lm.registerTool(AFFECTED_TESTS_TOOL, affectedTestsTool),
     vscode.lm.registerTool(EXPLORE_SYMBOL_TOOL, exploreTool),

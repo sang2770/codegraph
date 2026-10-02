@@ -7,6 +7,8 @@ export interface GitReviewContext {
   diff: string;
   changedFiles: string[];
   truncated: boolean;
+  /** Which changed files were and were not included in `diff`, when some were left out. */
+  coverageNote?: string;
   target?: GitCommit;
 }
 

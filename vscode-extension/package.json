@@ -2,7 +2,7 @@
   "name": "codebrain-lge",
   "displayName": "CodeBrain LGE",
   "description": "Local semantic code intelligence for VS Code: native-accelerated runtime, MCP, impact analysis, affected tests, workflow graphs, and read-only AI review.",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "publisher": "sang2nguyen-LGE",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -352,6 +352,10 @@
       {
         "command": "codebrain.explainReviewFinding",
         "title": "CodeBrain: Explain Review Finding"
+      },
+      {
+        "command": "codebrain.applyReviewSuggestion",
+        "title": "CodeBrain: Apply Suggested Fix"
       },
       {
         "command": "codebrain.replyToFinding",
@@ -709,6 +713,10 @@
           "when": "false"
         },
         {
+          "command": "codebrain.applyReviewSuggestion",
+          "when": "false"
+        },
+        {
           "command": "codebrain.replyToFinding",
           "when": "false"
         },
@@ -868,6 +876,31 @@
           "default": "",
           "description": "Language model id for CodeBrain-owned AI commands such as Review Changes. Leave empty to use the first available model. This does not override the model selected for CodeBrain ChatParticipant requests.",
           "scope": "window"
+        },
+        "codebrain.review.confirmBatchesOver": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "A large change is reviewed in batches, one model request each. When it needs more batches than this, CodeBrain shows the file and request count and asks before starting."
+        },
+        "codebrain.implement.interview": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "off"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "/implement asks a few clarifying questions first when the request leaves decisions only you can make, then writes the plan from your answers.",
+            "/implement always goes straight to the plan."
+          ],
+          "description": "Whether /implement interviews you before planning. Saying \"no questions\" or \"use the recommendations\" in the request also skips it."
+        },
+        "codebrain.review.verifyFindings": {
+          "type": "boolean",
+          "default": false,
+          "description": "After a review, ask the model to fact-check its findings against the diff and drop only those the diff proves wrong. Costs one extra model request per review batch; unsure findings are always kept."
         },
         "codebrain.review.instructionFile": {
           "type": "string",
@@ -1157,6 +1190,28 @@
       }
     },
     "languageModelTools": [
+      {
+        "name": "codebrain_get_review_plan",
+        "displayName": "CodeBrain: Review Plan",
+        "toolReferenceName": "codebrainReviewPlan",
+        "userDescription": "Splits the working-tree changes into review batches, filters noise, and lists the checklist for each file type.",
+        "modelDescription": "Plan a code review of the uncommitted working-tree changes before you review them. Returns the files worth reviewing grouped into small batches of related files (a source file with its test, locale variants), the review checklist for each file type, the files filtered out as noise (lockfiles, generated, vendored, binary) and the files that have no diff. Review every batch in order instead of skimming the whole diff, and say which files you did not review. Use before reviewing a large change.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectPath": {
+              "type": "string",
+              "description": "A directory inside a project with a .codegraph/ index. Omit for the active project."
+            }
+          }
+        },
+        "canBeReferencedInPrompt": true,
+        "icon": "$(checklist)",
+        "tags": [
+          "codebrain",
+          "code-review"
+        ]
+      },
       {
         "name": "codebrain_get_impact",
         "displayName": "CodeBrain: Change Impact",

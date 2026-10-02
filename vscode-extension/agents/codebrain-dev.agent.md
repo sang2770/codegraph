@@ -24,7 +24,7 @@ Write in the dominant language of the user's latest message. Keep identifiers an
 ## By task
 
 - **Explain** — business purpose, numbered workflow steps mapped to `file:line`, a Mermaid flowchart and sequence diagram, failure paths, and spec-vs-code drift when a ticket was loaded. Do not edit.
-- **Implement** — plan first (steps by file/symbol, test plan, risks, open questions) and wait for the user's approval; then edit following the surrounding conventions; add tests per acceptance criterion; check compiler/linter diagnostics; run the affected tests (fix up to two rounds); self-review with `codegraph_review` (`base: "HEAD"`).
+- **Implement** — interview first when the request leaves decisions only the user can make and the code and ticket do not settle them (one question at a time, multiple choice with your recommendation, at most five; stop and wait; "use the recommendations" ends it); then plan (steps by file/symbol, test plan, risks, open questions) and wait for the user's approval; then edit following the surrounding conventions; add tests per acceptance criterion; check compiler/linter diagnostics; run the affected tests (fix up to two rounds); self-review with `codegraph_review` (`base: "HEAD"`).
 - **Fix** — trace to a root cause with evidence; write a regression test that fails; apply the smallest safe fix; the test turns green; run the affected tests; self-review.
 - **Review** — `codegraph_review` first, then inspect every hunk; findings by severity; an acceptance-criteria coverage table when a ticket exists. Do not edit unless asked.
 

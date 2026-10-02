@@ -16,6 +16,8 @@ import {
   GitReviewContext,
   listGitCommits,
 } from './gitContext';
+import { collectCoveredReviewContext } from './reviewDiff';
+import { interviewInstructions, interviewMode, isInterviewReply } from './interview';
 import { GraphCache } from './graphCache';
 import { AtlassianClient } from './atlassian/client';
 import { atlassianEnvPath } from './atlassian/connection';
@@ -65,6 +67,8 @@ interface CodeBrainChatResult extends vscode.ChatResult {
     handoff?: string;
     /** Jira key the answer was grounded in. */
     ticket?: string;
+    /** The answer was a set of clarifying questions, not a plan; the next message answers them. */
+    interview?: boolean;
   };
 }
 
@@ -869,7 +873,7 @@ export function inferCommand(
 /** What the previous CodeBrain answer in this thread was, from its result metadata. */
 export function previousResult(
   history: readonly unknown[],
-): { command?: ReportKind; handoff?: string; ticket?: string } {
+): { command?: ReportKind; handoff?: string; ticket?: string; interview?: boolean } {
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const turn = history[index];
     if (!(turn instanceof vscode.ChatResponseTurn)) continue;
@@ -877,6 +881,7 @@ export function previousResult(
       command?: unknown;
       handoff?: unknown;
       ticket?: unknown;
+      interview?: unknown;
     };
     const command = COMMANDS.find((entry) => entry === metadata.command);
     return {
@@ -884,6 +889,7 @@ export function previousResult(
       command: command === 'impact' ? 'review' : command,
       handoff: typeof metadata.handoff === 'string' ? metadata.handoff : undefined,
       ticket: typeof metadata.ticket === 'string' ? metadata.ticket : undefined,
+      interview: metadata.interview === true,
     };
   }
   return {};
@@ -1426,6 +1432,7 @@ function reviewEvidence(
     gitContext.truncated
       ? 'Warning: Git context was truncated; lower confidence and call this out in Evidence and limits.'
       : '',
+    gitContext.coverageNote ?? '',
     '## Editor focus',
     editorContext || 'No active editor selection.',
     attachments,
@@ -2136,16 +2143,13 @@ export function registerChatParticipant(
           return { metadata: { command } };
         }
         const selectedCommit = choice.commit;
-        const gitContext = selectedCommit
-          ? await collectGitCommitReviewContext(
-              folder.uri.fsPath,
-              selectedCommit,
-              maxDiffCharacters,
-            )
-          : await collectGitReviewContext(
-              folder.uri.fsPath,
-              maxDiffCharacters,
-            );
+        const gitContext = await collectCoveredReviewContext(
+          (limit) =>
+            selectedCommit
+              ? collectGitCommitReviewContext(folder.uri.fsPath, selectedCommit, limit)
+              : collectGitReviewContext(folder.uri.fsPath, limit),
+          maxDiffCharacters,
+        );
         // The commit's files are already in the changed-file list; its hash
         // would only be one more meaningless search term.
         const query = buildReviewQuery(focusPrompt, gitContext, editorContext);
@@ -2252,6 +2256,12 @@ export function registerChatParticipant(
           token,
         );
       } else if (command === 'implement') {
+        // Ask before planning when the request leaves decisions only the user can make.
+        const implementInterview = interviewMode({
+          setting: config.get<string>('implement.interview', 'auto'),
+          prompt: request.prompt,
+          previousWasInterview: previous.command === 'implement' && previous.interview === true,
+        });
         // The query does not depend on the diff, so neither waits on the other.
         const [gitContext, graphContext] = await Promise.all([
           collectGitReviewContext(folder.uri.fsPath, maxDiffCharacters),
@@ -2272,7 +2282,8 @@ export function registerChatParticipant(
         generatedReport = await generateReport(
           {
             ...reportBase,
-            instructions: IMPLEMENT_INSTRUCTIONS,
+            instructions:
+              IMPLEMENT_INSTRUCTIONS + interviewInstructions(implementInterview),
             userPrompt:
               request.prompt || 'Plan the implementation of the requested change.',
             evidence: implementEvidence(
@@ -2497,18 +2508,22 @@ export function registerChatParticipant(
       // reads as a document rather than a document plus a cost readout.
       // The chat already shows the report, so a preview tab would only repeat
       // it and take the editor's focus; it opens on request instead.
-      const reportUri = await reports.setLatest(
-        {
-          kind: command,
-          title:
-            normalizedReport.match(/^#\s+(.+)$/m)?.[1] ??
-            `CodeBrain ${command} report`,
-          markdown: normalizedReport,
-          folder,
-        },
-        true,
-        config.get<boolean>('chat.openReportPreview', false),
-      );
+      // Questions are not a report: nothing to save, hand off, or apply.
+      const interviewing = command === 'implement' && isInterviewReply(generatedReport.text);
+      const reportUri = interviewing
+        ? undefined
+        : await reports.setLatest(
+            {
+              kind: command,
+              title:
+                normalizedReport.match(/^#\s+(.+)$/m)?.[1] ??
+                `CodeBrain ${command} report`,
+              markdown: normalizedReport,
+              folder,
+            },
+            true,
+            config.get<boolean>('chat.openReportPreview', false),
+          );
 
       if (!generatedReport.text.trim()) {
         // Nothing was streamed because the model returned nothing. Show the
@@ -2524,12 +2539,12 @@ export function registerChatParticipant(
         );
       }
       const handoff =
-        command === 'implement' || command === 'fix'
+        !interviewing && (command === 'implement' || command === 'fix')
           ? extractHandoffPrompt(normalizedReport) ??
             `Carry out the ${command === 'fix' ? 'bug fix' : 'implementation plan'} saved in ${reportUri?.fsPath ?? 'the latest CodeBrain report'}. Follow the codebrain-${command} workflow.`
           : undefined;
       const proposals =
-        command === 'fix' || command === 'implement' || command === 'test'
+        !interviewing && (command === 'fix' || command === 'implement' || command === 'test')
           ? parseCodeProposals(normalizedReport)
           : [];
       if (proposals.length > 0) {
@@ -2555,6 +2570,7 @@ export function registerChatParticipant(
           tokens: tokenSample,
           handoff,
           ticket: ticket?.key,
+          ...(interviewing ? { interview: true } : {}),
         },
       };
     } catch (error) {
@@ -2602,6 +2618,15 @@ export function registerChatParticipant(
             prompt: 'Explain the failing workflow and root cause with more code-level detail.',
             label: 'Deepen root-cause analysis',
             command: 'explain',
+          },
+        ];
+      }
+      if (result.metadata.command === 'implement' && result.metadata.interview) {
+        return [
+          {
+            prompt: 'Use the recommendations.',
+            label: 'Use the recommendations',
+            command: 'implement',
           },
         ];
       }

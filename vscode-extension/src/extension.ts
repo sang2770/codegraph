@@ -227,6 +227,10 @@ export function activate(context: vscode.ExtensionContext): void {
         },
       ),
       vscode.commands.registerCommand(
+        'codebrain.applyReviewSuggestion',
+        (finding?: ReviewFinding) => (finding ? presenter.applySuggestion(finding) : undefined),
+      ),
+      vscode.commands.registerCommand(
         'codebrain.replyToFinding',
         async (reply?: vscode.CommentReply) => {
           if (!reply?.text?.trim()) return;

@@ -15,9 +15,15 @@ A conservative, evidence-based review. Review only — do not edit code unless t
 2. **Ticket.** Jira key in the request, the branch name, or the commit messages → call `codebrain_task_context` with `key` to get the acceptance criteria and spec.
 3. **Drill down.** For each symbol a finding names, call `codegraph_explore` with that name to get its source and call paths. Do not grep for callers of a changed function — the review already has them.
 
+## 1b. Plan the coverage (large changes)
+
+Do not review a big change as one blob. List the changed files, set aside noise (lockfiles, minified or generated code, vendored/build output, binaries), bundle related files (a source with its test, locale variants) into groups of at most 10, and review the groups one by one. Finish every group; name any file you did not review. If the `codebrain_get_review_plan` tool (`#codebrainReviewPlan`) is available, call it for the working tree; for a GitLab MR with the `mr_review_plan` tool available, call that instead: it returns exactly this plan plus a checklist per file type.
+
 ## 2. Inspect every changed hunk
 
 Check: null/undefined and boundary validation; branching, off-by-one and state transitions; async ordering, concurrency and cleanup; error propagation; security and data exposure; persistence and caching; naming, typing and duplication against the surrounding conventions; whether changed assumptions still hold along every affected call path. Treat shared contracts, auth, persistence, migrations, concurrency, lifecycle and high fan-out code as high risk until tests prove otherwise. Only report issues the evidence supports.
+
+When you cite a line, quote the exact source text of that line next to the number (and pass it as `existingCode` to `mr_draft_comments`) so a miscounted line can be corrected.
 
 ## 3. Report
 
